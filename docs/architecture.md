@@ -8,6 +8,17 @@
 - Preparação futura para PostgreSQL RLS (ver [security.md](security.md)).
 - TypeScript strict em todo o código; preparado para múltiplas filiais.
 
+## Stack aprovada
+| Componente | Tecnologia |
+|---|---|
+| Frontend | Next.js + React + TypeScript |
+| Backend | NestJS + TypeScript |
+| Workers | Node.js + TypeScript |
+| Edge Server (futuro, não implementado) | Node.js + TypeScript |
+| Agente local de impressão (futuro, não implementado) | Node.js + TypeScript |
+
+Rust **não** faz parte do planejamento atual; só poderá ser reconsiderado por decisão arquitetural explícita.
+
 ## Monorepo (npm workspaces)
 | Workspace | Estado | Papel |
 |---|---|---|

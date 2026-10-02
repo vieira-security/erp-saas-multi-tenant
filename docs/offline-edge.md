@@ -29,7 +29,7 @@ sequenceDiagram
 - Servidor local opcional, usado por vários PDVs.
 - Mantém dados mínimos de operação e fila de sincronização.
 - Impressão local.
-- Possível implementação futura em Rust; SQLite local é opção prevista.
+- Tecnologia prevista: **Node.js + TypeScript**; SQLite local é opção prevista.
 - **Não** replica o PostgreSQL inteiro.
 - A cloud continua fonte definitiva após reconciliação.
 

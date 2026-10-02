@@ -1,7 +1,7 @@
 # Impressão
 
 ## Agente local
-Previsto um agente local de impressão (possivelmente em Rust). **Não implementado.** Pode ser usado diretamente pelo PDV ou via Edge Server ([offline-edge.md](offline-edge.md)).
+Previsto um agente local de impressão em **Node.js + TypeScript**. **Não implementado.** Pode ser usado diretamente pelo PDV ou via Edge Server ([offline-edge.md](offline-edge.md)).
 
 ## Documentos
 A mesma impressora pode servir a documentos diferentes:
