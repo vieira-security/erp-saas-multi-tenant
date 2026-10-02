@@ -35,6 +35,33 @@ model Tenant {
   trialEndsAt    DateTime?    @map("trial_ends_at") @db.Timestamptz(3)
   createdAt      DateTime     @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt      DateTime     @updatedAt @map("updated_at") @db.Timestamptz(3)
+  companies      Company[]
 
   @@map("tenants")
+}
+
+enum CompanyStatus {
+  ACTIVE
+  INACTIVE
+
+  @@map("company_status")
+}
+
+// CHECKs (fora do PSL, definidos na migration): cnpj = 14 dígitos; legal_name e trade_name não vazios.
+model Company {
+  id        String        @id @default(uuid(7)) @db.Uuid
+  tenantId  String        @map("tenant_id") @db.Uuid
+  legalName String        @map("legal_name")
+  tradeName String        @map("trade_name")
+  cnpj      String
+  status    CompanyStatus
+  timezone  String
+  createdAt DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime      @updatedAt @map("updated_at") @db.Timestamptz(3)
+  tenant    Tenant        @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@unique([tenantId, cnpj])
+  @@index([tenantId])
+  @@index([tenantId, status])
+  @@map("companies")
 }
