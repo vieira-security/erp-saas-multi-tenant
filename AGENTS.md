@@ -6,7 +6,7 @@ Instruções para agentes de IA. As regras de workflow estão em `CLAUDE.md` e v
 
 - **Modular monolith.** Sem microserviços.
 - Monorepo (npm workspaces):
-  - `apps/web`: Next.js, React, Tailwind (PWA).
+  - `apps/web`: Next.js, React, Tailwind (PWA futuro).
   - `apps/api`: NestJS, PostgreSQL, Prisma.
   - `apps/worker`: processamento assíncrono (futuro SQS).
   - `packages/contracts`, `packages/validation`, `packages/config`, `packages/ui`.
@@ -19,3 +19,6 @@ Instruções para agentes de IA. As regras de workflow estão em `CLAUDE.md` e v
 - Tenant sempre do contexto autenticado, nunca do input do cliente.
 - Não inventar regras fiscais ou de negócio; registrar dúvidas em `docs/`.
 - Não adicionar dependências sem necessidade clara.
+
+## Multi-tenancy
+Banco compartilhado com `tenant_id` e isolamento na aplicação; compatível com RLS (inativa). Sem database/schema-per-tenant. Detalhes em `docs/architecture.md`.

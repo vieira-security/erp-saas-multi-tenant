@@ -1,6 +1,6 @@
 # ERP SaaS multi-tenant
 
-ERP para lojas/restaurantes de alimentação em shopping centers no Brasil. Estado atual: **fundação do projeto** (sem funcionalidades de negócio).
+ERP para lojas/restaurantes de alimentação em shopping centers no Brasil. Estado atual: **fundação do projeto** (Next.js, NestJS, Prisma, Vitest; sem funcionalidades de negócio).
 
 ## Estrutura
 
@@ -22,6 +22,7 @@ npm install
 npm run lint
 npm run typecheck
 npm test
+npm run build
 ```
 
 Contribuição: veja `CLAUDE.md`.

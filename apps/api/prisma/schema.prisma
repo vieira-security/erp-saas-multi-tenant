@@ -1,0 +1,11 @@
+// Schema inicial intencionalmente vazio: nenhum modelo de negócio ainda.
+//
+// Diretrizes (ver docs/database.md):
+// - PostgreSQL compartilhado; dados de cliente terão `tenant_id` (decisão aprovada).
+// - Compatível com Row-Level Security futura; RLS NÃO está ativa.
+// - Sem database-per-tenant nem schema-per-tenant.
+// - A URL de conexão virá de variável de ambiente (nunca no código).
+
+datasource db {
+  provider = "postgresql"
+}
