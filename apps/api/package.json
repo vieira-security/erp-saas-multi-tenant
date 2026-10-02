@@ -9,6 +9,7 @@
     "dev": "nest start --watch",
     "typecheck": "prisma generate && tsc --noEmit -p tsconfig.json",
     "test": "nest build && vitest run",
+    "test:integration": "prisma generate && vitest run --config vitest.integration.config.ts",
     "prisma:validate": "prisma validate",
     "prisma:generate": "prisma generate",
     "prisma:migrate:deploy": "prisma migrate deploy"
