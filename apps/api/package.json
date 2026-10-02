@@ -8,7 +8,7 @@
     "start": "node dist/main.js",
     "dev": "nest start --watch",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "vitest run",
+    "test": "nest build && vitest run",
     "prisma:validate": "prisma validate"
   },
   "dependencies": {
@@ -21,6 +21,6 @@
   "devDependencies": {
     "@nestjs/cli": "^12.0.8",
     "@nestjs/testing": "^12.1.2",
-    "prisma": "^7.10.0"
+    "prisma": "~7.10.0"
   }
 }
