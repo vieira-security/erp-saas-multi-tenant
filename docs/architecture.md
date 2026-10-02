@@ -23,7 +23,7 @@ Rust **não** faz parte do planejamento atual; só poderá ser reconsiderado por
 | Workspace | Estado | Papel |
 |---|---|---|
 | `apps/web` | Next.js 16, React 19, Tailwind, Vitest, ESLint `core-web-vitals` | PWA-first (PDV e backoffice) |
-| `apps/api` | NestJS 12, Prisma ORM 7.10 CLI (schema sem models), health endpoint, teste de boot isolado | Backend modular monolith |
+| `apps/api` | NestJS 12, Prisma ORM 7.10 (CLI + client + `adapter-pg`), model `Tenant`, health endpoint, teste de boot isolado, testes de integração com PostgreSQL | Backend modular monolith |
 | `apps/worker` | Node/TS mínimo, sem filas | Tarefas assíncronas |
 | `packages/contracts` | vazio | Contratos compartilhados (DTOs/eventos) |
 | `packages/validation` | vazio | Validação compartilhada |
@@ -110,7 +110,7 @@ flowchart TD
 As setas indicam dependência permitida via API pública; não são o detalhamento final.
 
 ## IDs
-**UUIDv7** é o padrão para IDs principais: geração offline, Edge, sincronização, idempotência e independência de sequência central. Suporte no Prisma/PostgreSQL: **TBD — verificar** (ver [database.md](database.md)).
+**UUIDv7** é o padrão para IDs principais: geração offline, Edge, sincronização, idempotência e independência de sequência central. Gerado pelo Prisma Client (`@default(uuid(7))`) e armazenado como `uuid` no PostgreSQL (ver [database.md](database.md)).
 
 ## Workers
 `apps/worker` executará tarefas assíncronas: fiscal, geração de relatórios, notificações, jobs e, no futuro, processamento via SQS. Nenhuma fila está implementada.
