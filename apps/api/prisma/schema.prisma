@@ -1,11 +1,40 @@
-// Schema inicial intencionalmente vazio: nenhum modelo de negócio ainda.
-//
 // Diretrizes (ver docs/database.md):
-// - PostgreSQL compartilhado; dados de cliente terão `tenant_id` (decisão aprovada).
+// - PostgreSQL compartilhado; dados de cliente têm `tenant_id` (decisão aprovada).
 // - Compatível com Row-Level Security futura; RLS NÃO está ativa.
 // - Sem database-per-tenant nem schema-per-tenant.
-// - A URL de conexão virá de variável de ambiente (nunca no código).
+// - A URL de conexão vem de variável de ambiente (prisma.config.ts), nunca do código.
+// - IDs: UUIDv7 gerado pelo Prisma Client (`uuid(7)`), coluna física `uuid`.
+// - Datas: `timestamptz`, em UTC.
+
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  moduleFormat = "esm"
+}
 
 datasource db {
   provider = "postgresql"
+}
+
+enum TenantStatus {
+  TRIAL
+  ACTIVE
+  PAST_DUE
+  SUSPENDED
+  CANCELLED
+
+  @@map("tenant_status")
+}
+
+// Raiz do multi-tenancy: por isso NÃO possui `tenant_id`.
+model Tenant {
+  id             String       @id @default(uuid(7)) @db.Uuid
+  name           String
+  status         TenantStatus
+  trialStartedAt DateTime?    @map("trial_started_at") @db.Timestamptz(3)
+  trialEndsAt    DateTime?    @map("trial_ends_at") @db.Timestamptz(3)
+  createdAt      DateTime     @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime     @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@map("tenants")
 }
