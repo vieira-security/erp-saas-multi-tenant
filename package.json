@@ -2,18 +2,25 @@
   "name": "erp-saas",
   "private": true,
   "version": "0.0.0",
-  "workspaces": ["apps/*", "packages/*"],
-  "engines": { "node": ">=22" },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "lint": "eslint .",
     "typecheck": "npm run typecheck --workspaces --if-present",
-    "test": "node --test --test-reporter=spec \"apps/**/*.test.ts\" \"packages/**/*.test.ts\""
+    "test": "npm run test --workspaces --if-present",
+    "build": "npm run build --workspaces --if-present"
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",
     "@types/node": "^22.0.0",
     "eslint": "^9.0.0",
-    "typescript": "^5.6.0",
-    "typescript-eslint": "^8.0.0"
+    "typescript": "~5.9",
+    "typescript-eslint": "^8.0.0",
+    "vitest": "^5.0.3"
   }
 }

@@ -32,3 +32,4 @@ ERP SaaS multi-tenant para pequenas e médias lojas/restaurantes de alimentaçã
 - `npm run lint`
 - `npm run typecheck`
 - `npm test`
+- `npm run build`
