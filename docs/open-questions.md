@@ -6,7 +6,7 @@ Registro único dos pontos em aberto. Resolver antes de implementar o módulo af
 |---|---|---|---|
 | 1 | ~~Geração de UUIDv7~~ **Resolvido:** Prisma `@default(uuid(7))`, coluna `uuid` (M1.1) | database | — |
 | 2 | Precisão/escala de `numeric` monetário | database | products/payments |
-| 3 | Estratégia de remoção por entidade (sem soft delete universal) | database | primeiros models |
+| 3 | Estratégia de remoção por entidade (sem soft delete universal). Já definido: Company sem soft delete, desativação via `status = INACTIVE`, FK Tenant→Company `RESTRICT`. Em aberto: demais entidades e se Tenant pode ser apagado fisicamente | database | primeiros models |
 | 4 | Desenho de idempotency keys (escopo, retenção) | database/offline-edge | offline-sync/orders |
 | 5 | Autenticação, sessões, expiração offline | security | auth |
 | 6 | Modelo de roles/permissions e fronteiras entre módulos | architecture/security | users |
@@ -32,6 +32,10 @@ Registro único dos pontos em aberto. Resolver antes de implementar o módulo af
 - **RLS + Prisma + pool:** a RLS exige contexto por transação/conexão, que o Prisma não faz nativamente; adiar a RLS não deve levar a um schema que a impeça (#7).
 - **UUIDv7:** revela o instante de criação; aceitável para IDs internos, mas avaliar em IDs expostos a terceiros. Gerado só pelo Prisma Client: SQL bruto/ferramentas externas precisam informar o `id` (PostgreSQL < 18 não tem `uuidv7()` nativo).
 - **Fuso da sessão x `@prisma/adapter-pg`:** o adapter presume sessão em UTC; `createPrismaClient` fixa `TimeZone=UTC` via parâmetro de startup. Poolers que rejeitam parâmetros de startup (ex.: PgBouncer em modo transação, RDS Proxy) exigirão outra forma de garantir UTC — validar antes de adotar pooler ([database.md](database.md)).
+- **Company.timezone sem validação:** o banco aceita qualquer texto (sem lista própria de fusos, por decisão). Um valor inválido só falhará quando usado (ex.: `AT TIME ZONE`); a validação IANA deve entrar na camada de aplicação junto com o primeiro endpoint/serviço de Company.
+- **CNPJ:** só formato (14 dígitos) é garantido; dígitos verificadores e unicidade global ficam para etapa posterior.
+- **CHECKs fora do schema Prisma:** não aparecem em `migrate diff`; dependem de testes explícitos e de cuidado em migrations futuras ([database.md](database.md)).
+- **Índice `companies(tenant_id)` redundante:** `(tenant_id, status)` e a unique `(tenant_id, cnpj)` já começam por `tenant_id`; mantido por decisão desta etapa, candidato a remoção.
 - **Worker x tenant:** jobs assíncronos também precisam de tenant context explícito, inclusive os disparados por n8n via API.
 - **Rollback x migrations destrutivas:** rollback de código só é seguro com migrations retrocompatíveis.
 - **Edge "premium" x dados mínimos:** a definição de "dados mínimos" afeta suporte, segurança do dispositivo local e LGPD.
