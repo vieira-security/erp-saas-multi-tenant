@@ -1,13 +1,8 @@
+import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, inject, it } from "vitest";
 import { TenantStatus, type PrismaClient } from "../../src/generated/prisma/client.js";
 import { createPrismaClient } from "../../src/database/create-prisma-client.js";
-
-const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-
-/** Unix ms encoded in the first 48 bits of a UUIDv7. */
-function uuidV7Millis(id: string): number {
-  return parseInt(id.replace(/-/g, "").slice(0, 12), 16);
-}
+import { UUID_V7, uuidV7Millis } from "./uuid.js";
 
 describe("Tenant (PostgreSQL)", () => {
   let prisma: PrismaClient;
@@ -148,17 +143,18 @@ describe("Tenant (PostgreSQL)", () => {
   });
 
   it("rejects an invalid status at the database level", async () => {
-    const count = await prisma.tenant.count();
+    // Unique marker: other test files insert tenants concurrently in the same database.
+    const name = `Inválido ${randomUUID()}`;
 
     for (const invalid of ["INVALID", "trial", "DELETED", ""]) {
       await expect(
         prisma.$executeRaw`
           INSERT INTO tenants (id, name, status, updated_at)
-          VALUES (gen_random_uuid(), 'Inválido', ${invalid}::tenant_status, now())`,
+          VALUES (gen_random_uuid(), ${name}, ${invalid}::tenant_status, now())`,
       ).rejects.toThrow(/invalid input value for enum tenant_status/);
     }
 
-    expect(await prisma.tenant.count()).toBe(count);
+    expect(await prisma.tenant.count({ where: { name } })).toBe(0);
   });
 
   it("rejects an invalid status through the Prisma Client", async () => {
