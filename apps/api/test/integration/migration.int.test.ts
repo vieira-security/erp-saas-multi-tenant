@@ -23,6 +23,7 @@ describe("migrations on a clean PostgreSQL database", () => {
     expect(rows).toEqual([
       { name: "20261002000000_create_tenants", finished: true, rolledBack: false },
       { name: "20261002010000_create_companies", finished: true, rolledBack: false },
+      { name: "20261002020000_create_branches", finished: true, rolledBack: false },
     ]);
   });
 
@@ -30,7 +31,7 @@ describe("migrations on a clean PostgreSQL database", () => {
     const tables = await prisma.$queryRaw<{ name: string }[]>`
       SELECT table_name AS name FROM information_schema.tables
       WHERE table_schema = 'public' ORDER BY table_name`;
-    expect(tables.map((t) => t.name)).toEqual(["_prisma_migrations", "companies", "tenants"]);
+    expect(tables.map((t) => t.name)).toEqual(["_prisma_migrations", "branches", "companies", "tenants"]);
   });
 
   it("creates the tenant_status enum with exactly the approved values", async () => {
@@ -120,10 +121,73 @@ describe("migrations on a clean PostgreSQL database", () => {
     expect(indexes.map((i) => [i.name, i.definition.replace(/^.* USING btree /, "")])).toEqual([
       ["companies_pkey", "(id)"],
       ["companies_tenant_id_cnpj_key", "(tenant_id, cnpj)"],
+      ["companies_tenant_id_id_key", "(tenant_id, id)"],
       ["companies_tenant_id_idx", "(tenant_id)"],
       ["companies_tenant_id_status_idx", "(tenant_id, status)"],
     ]);
     expect(indexes.find((i) => i.name === "companies_tenant_id_cnpj_key")?.definition).toMatch(/^CREATE UNIQUE INDEX/);
+  });
+
+  it("creates the branch_status enum with exactly the approved values", async () => {
+    const labels = await prisma.$queryRaw<{ label: string }[]>`
+      SELECT e.enumlabel AS label FROM pg_enum e JOIN pg_type t ON t.oid = e.enumtypid
+      WHERE t.typname = 'branch_status' ORDER BY e.enumsortorder`;
+    expect(labels.map((l) => l.label)).toEqual(["ACTIVE", "INACTIVE"]);
+  });
+
+  it("defines the branches columns with the expected types and nullability", async () => {
+    const columns = await prisma.$queryRaw<{ name: string; type: string; nullable: string }[]>`
+      SELECT column_name AS name, format_type(a.atttypid, a.atttypmod) AS type, c.is_nullable AS nullable
+      FROM information_schema.columns c
+      JOIN pg_attribute a ON a.attrelid = 'public.branches'::regclass AND a.attname = c.column_name
+      WHERE c.table_schema = 'public' AND c.table_name = 'branches'
+      ORDER BY c.ordinal_position`;
+    expect(columns).toEqual([
+      { name: "id", type: "uuid", nullable: "NO" },
+      { name: "tenant_id", type: "uuid", nullable: "NO" },
+      { name: "company_id", type: "uuid", nullable: "NO" },
+      { name: "name", type: "text", nullable: "NO" },
+      { name: "code", type: "text", nullable: "NO" },
+      { name: "cnpj", type: "text", nullable: "YES" },
+      { name: "status", type: "branch_status", nullable: "NO" },
+      { name: "timezone", type: "text", nullable: "NO" },
+      { name: "created_at", type: "timestamp(3) with time zone", nullable: "NO" },
+      { name: "updated_at", type: "timestamp(3) with time zone", nullable: "NO" },
+    ]);
+  });
+
+  it("defines the branches constraints (PK, tenant FK, composite company FK, CHECKs)", async () => {
+    const constraints = await prisma.$queryRaw<{ name: string; definition: string }[]>`
+      SELECT conname AS name, pg_get_constraintdef(oid) AS definition
+      FROM pg_constraint WHERE conrelid = 'public.branches'::regclass ORDER BY conname`;
+    expect(constraints).toEqual([
+      { name: "branches_cnpj_check", definition: "CHECK (((cnpj IS NULL) OR (cnpj ~ '^[0-9]{14}$'::text)))" },
+      { name: "branches_code_check", definition: "CHECK ((btrim(code) <> ''::text))" },
+      { name: "branches_name_check", definition: "CHECK ((btrim(name) <> ''::text))" },
+      { name: "branches_pkey", definition: "PRIMARY KEY (id)" },
+      {
+        name: "branches_tenant_id_company_id_fkey",
+        definition:
+          "FOREIGN KEY (tenant_id, company_id) REFERENCES companies(tenant_id, id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+      },
+      {
+        name: "branches_tenant_id_fkey",
+        definition: "FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+      },
+    ]);
+  });
+
+  it("defines only the approved branches indexes (no standalone tenant_id index)", async () => {
+    const indexes = await prisma.$queryRaw<{ name: string; definition: string }[]>`
+      SELECT indexname AS name, indexdef AS definition FROM pg_indexes
+      WHERE schemaname = 'public' AND tablename = 'branches' ORDER BY indexname`;
+    expect(indexes.map((i) => i.definition.replace(/ ON public\.branches USING btree/, ""))).toEqual([
+      "CREATE UNIQUE INDEX branches_pkey (id)",
+      "CREATE UNIQUE INDEX branches_tenant_id_cnpj_key (tenant_id, cnpj)",
+      "CREATE UNIQUE INDEX branches_tenant_id_code_key (tenant_id, code)",
+      "CREATE INDEX branches_tenant_id_company_id_idx (tenant_id, company_id)",
+      "CREATE INDEX branches_tenant_id_status_idx (tenant_id, status)",
+    ]);
   });
 
   it("matches schema.prisma (no drift)", async () => {
