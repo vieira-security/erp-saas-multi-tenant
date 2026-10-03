@@ -36,7 +36,7 @@ Registro único dos pontos em aberto. Resolver antes de implementar o módulo af
 - **CNPJ:** só formato (14 dígitos) é garantido; dígitos verificadores e unicidade global ficam para etapa posterior.
 - **CHECKs fora do schema Prisma:** não aparecem em `migrate diff`; dependem de testes explícitos e de cuidado em migrations futuras ([database.md](database.md)).
 - **Índice `companies(tenant_id)` redundante:** `(tenant_id, status)`, a unique `(tenant_id, cnpj)` e a unique `(tenant_id, id)` (M1.3) já começam por `tenant_id`; mantido por decisão do M1.2, candidato a remoção.
-- **Imutabilidade de `tenant_id` (decidida, ainda não imposta por completo):** o banco aceita mover Company sem Branches, mover Branch com `tenant_id` + `company_id` juntos, mover User sem acessos para outro tenant existente, mover um UserBranchAccess por inteiro, mover Role sem permissões para outro tenant, mover RolePermission com `tenant_id` + `role_id` juntos, mover UserRole por inteiro e mover Device (de nível do tenant, ou com filial junto). Ver "Pendências obrigatórias do M1.14".
+- **Imutabilidade de `tenant_id` (decidida, ainda não imposta por completo):** o banco aceita mover Company sem Branches, mover Branch com `tenant_id` + `company_id` juntos, mover User sem acessos para outro tenant existente, mover um UserBranchAccess por inteiro, mover Role sem permissões para outro tenant, mover RolePermission com `tenant_id` + `role_id` juntos, mover UserRole por inteiro, mover Device (de nível do tenant, ou com filial junto) e mover Session por inteiro. Ver "Pendências obrigatórias do M1.14".
 - **CNPJ de Branch x Company:** não há relação validada entre o CNPJ da filial e o da empresa (raiz/matriz), nem unicidade entre as duas tabelas. Validação completa (dígitos verificadores, raiz) será de `packages/validation`.
 - **Branch.timezone e Branch.code:** timezone sem validação IANA no banco (validação na aplicação); code sem normalização, então `MORUMBI` e `morumbi` são códigos distintos até a aplicação aplicar trim + uppercase.
 - **Roles por filial:** `UserBranchAccess` não carrega papel; roles/permissions (globais ou por filial) e sua relação com o acesso à filial ainda serão modeladas (#6).
@@ -57,7 +57,7 @@ Registro único dos pontos em aberto. Resolver antes de implementar o módulo af
 4. Escopo por filial das permissões/roles (#6).
 
 ## Pendências obrigatórias do M1.14
-1. **Impor `tenant_id` imutável no banco:** função `forbid_tenant_id_change()` + trigger `BEFORE UPDATE OF tenant_id ... WHEN (OLD.tenant_id IS DISTINCT FROM NEW.tenant_id)` em `companies`, `branches`, `users`, `user_branch_access`, `roles`, `role_permissions`, `user_roles`, `devices` e toda tabela de tenant futura; inverter os testes `GAP (M1.14)`; acrescentar à auditoria do catálogo a exigência do trigger; confirmar que `prisma migrate diff` ignora funções/triggers (como já ignora CHECKs).
+1. **Impor `tenant_id` imutável no banco:** função `forbid_tenant_id_change()` + trigger `BEFORE UPDATE OF tenant_id ... WHEN (OLD.tenant_id IS DISTINCT FROM NEW.tenant_id)` em `companies`, `branches`, `users`, `user_branch_access`, `roles`, `role_permissions`, `user_roles`, `devices`, `sessions` e toda tabela de tenant futura; inverter os testes `GAP (M1.14)`; acrescentar à auditoria do catálogo a exigência do trigger; confirmar que `prisma migrate diff` ignora funções/triggers (como já ignora CHECKs).
 2. **Proteção contra `new PrismaClient()` além do lint:** avaliar se a regra ESLint basta (não cobre `import()` dinâmico nem indireção).
 3. **Índices candidatos a remoção:** `companies_tenant_id_idx` (coberto por `(tenant_id, status)`, `(tenant_id, cnpj)` e `(tenant_id, id)`). Remover só com migration dedicada e revisão.
 4. **Normalização de `Branch.code`** (trim + uppercase) na aplicação; avaliar unique por `(tenant_id, upper(code))` no banco.
@@ -73,6 +73,13 @@ Registro único dos pontos em aberto. Resolver antes de implementar o módulo af
 1. Semântica de resolução: role global vale em todas as filiais? Como combinar global + específica (redundância, precedência) e roles de status `INACTIVE`/`ARCHIVED` ou usuário `DISABLED`/`LOCKED`.
 2. Se trocar `role_id`/`branch_id` de um UserRole dentro do tenant deve ser proibido no banco (hoje aceito; fluxo previsto é delete + create).
 3. Revogar UserBranchAccess com roles escopadas exige remover as roles antes (`RESTRICT`); definir o fluxo administrativo.
+
+## Pendências do M2 (Auth) originadas no M1.12
+1. Geração do refresh token (entropia), algoritmo de hash e comparação; duração de `expires_at`.
+2. Rotação transacional do `refresh_token_hash`; proteção contra replay/reuso (histórico, token family, hash anterior) se necessária.
+3. Revogação: logout, encerramento administrativo, revogação ao desativar/bloquear usuário ou revogar dispositivo.
+4. Limpeza/retenção de sessões expiradas e revogadas; LGPD de `ip_address`/`user_agent` (#9).
+5. Se a CHECK `expires_at > created_at` atrapalhar importações/backfills, revisar.
 
 ## Pendências do M2 (Auth) originadas no M1.5
 1. Algoritmo e parâmetros de hashing (previsão Argon2id) e formato do `password_hash`.

@@ -1,7 +1,7 @@
 # Banco de dados
 
 ## Estado atual
-PostgreSQL via Prisma. Models: `Tenant` (tabela `tenants`, migration `20261002000000_create_tenants`), `Company` (tabela `companies`, migration `20261002010000_create_companies`), `Branch` (tabela `branches`, migration `20261002020000_create_branches`), `User` (tabela `users`, migration `20261002030000_create_users`), `UserBranchAccess` (tabela `user_branch_access`, migration `20261002040000_create_user_branch_access`), `Role` (tabela `roles`, migration `20261002050000_create_roles`), `Permission` (tabela global `permissions`, migration `20261002060000_create_permissions`), `RolePermission` (tabela `role_permissions`, migration `20261002070000_create_role_permissions`), `UserRole` (tabela `user_roles`, migration `20261002080000_create_user_roles`) e `Device` (tabela `devices`, migration `20261002090000_create_devices`). A URL de conexão vem de `DATABASE_URL` (lida em `apps/api/prisma.config.ts`), nunca do código.
+PostgreSQL via Prisma. Models: `Tenant` (tabela `tenants`, migration `20261002000000_create_tenants`), `Company` (tabela `companies`, migration `20261002010000_create_companies`), `Branch` (tabela `branches`, migration `20261002020000_create_branches`), `User` (tabela `users`, migration `20261002030000_create_users`), `UserBranchAccess` (tabela `user_branch_access`, migration `20261002040000_create_user_branch_access`), `Role` (tabela `roles`, migration `20261002050000_create_roles`), `Permission` (tabela global `permissions`, migration `20261002060000_create_permissions`), `RolePermission` (tabela `role_permissions`, migration `20261002070000_create_role_permissions`), `UserRole` (tabela `user_roles`, migration `20261002080000_create_user_roles`), `Device` (tabela `devices`, migration `20261002090000_create_devices`) e `Session` (tabela `sessions`, migration `20261002100000_create_sessions`). A URL de conexão vem de `DATABASE_URL` (lida em `apps/api/prisma.config.ts`), nunca do código.
 
 ## Tenant
 Raiz do multi-tenancy; por isso **não** possui `tenant_id`.
@@ -210,8 +210,32 @@ Terminal/dispositivo conhecido pelo ERP (PDV, tablet, terminal administrativo, d
 - **Filial opcional:** a FK composta é `MATCH SIMPLE`, verificada quando `branch_id` está preenchido (filial existe e é do mesmo tenant) e ignorada quando é `NULL`. Sem filial sentinela.
 - **`device_key` não é segredo:** é só um identificador técnico, sem geração automática. Não guarda token, senha, API key ou certificado. Segredos de dispositivo, se necessários, virão em módulo próprio e nunca em texto puro; a tabela não tem nenhuma coluna desse tipo (teste de catálogo específico + auditoria global de credenciais).
 - **`EDGE` é só um tipo estrutural** nesta etapa; o Edge Server não está implementado ([offline-edge.md](offline-edge.md)).
-- Índices: unique `(tenant_id, device_key)`, `(tenant_id, status)` e `(tenant_id, branch_id)` (listagem por filial e lookup da FK para `branches`; não coberto pelos outros dois).
+- Índices: unique `(tenant_id, device_key)`, `(tenant_id, status)`, `(tenant_id, branch_id)` (listagem por filial e lookup da FK para `branches`; não coberto pelos outros dois) e unique `(tenant_id, id)` (alvo da FK composta de Session, criada no M1.12).
 - Sem soft delete: o fluxo normal usa `INACTIVE`/`REVOKED`. Branch ou Tenant com Device não podem ser apagados; Branch com Device também não pode mudar de tenant (`ON UPDATE RESTRICT`).
+
+## Session
+Registro persistente de sessão, base para o módulo Auth (M2): sessões revogáveis, refresh tokens rotativos, encerramento administrativo. **Pertence a User e Tenant**; o Device é opcional. **Nada de login, JWT, geração/hash/rotação de token, logout, cookies ou guards nesta etapa.**
+
+| Coluna | Tipo PostgreSQL | Nulo | Observação |
+|---|---|---|---|
+| `id` | `uuid` (PK) | não | UUIDv7 gerado pelo Prisma Client |
+| `tenant_id` | `uuid` | não | FK `tenants.id` (`RESTRICT`) |
+| `user_id` | `uuid` | não | FK composta `(tenant_id, user_id)` → `users(tenant_id, id)` (`RESTRICT`) |
+| `device_id` | `uuid` | **sim** | sessão com ou sem dispositivo conhecido; FK composta `(tenant_id, device_id)` → `devices(tenant_id, id)` (`RESTRICT`, `MATCH SIMPLE`: verificada só quando preenchido, sempre do mesmo tenant) |
+| `refresh_token_hash` | `text` | não | **somente o hash** do refresh token atual; `UNIQUE` **global**; CHECK `btrim(refresh_token_hash) <> ''` |
+| `ip_address` | `inet` | sim | tipo nativo do PostgreSQL (`String @db.Inet` no Prisma 7.10, sem `Unsupported`); o banco rejeita IP inválido |
+| `user_agent` | `text` | sim | só metadado de contexto, nunca identificador de segurança; sem índice |
+| `expires_at` | `timestamptz(3)` | não | **sem default**: quem cria a sessão informa a expiração; CHECK `expires_at > created_at` |
+| `revoked_at` | `timestamptz(3)` | sim | `NULL` = não revogada |
+| `created_at` | `timestamptz(3)` | não | default `CURRENT_TIMESTAMP` |
+
+- **Estado derivado**, sem enum de status, `is_revoked` ou `updated_at`: ativa = `revoked_at IS NULL AND expires_at > now()`; revogada = `revoked_at IS NOT NULL`; expirada = `expires_at <= now()`. Revogação pode ocorrer antes ou depois da expiração (sem constraint entre as duas).
+- **`refresh_token_hash` é globalmente único** (sem `tenant_id`): dois registros nunca compartilham token, a autenticação futura localiza a sessão direto pelo hash e um token rotacionado não identifica duas sessões. O token será aleatório o bastante (M2) para não depender de escopo por tenant.
+- **Nunca persistir refresh token puro nem access token.** Não existem colunas `refresh_token`, `token` ou `access_token`; a auditoria de credenciais as rejeita.
+- **CHECK `expires_at > created_at`**: compara valores da própria linha (com o default, `created_at` é o início da transação), então não depende de ordem de avaliação. Fixtures de sessões já expiradas precisam informar também um `created_at` anterior.
+- Índices: unique `(refresh_token_hash)`, `(tenant_id, user_id)` (sessões do usuário e FK para `users`) e `(tenant_id, device_id)` (sessões do dispositivo e FK para `devices`). Sem índice em `expires_at` por enquanto.
+- **Rotação (M2):** a sessão guarda apenas o hash do refresh token válido; na rotação o hash será substituído transacionalmente. Histórico de tokens, token family, hash anterior ou detecção de reuso/replay **não** foram antecipados.
+- **Remoção com `RESTRICT`:** User, Device e Tenant com sessão não são apagados; User ou Device com sessão também não mudam de tenant. Retenção/LGPD das sessões históricas ainda será definida.
 
 ## Integridade organizacional (M1.4)
 Regras: relações cross-tenant devem ser **bloqueadas no banco** sempre que possível, não só na aplicação; nenhuma FK organizacional usa `CASCADE`, `SET NULL` ou `SET DEFAULT` (apenas `RESTRICT`).
@@ -241,13 +265,16 @@ Depois de criado, um registro pertencente a um tenant **não** muda de tenant (C
 | Device com filial: só `tenant_id`, ou `branch_id` para filial de outro tenant | bloqueada | FK composta `devices_tenant_id_branch_id_fkey` |
 | Device de nível do tenant (`branch_id NULL`): `tenant_id` | **aceita** (lacuna) | — |
 | Device: `tenant_id` + `branch_id` juntos, consistentes | **aceita** (lacuna) | — |
+| Session: só `tenant_id`, ou `user_id`/`device_id` de outro tenant | bloqueada | FKs compostas de `sessions` |
+| User ou Device **com** sessão: `tenant_id` | bloqueada | FKs compostas de `sessions`, `ON UPDATE RESTRICT` |
+| Session: `tenant_id` + `user_id` (+ `device_id`) juntos, consistentes | **aceita** (lacuna) | — |
 | Role: `tenant_id` para tenant inexistente | bloqueada | `roles_tenant_id_fkey` |
 | User: `tenant_id` para tenant inexistente | bloqueada | `users_tenant_id_fkey` |
 
 As lacunas não criam relação cruzada, mas violam a imutabilidade. CHECK não enxerga o valor anterior e FK não impede uma mudança consistente; a proteção robusta é um trigger `BEFORE UPDATE OF tenant_id ... WHEN (OLD.tenant_id IS DISTINCT FROM NEW.tenant_id)` que lança erro, com uma função compartilhada por todas as tabelas de tenant. Foi prototipado em Company/Branch (bloqueia as lacunas e não afeta updates no mesmo tenant), mas por ser um trigger genérico ficou para o **M1.14**. Os testes `GAP (M1.14)` em `org-integrity.int.test.ts` fixam o comportamento atual e devem ser invertidos quando a proteção entrar. Até lá, a camada de aplicação não deve expor alteração de `tenant_id`.
 
 ### Auditoria automatizada do catálogo
-`org-integrity.int.test.ts` (com `test/integration/table-audit.ts`) classifica **toda** tabela de `public` em: raiz (`tenants`), ferramenta do Prisma (`_prisma_migrations`), **global explicitamente declarada** (`GLOBAL_TABLES`, hoje só `permissions`) ou tabela de tenant (todo o resto). É fail-closed: uma tabela nova sem `tenant_id` só passa se for adicionada à lista de globais, decisão explícita e revisada; tabelas globais não podem ter `tenant_id` nem FK para `tenants`. Testes-sonda criam tabelas inválidas numa transação desfeita e provam que a auditoria as reporta. Falha também se: alguma tabela de tenant não tiver `tenant_id uuid NOT NULL`; faltar a FK direta `tenant_id → tenants(id)`; alguma FK usar `CASCADE`/`SET NULL`/`SET DEFAULT`; uma FK violar a regra por classificação do alvo (abaixo); o conjunto de FKs mudar; ou existir coluna textual com nome de credencial (`password`, `pwd`, `senha`, `secret`, `pin`, `credential`) além de `users.password_hash`. Tabelas novas entram na auditoria automaticamente.
+`org-integrity.int.test.ts` (com `test/integration/table-audit.ts`) classifica **toda** tabela de `public` em: raiz (`tenants`), ferramenta do Prisma (`_prisma_migrations`), **global explicitamente declarada** (`GLOBAL_TABLES`, hoje só `permissions`) ou tabela de tenant (todo o resto). É fail-closed: uma tabela nova sem `tenant_id` só passa se for adicionada à lista de globais, decisão explícita e revisada; tabelas globais não podem ter `tenant_id` nem FK para `tenants`. Testes-sonda criam tabelas inválidas numa transação desfeita e provam que a auditoria as reporta. Falha também se: alguma tabela de tenant não tiver `tenant_id uuid NOT NULL`; faltar a FK direta `tenant_id → tenants(id)`; alguma FK usar `CASCADE`/`SET NULL`/`SET DEFAULT`; uma FK violar a regra por classificação do alvo (abaixo); o conjunto de FKs mudar; ou existir coluna textual com nome de credencial (`password`, `pwd`, `senha`, `secret`, `pin`, `credential`, `token`, `api_key`, `private_key`) fora da allowlist explícita de hashes `HASHED_CREDENTIAL_COLUMNS` (`users.password_hash`, `sessions.refresh_token_hash`). A allowlist é por `tabela.coluna`: `refresh_token_hash` em outra tabela também é reportado; flags como `must_change_password` não contam (só colunas textuais). Tabelas novas entram na auditoria automaticamente.
 
 **FKs são julgadas pela classificação das tabelas, não pelas colunas atuais** (`foreignKeyViolations`):
 - tenant → `tenants`: exatamente `(tenant_id) → tenants(id)`;
@@ -255,7 +282,7 @@ As lacunas não criam relação cruzada, mas violam a imutabilidade. CHECK não 
 - tenant → **global declarada**: FK simples permitida (ex.: `role_permissions.permission_id → permissions.id`);
 - global/raiz/ferramenta → tenant ou raiz: proibido; qualquer FK → `_prisma_migrations`: proibido.
 
-Não há exceção genérica: uma FK simples só é aceita se o alvo estiver em `GLOBAL_TABLES`. Sondas provam que FK simples tenant → tenant é rejeitada, tenant → global declarada é aceita, a mesma FK para uma tabela não declarada é rejeitada e uma tabela global não pode apontar para dado de tenant. Toda FK composta precisa ter `tenant_id` `NOT NULL` (com `MATCH SIMPLE`, um `tenant_id` nulo desligaria a verificação); as únicas FKs compostas com coluna anulável são os escopos opcionais de filial (`branch_id`) de `user_roles` e `devices`, declarados explicitamente no teste.
+Não há exceção genérica: uma FK simples só é aceita se o alvo estiver em `GLOBAL_TABLES`. Sondas provam que FK simples tenant → tenant é rejeitada, tenant → global declarada é aceita, a mesma FK para uma tabela não declarada é rejeitada e uma tabela global não pode apontar para dado de tenant. Toda FK composta precisa ter `tenant_id` `NOT NULL` (com `MATCH SIMPLE`, um `tenant_id` nulo desligaria a verificação); as únicas FKs compostas com coluna anulável são os vínculos opcionais declarados explicitamente no teste: `branch_id` de `user_roles` e de `devices`, e `device_id` de `sessions`.
 
 ### Validações que ficam fora do banco
 - **CNPJ completo** (dígitos verificadores; raiz do CNPJ da Branch x Company): responsabilidade futura de `packages/validation`. O banco garante só o formato (14 dígitos) e a unicidade por tenant.
