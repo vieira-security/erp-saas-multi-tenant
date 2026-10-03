@@ -9,12 +9,19 @@ import {
   type PrismaClient,
 } from "../../src/generated/prisma/client.js";
 import { createPrismaClient } from "../../src/database/create-prisma-client.js";
+import {
+  GLOBAL_TABLES,
+  ROOT_TABLE,
+  classifyTable,
+  inRolledBackTransaction,
+  listTables,
+  tenantScopeViolations,
+  tenantScopedTables,
+} from "./table-audit.js";
 
-// Tenant -> Company -> Branch, User, UserBranchAccess and Role structural integrity (M1.4-M1.7).
-// Per-entity behaviour (creation, uniqueness, CHECKs) lives in tenant/company/branch tests.
+// Multi-tenant structural integrity (M1.4-M1.8): tenant tables, explicit global tables, Prisma tooling.
+// Per-entity behaviour (creation, uniqueness, CHECKs) lives in the per-model tests.
 
-const ROOT_TABLE = "tenants";
-const TOOLING_TABLES = ["_prisma_migrations"];
 const CROSS_TENANT_FK = /branches_tenant_id_company_id_fkey/;
 
 describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
@@ -29,15 +36,69 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
   });
 
   describe("catalog audit", () => {
-    async function tenantScopedTables(): Promise<string[]> {
-      const rows = await prisma.$queryRaw<{ name: string }[]>`
-        SELECT table_name AS name FROM information_schema.tables
-        WHERE table_schema = 'public' AND table_type = 'BASE TABLE' ORDER BY table_name`;
-      return rows.map((r) => r.name).filter((t) => t !== ROOT_TABLE && !TOOLING_TABLES.includes(t));
-    }
+    it("classifies every table explicitly (guards against an empty audit)", async () => {
+      const kinds = Object.fromEntries((await listTables(prisma)).map((t) => [t, classifyTable(t)]));
+      expect(kinds).toEqual({
+        _prisma_migrations: "tooling",
+        branches: "tenant",
+        companies: "tenant",
+        permissions: "global",
+        roles: "tenant",
+        tenants: "root",
+        user_branch_access: "tenant",
+        users: "tenant",
+      });
+    });
 
-    it("covers every tenant-scoped table (guards against an empty audit)", async () => {
-      expect(await tenantScopedTables()).toEqual(["branches", "companies", "roles", "user_branch_access", "users"]);
+    it("declares permissions as the only global table", () => {
+      expect(GLOBAL_TABLES).toEqual(["permissions"]);
+    });
+
+    it("reports no tenant-scope violation in the migrated schema", async () => {
+      expect(await tenantScopeViolations(prisma)).toEqual([]);
+    });
+
+    it("fails closed: an undeclared table without tenant_id is reported", async () => {
+      const violations = await inRolledBackTransaction(prisma, async (tx) => {
+        await tx.$executeRawUnsafe(`CREATE TABLE "audit_probe_global" ("id" uuid PRIMARY KEY, "code" text NOT NULL)`);
+        return tenantScopeViolations(tx);
+      });
+      expect(violations).toEqual([
+        "audit_probe_global: missing tenant_id (declare it as global if intended)",
+        "audit_probe_global: missing FK tenant_id -> tenants(id)",
+      ]);
+    });
+
+    it("fails closed: a tenant table with nullable tenant_id and no tenant FK is reported", async () => {
+      const violations = await inRolledBackTransaction(prisma, async (tx) => {
+        await tx.$executeRawUnsafe(`CREATE TABLE "audit_probe_tenant" ("id" uuid PRIMARY KEY, "tenant_id" uuid)`);
+        return tenantScopeViolations(tx);
+      });
+      expect(violations).toEqual([
+        "audit_probe_tenant: tenant_id must be uuid NOT NULL",
+        "audit_probe_tenant: missing FK tenant_id -> tenants(id)",
+      ]);
+    });
+
+    it("rolls the probes back (no probe table left behind)", async () => {
+      expect((await listTables(prisma)).filter((t) => t.startsWith("audit_probe"))).toEqual([]);
+    });
+
+    it("covers every tenant-scoped table", async () => {
+      expect(await tenantScopedTables(prisma)).toEqual(["branches", "companies", "roles", "user_branch_access", "users"]);
+    });
+
+    it("keeps global tables free of tenant_id and of FKs to tenants", async () => {
+      const rows = await prisma.$queryRaw<{ table: string; tenantId: boolean; tenantFk: boolean }[]>`
+        SELECT t.relname AS "table",
+               EXISTS (SELECT 1 FROM pg_attribute a WHERE a.attrelid = t.oid AND a.attname = 'tenant_id'
+                       AND NOT a.attisdropped) AS "tenantId",
+               EXISTS (SELECT 1 FROM pg_constraint con WHERE con.conrelid = t.oid AND con.contype = 'f'
+                       AND con.confrelid = 'public.tenants'::regclass) AS "tenantFk"
+        FROM pg_class t JOIN pg_namespace n ON n.oid = t.relnamespace
+        WHERE n.nspname = 'public' AND t.relkind = 'r' AND t.relname = ANY(${[...GLOBAL_TABLES]}::text[])
+        ORDER BY t.relname`;
+      expect(rows).toEqual(GLOBAL_TABLES.map((table) => ({ table, tenantId: false, tenantFk: false })));
     });
 
     it("keeps tenants as the root, without tenant_id", async () => {
@@ -55,7 +116,7 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
           ON c.table_schema = t.table_schema AND c.table_name = t.table_name AND c.column_name = 'tenant_id'
         WHERE t.table_schema = 'public' AND t.table_type = 'BASE TABLE'
         ORDER BY t.table_name`;
-      const scoped = new Set(await tenantScopedTables());
+      const scoped = new Set(await tenantScopedTables(prisma));
 
       for (const row of rows.filter((r) => scoped.has(r.table))) {
         expect(row, row.table).toEqual({ table: row.table, type: "uuid", nullable: "NO" });
@@ -71,7 +132,7 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
         WHERE n.nspname = 'public' AND con.contype = 'f' AND con.confrelid = 'public.tenants'::regclass
           AND pg_get_constraintdef(con.oid) LIKE 'FOREIGN KEY (tenant_id) REFERENCES tenants(id)%'
         ORDER BY cl.relname`;
-      expect(rows.map((r) => r.table)).toEqual(await tenantScopedTables());
+      expect(rows.map((r) => r.table)).toEqual(await tenantScopedTables(prisma));
     });
 
     it("has exactly the expected FKs, including the composite tenant-carrying FKs", async () => {
