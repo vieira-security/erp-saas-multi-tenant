@@ -44,6 +44,7 @@ model Tenant {
   userRoles       UserRole[]
   devices         Device[]
   sessions        Session[]
+  auditLogs       AuditLog[]
 
   @@map("tenants")
 }
@@ -101,6 +102,7 @@ model Branch {
   company      Company            @relation(fields: [tenantId, companyId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
   userAccesses UserBranchAccess[]
   devices      Device[]
+  auditLogs    AuditLog[]
 
   @@unique([tenantId, code])
   // NULLS DISTINCT (padrão do PostgreSQL): várias branches sem CNPJ são permitidas.
@@ -141,6 +143,7 @@ model User {
   branchAccesses      UserBranchAccess[]
   roles               UserRole[]
   sessions            Session[]
+  auditLogs           AuditLog[]
 
   @@unique([tenantId, employeeNumber])
   // Alvo da FK composta de UserBranchAccess.
@@ -298,6 +301,7 @@ model Device {
   // FK composta MATCH SIMPLE: verificada só quando branch_id não é NULL; filial sempre do mesmo tenant.
   branch     Branch?      @relation(fields: [tenantId, branchId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
   sessions   Session[]
+  auditLogs  AuditLog[]
 
   @@unique([tenantId, deviceKey])
   // Alvo da FK composta de Session (id já é PK; não cria regra funcional nova).
@@ -333,4 +337,38 @@ model Session {
   // Sessões de um dispositivo e lookup da FK para devices.
   @@index([tenantId, deviceId])
   @@map("sessions")
+}
+
+// Trilha de auditoria append-only do tenant: só INSERT no fluxo normal (sem updated_at, status ou soft delete).
+// Ator e contexto opcionais: user_id NULL = evento sem usuário (worker, rotina, sistema, só dispositivo);
+// branch_id/device_id NULL = sem filial/dispositivo. FKs compostas MATCH SIMPLE: verificadas só quando preenchidas.
+// resource_id é referência lógica/polimórfica a qualquer recurso: SEM FK, de propósito (o log sobrevive ao recurso).
+// metadata NUNCA guarda credenciais (senha, hash, tokens, segredos, chaves, PIN, cartão completo).
+// CHECKs (fora do PSL, definidos na migration): formato de action e de resource_type.
+model AuditLog {
+  id           String   @id @default(uuid(7)) @db.Uuid
+  tenantId     String   @map("tenant_id") @db.Uuid
+  userId       String?  @map("user_id") @db.Uuid
+  branchId     String?  @map("branch_id") @db.Uuid
+  deviceId     String?  @map("device_id") @db.Uuid
+  action       String
+  resourceType String   @map("resource_type")
+  resourceId   String?  @map("resource_id") @db.Uuid
+  metadata     Json?    @db.JsonB
+  ipAddress    String?  @map("ip_address") @db.Inet
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  tenant       Tenant   @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  user         User?    @relation(fields: [tenantId, userId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  branch       Branch?  @relation(fields: [tenantId, branchId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  device       Device?  @relation(fields: [tenantId, deviceId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+
+  // Linha do tempo do tenant.
+  @@index([tenantId, createdAt])
+  // Ações de um usuário, de uma filial e de um dispositivo; também atendem as FKs compostas.
+  @@index([tenantId, userId, createdAt])
+  @@index([tenantId, branchId, createdAt])
+  @@index([tenantId, deviceId, createdAt])
+  // Histórico de um recurso (referência lógica, sem FK).
+  @@index([tenantId, resourceType, resourceId, createdAt])
+  @@map("audit_logs")
 }
