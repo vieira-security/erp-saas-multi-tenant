@@ -1,7 +1,7 @@
 # Banco de dados
 
 ## Estado atual
-PostgreSQL via Prisma. Models: `Tenant` (tabela `tenants`, migration `20261002000000_create_tenants`), `Company` (tabela `companies`, migration `20261002010000_create_companies`), `Branch` (tabela `branches`, migration `20261002020000_create_branches`), `User` (tabela `users`, migration `20261002030000_create_users`), `UserBranchAccess` (tabela `user_branch_access`, migration `20261002040000_create_user_branch_access`), `Role` (tabela `roles`, migration `20261002050000_create_roles`), `Permission` (tabela global `permissions`, migration `20261002060000_create_permissions`) e `RolePermission` (tabela `role_permissions`, migration `20261002070000_create_role_permissions`). A URL de conexão vem de `DATABASE_URL` (lida em `apps/api/prisma.config.ts`), nunca do código.
+PostgreSQL via Prisma. Models: `Tenant` (tabela `tenants`, migration `20261002000000_create_tenants`), `Company` (tabela `companies`, migration `20261002010000_create_companies`), `Branch` (tabela `branches`, migration `20261002020000_create_branches`), `User` (tabela `users`, migration `20261002030000_create_users`), `UserBranchAccess` (tabela `user_branch_access`, migration `20261002040000_create_user_branch_access`), `Role` (tabela `roles`, migration `20261002050000_create_roles`), `Permission` (tabela global `permissions`, migration `20261002060000_create_permissions`), `RolePermission` (tabela `role_permissions`, migration `20261002070000_create_role_permissions`) e `UserRole` (tabela `user_roles`, migration `20261002080000_create_user_roles`). A URL de conexão vem de `DATABASE_URL` (lida em `apps/api/prisma.config.ts`), nunca do código.
 
 ## Tenant
 Raiz do multi-tenancy; por isso **não** possui `tenant_id`.
@@ -106,6 +106,7 @@ Define quais filiais um usuário pode acessar: **User 0..N Branches, sempre no m
 - `UNIQUE (tenant_id, user_id, branch_id)`: o mesmo acesso não é concedido duas vezes; também atende consultas por usuário e a FK composta de User. Índice `(tenant_id, branch_id)` para listar usuários de uma filial (e atender a FK composta de Branch).
 - O banco rejeita, por Prisma ou SQL: User de outro tenant, Branch de outro tenant, User e Branch de tenants diferentes, e alterações posteriores de `user_id`, `branch_id` ou só `tenant_id` que criem combinação cross-tenant.
 - User ou Branch com acesso não pode ser apagado (`RESTRICT`), coerente com a política de desativação; também não pode mudar de tenant (`ON UPDATE RESTRICT` nas FKs compostas).
+- Um acesso usado por uma `UserRole` escopada àquela filial não pode ser removido antes dela (M1.10).
 - Sem regra de "filial padrão", convite ou expiração.
 
 ## Role
@@ -168,6 +169,28 @@ Permissões concedidas a uma Role: **Role N ↔ N Permission**. **Permission é 
 - **Remoção com `RESTRICT`:** Role com permissões não pode ser apagada nem mudar de tenant; **Permission vinculada não pode ser apagada** (uma permissão que sair do catálogo exigirá remover os vínculos explicitamente, política ainda não definida); Tenant com RolePermission não pode ser apagado.
 - **Sem provisionamento:** a matriz de permissões das roles padrão (OWNER, MANAGER, ATTENDANT, KITCHEN) **ainda será decidida**; nenhuma permissão é atribuída automaticamente.
 
+## UserRole
+Role atribuída a um User, **global ou por filial**. Relações Tenant/User/Role **1 → N** UserRole; UserBranchAccess **1 → N** UserRole escopadas.
+
+| Coluna | Tipo PostgreSQL | Nulo | Observação |
+|---|---|---|---|
+| `id` | `uuid` (PK) | não | UUIDv7 gerado pelo Prisma Client |
+| `tenant_id` | `uuid` | não | FK `tenants.id` (`RESTRICT`) |
+| `user_id` | `uuid` | não | FK composta `(tenant_id, user_id)` → `users(tenant_id, id)` (`RESTRICT`) |
+| `role_id` | `uuid` | não | FK composta `(tenant_id, role_id)` → `roles(tenant_id, id)` (`RESTRICT`) |
+| `branch_id` | `uuid` | **sim** | `NULL` = role válida em **todo o tenant**; preenchido = válida **só naquela filial**. FK composta `(tenant_id, user_id, branch_id)` → `user_branch_access(tenant_id, user_id, branch_id)` (`RESTRICT`) |
+| `created_at` | `timestamptz(3)` | não | default `CURRENT_TIMESTAMP` |
+
+- **Escopo do tenant:** `branch_id IS NULL` tem significado explícito; sem filial fictícia nem UUID sentinela, e não exige UserBranchAccess.
+- **Escopo de filial exige UserBranchAccess**, garantido pelo banco: a FK para `user_branch_access` é `MATCH SIMPLE` (padrão do PostgreSQL), então é verificada quando `branch_id` está preenchido e ignorada quando é `NULL`. Como `tenant_id` e `user_id` são `NOT NULL`, só `branch_id` pode desligar essa FK (a auditoria verifica). Ela garante ao mesmo tempo que a filial existe, é do mesmo tenant e que o usuário tem acesso a ela, por isso **não há FK direta para `branches`** (seria redundante).
+- **Unicidade por índices únicos parciais** (criados à mão na migration; o Prisma 7.10 não representa índices parciais e o `migrate diff` os ignora, então só os testes de catálogo os protegem):
+  - `user_roles_tenant_scope_key (tenant_id, user_id, role_id) WHERE branch_id IS NULL`: impede a mesma role global duas vezes. Uma unique comum `(tenant_id, user_id, role_id, branch_id)` não bastaria, porque o PostgreSQL considera NULLs distintos;
+  - `user_roles_branch_scope_key (tenant_id, user_id, role_id, branch_id) WHERE branch_id IS NOT NULL`: a mesma role uma vez por filial.
+- **Global e específica podem coexistir** (ex.: MANAGER global e MANAGER na filial A). O banco não bloqueia; a autorização futura poderá tratar a global como abrangente e a específica como redundante.
+- Índices não parciais: `(tenant_id, user_id, branch_id)` para listar as roles de um usuário (todas ou numa filial, `branch_id = X OR branch_id IS NULL`) e atender as FKs para `users` e `user_branch_access`; `(tenant_id, role_id)` para listar usuários de uma role e atender a FK para `roles`. Os índices parciais não servem a consultas sem filtro de escopo, por isso não substituem esses dois. Não há índice `(tenant_id, branch_id)` (listar atribuições por filial não é necessário ainda).
+- **Remoção com `RESTRICT`:** User com UserRole, Role atribuída e Tenant com UserRole não podem ser apagados; o UserBranchAccess usado por uma role escopada só pode ser removido depois dela. Role global não prende nenhum acesso.
+- **Para alterar uma atribuição, a aplicação deve apagar o vínculo e criar outro**, em vez de transformar o existente (trocar `role_id`/`branch_id` dentro do tenant é aceito pelo banco, mas não é o fluxo previsto).
+
 ## Integridade organizacional (M1.4)
 Regras: relações cross-tenant devem ser **bloqueadas no banco** sempre que possível, não só na aplicação; nenhuma FK organizacional usa `CASCADE`, `SET NULL` ou `SET DEFAULT` (apenas `RESTRICT`).
 
@@ -190,6 +213,9 @@ Depois de criado, um registro pertencente a um tenant **não** muda de tenant (C
 | Role **com** permissões: `tenant_id` | bloqueada | FK composta de `role_permissions`, `ON UPDATE RESTRICT` |
 | RolePermission: só `tenant_id` ou só `role_id` para outro tenant | bloqueada | FK composta |
 | RolePermission: `tenant_id` + `role_id` juntos, consistentes | **aceita** (lacuna) | — |
+| UserRole: só `tenant_id`, `user_id`, `role_id` ou `branch_id` para outro tenant (ou filial sem acesso) | bloqueada | FKs compostas |
+| User ou Role **com** UserRole: `tenant_id` | bloqueada | FKs compostas de `user_roles`, `ON UPDATE RESTRICT` |
+| UserRole: `tenant_id` + `user_id` + `role_id` (+ `branch_id`) juntos, consistentes | **aceita** (lacuna) | — |
 | Role: `tenant_id` para tenant inexistente | bloqueada | `roles_tenant_id_fkey` |
 | User: `tenant_id` para tenant inexistente | bloqueada | `users_tenant_id_fkey` |
 
@@ -204,15 +230,15 @@ As lacunas não criam relação cruzada, mas violam a imutabilidade. CHECK não 
 - tenant → **global declarada**: FK simples permitida (ex.: `role_permissions.permission_id → permissions.id`);
 - global/raiz/ferramenta → tenant ou raiz: proibido; qualquer FK → `_prisma_migrations`: proibido.
 
-Não há exceção genérica: uma FK simples só é aceita se o alvo estiver em `GLOBAL_TABLES`. Sondas provam que FK simples tenant → tenant é rejeitada, tenant → global declarada é aceita, a mesma FK para uma tabela não declarada é rejeitada e uma tabela global não pode apontar para dado de tenant.
+Não há exceção genérica: uma FK simples só é aceita se o alvo estiver em `GLOBAL_TABLES`. Sondas provam que FK simples tenant → tenant é rejeitada, tenant → global declarada é aceita, a mesma FK para uma tabela não declarada é rejeitada e uma tabela global não pode apontar para dado de tenant. Toda FK composta precisa ter `tenant_id` `NOT NULL` (com `MATCH SIMPLE`, um `tenant_id` nulo desligaria a verificação); a única FK composta com coluna anulável é o escopo opcional de filial de `user_roles` (`branch_id`).
 
 ### Validações que ficam fora do banco
 - **CNPJ completo** (dígitos verificadores; raiz do CNPJ da Branch x Company): responsabilidade futura de `packages/validation`. O banco garante só o formato (14 dígitos) e a unicidade por tenant.
 - **Timezone IANA** (Company e Branch): validado na camada de aplicação; o banco guarda texto obrigatório, sem lista própria.
 - **Branch.code**: normalização trim + uppercase na aplicação.
 
-## CHECK constraints
-O schema Prisma não representa CHECKs: eles são escritos à mão na migration. Consequências:
+## CHECK constraints e índices parciais
+O schema Prisma não representa CHECKs nem índices únicos parciais (`user_roles`): eles são escritos à mão na migration. Consequências:
 - `prisma migrate diff`/`migrate dev` **não** os geram nem os removem, e o teste de drift **não** os detecta; por isso o teste de migration verifica cada CHECK explicitamente.
 - Ao recriar ou alterar a tabela em migration futura, os CHECKs precisam ser mantidos manualmente.
 - O schema registra em comentário quais CHECKs existem em cada model.
