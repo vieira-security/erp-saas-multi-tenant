@@ -1,7 +1,7 @@
 # Banco de dados
 
 ## Estado atual
-PostgreSQL via Prisma. Models: `Tenant` (tabela `tenants`, migration `20261002000000_create_tenants`), `Company` (tabela `companies`, migration `20261002010000_create_companies`), `Branch` (tabela `branches`, migration `20261002020000_create_branches`), `User` (tabela `users`, migration `20261002030000_create_users`), `UserBranchAccess` (tabela `user_branch_access`, migration `20261002040000_create_user_branch_access`), `Role` (tabela `roles`, migration `20261002050000_create_roles`) e `Permission` (tabela global `permissions`, migration `20261002060000_create_permissions`). A URL de conexão vem de `DATABASE_URL` (lida em `apps/api/prisma.config.ts`), nunca do código.
+PostgreSQL via Prisma. Models: `Tenant` (tabela `tenants`, migration `20261002000000_create_tenants`), `Company` (tabela `companies`, migration `20261002010000_create_companies`), `Branch` (tabela `branches`, migration `20261002020000_create_branches`), `User` (tabela `users`, migration `20261002030000_create_users`), `UserBranchAccess` (tabela `user_branch_access`, migration `20261002040000_create_user_branch_access`), `Role` (tabela `roles`, migration `20261002050000_create_roles`), `Permission` (tabela global `permissions`, migration `20261002060000_create_permissions`) e `RolePermission` (tabela `role_permissions`, migration `20261002070000_create_role_permissions`). A URL de conexão vem de `DATABASE_URL` (lida em `apps/api/prisma.config.ts`), nunca do código.
 
 ## Tenant
 Raiz do multi-tenancy; por isso **não** possui `tenant_id`.
@@ -123,14 +123,14 @@ Catálogo de papéis do RBAC, **pertencente ao Tenant**. Sozinha, uma Role **nã
 | `created_at` | `timestamptz(3)` | não | default `CURRENT_TIMESTAMP` |
 | `updated_at` | `timestamptz(3)` | não | mantido pelo Prisma (`@updatedAt`) |
 
-- Índices: unique `(tenant_id, code)` e `(tenant_id, status)`.
+- Índices: unique `(tenant_id, code)`, `(tenant_id, status)` e unique `(tenant_id, id)` (alvo da FK composta de RolePermission, criada no M1.9; não cria regra funcional, `id` já é PK).
 - **Códigos padrão previstos** (templates, `is_system = true`): `OWNER` (Proprietário), `MANAGER` (Gerente), `ATTENDANT` (Atendente), `KITCHEN` (Cozinha). Serão criados **no provisionamento do Tenant** (futuro); **não há seed global**. O banco não reserva esses códigos: hoje uma role customizada poderia usar `OWNER` se o código ainda não existir no tenant.
 - **Roles customizadas** são suportadas (`is_system = false`, código livre e único por tenant). A aplicação poderá normalizar `code` (trim + uppercase) no futuro.
 - Sem regras de edição/exclusão de role de sistema ainda. Sem exclusão física como operação normal: roles são desativadas ou arquivadas; Tenant com Role não pode ser apagado (`RESTRICT`).
 - Sem escopo por filial nesta etapa.
 
 ## Permission (global)
-Catálogo técnico **global** de capacidades do sistema; **não pertence a um Tenant** (Role é por Tenant). Controlado pelo sistema: sem CRUD por cliente, sem permissões customizadas. A ligação Role ↔ Permission (RolePermission) entra no próximo módulo; hoje nenhuma permissão é concedida a ninguém.
+Catálogo técnico **global** de capacidades do sistema; **não pertence a um Tenant** (Role é por Tenant). Controlado pelo sistema: sem CRUD por cliente, sem permissões customizadas. A ligação Role ↔ Permission é feita por `RolePermission` (abaixo).
 
 | Coluna | Tipo PostgreSQL | Nulo | Observação |
 |---|---|---|---|
@@ -150,6 +150,24 @@ Catálogo técnico **global** de capacidades do sistema; **não pertence a um Te
 - `npm run db:seed` (ou `prisma db seed`): compila com `nest build` e executa `dist/database/seed.js` contra `DATABASE_URL`. Sem `tsx`.
 - **Idempotente:** `upsert` por `code`; cria o que falta, realinha `module`/`description` ao catálogo e **nunca** troca o `id` (UUIDv7 gerado na primeira inserção) nem remove permissões que saíram do catálogo.
 
+## RolePermission
+Permissões concedidas a uma Role: **Role N ↔ N Permission**. **Permission é global, Role é por Tenant e RolePermission é por Tenant.** Não liga Role a User (UserRole é outro módulo). Relações Tenant/Role/Permission **1 → N** RolePermission.
+
+| Coluna | Tipo PostgreSQL | Nulo | Observação |
+|---|---|---|---|
+| `id` | `uuid` (PK) | não | UUIDv7 gerado pelo Prisma Client |
+| `tenant_id` | `uuid` | não | FK `tenants.id` (`RESTRICT`) |
+| `role_id` | `uuid` | não | **FK composta** `(tenant_id, role_id)` → `roles(tenant_id, id)` (`RESTRICT`): a Role é sempre do mesmo tenant |
+| `permission_id` | `uuid` | não | **FK simples** → `permissions(id)` (`RESTRICT`): válida porque Permission é global e compartilhada por todos os tenants |
+| `created_at` | `timestamptz(3)` | não | default `CURRENT_TIMESTAMP` |
+
+- Sem `updated_at` e sem `permission_code` duplicado: a identidade da permissão é a linha em `permissions`.
+- `UNIQUE (tenant_id, role_id, permission_id)`: a mesma permissão não é atribuída duas vezes à mesma role; também lista as permissões de uma role e atende a FK composta.
+- Índice `(permission_id)`: consulta inversa (quais roles, em qualquer tenant, usam a permissão; manutenção do catálogo) e checagem do `RESTRICT` ao apagar uma permissão. Escolhido em vez de `(permission_id, tenant_id)` por simplicidade: consultas por tenant partem da role, já cobertas pela unique.
+- O banco rejeita, por Prisma ou SQL: Role de outro tenant; troca posterior de `role_id` para Role de outro tenant; troca só de `tenant_id`. A mesma Permission pode, naturalmente, estar em roles de vários tenants.
+- **Remoção com `RESTRICT`:** Role com permissões não pode ser apagada nem mudar de tenant; **Permission vinculada não pode ser apagada** (uma permissão que sair do catálogo exigirá remover os vínculos explicitamente, política ainda não definida); Tenant com RolePermission não pode ser apagado.
+- **Sem provisionamento:** a matriz de permissões das roles padrão (OWNER, MANAGER, ATTENDANT, KITCHEN) **ainda será decidida**; nenhuma permissão é atribuída automaticamente.
+
 ## Integridade organizacional (M1.4)
 Regras: relações cross-tenant devem ser **bloqueadas no banco** sempre que possível, não só na aplicação; nenhuma FK organizacional usa `CASCADE`, `SET NULL` ou `SET DEFAULT` (apenas `RESTRICT`).
 
@@ -168,14 +186,25 @@ Depois de criado, um registro pertencente a um tenant **não** muda de tenant (C
 | User ou Branch **com** acessos: `tenant_id` | bloqueada | FKs compostas de `user_branch_access`, `ON UPDATE RESTRICT` |
 | UserBranchAccess: só `tenant_id`, só `user_id` ou só `branch_id` para outro tenant | bloqueada | FKs compostas |
 | UserBranchAccess: `tenant_id` + `user_id` + `branch_id` juntos, consistentes | **aceita** (lacuna) | — |
-| Role: `tenant_id` para outro tenant existente | **aceita** (lacuna) | — |
+| Role **sem** permissões: `tenant_id` para outro tenant existente | **aceita** (lacuna) | — |
+| Role **com** permissões: `tenant_id` | bloqueada | FK composta de `role_permissions`, `ON UPDATE RESTRICT` |
+| RolePermission: só `tenant_id` ou só `role_id` para outro tenant | bloqueada | FK composta |
+| RolePermission: `tenant_id` + `role_id` juntos, consistentes | **aceita** (lacuna) | — |
 | Role: `tenant_id` para tenant inexistente | bloqueada | `roles_tenant_id_fkey` |
 | User: `tenant_id` para tenant inexistente | bloqueada | `users_tenant_id_fkey` |
 
 As lacunas não criam relação cruzada, mas violam a imutabilidade. CHECK não enxerga o valor anterior e FK não impede uma mudança consistente; a proteção robusta é um trigger `BEFORE UPDATE OF tenant_id ... WHEN (OLD.tenant_id IS DISTINCT FROM NEW.tenant_id)` que lança erro, com uma função compartilhada por todas as tabelas de tenant. Foi prototipado em Company/Branch (bloqueia as lacunas e não afeta updates no mesmo tenant), mas por ser um trigger genérico ficou para o **M1.14**. Os testes `GAP (M1.14)` em `org-integrity.int.test.ts` fixam o comportamento atual e devem ser invertidos quando a proteção entrar. Até lá, a camada de aplicação não deve expor alteração de `tenant_id`.
 
 ### Auditoria automatizada do catálogo
-`org-integrity.int.test.ts` (com `test/integration/table-audit.ts`) classifica **toda** tabela de `public` em: raiz (`tenants`), ferramenta do Prisma (`_prisma_migrations`), **global explicitamente declarada** (`GLOBAL_TABLES`, hoje só `permissions`) ou tabela de tenant (todo o resto). É fail-closed: uma tabela nova sem `tenant_id` só passa se for adicionada à lista de globais, decisão explícita e revisada; tabelas globais não podem ter `tenant_id` nem FK para `tenants`. Testes-sonda criam tabelas inválidas numa transação desfeita e provam que a auditoria as reporta. Falha também se: alguma tabela de tenant não tiver `tenant_id uuid NOT NULL`; faltar a FK direta `tenant_id → tenants(id)`; alguma FK usar `CASCADE`/`SET NULL`/`SET DEFAULT`; uma FK entre tabelas de tenant não incluir `tenant_id` dos dois lados; o conjunto de FKs mudar; ou existir coluna textual com nome de credencial (`password`, `pwd`, `senha`, `secret`, `pin`, `credential`) além de `users.password_hash`. Tabelas novas entram na auditoria automaticamente.
+`org-integrity.int.test.ts` (com `test/integration/table-audit.ts`) classifica **toda** tabela de `public` em: raiz (`tenants`), ferramenta do Prisma (`_prisma_migrations`), **global explicitamente declarada** (`GLOBAL_TABLES`, hoje só `permissions`) ou tabela de tenant (todo o resto). É fail-closed: uma tabela nova sem `tenant_id` só passa se for adicionada à lista de globais, decisão explícita e revisada; tabelas globais não podem ter `tenant_id` nem FK para `tenants`. Testes-sonda criam tabelas inválidas numa transação desfeita e provam que a auditoria as reporta. Falha também se: alguma tabela de tenant não tiver `tenant_id uuid NOT NULL`; faltar a FK direta `tenant_id → tenants(id)`; alguma FK usar `CASCADE`/`SET NULL`/`SET DEFAULT`; uma FK violar a regra por classificação do alvo (abaixo); o conjunto de FKs mudar; ou existir coluna textual com nome de credencial (`password`, `pwd`, `senha`, `secret`, `pin`, `credential`) além de `users.password_hash`. Tabelas novas entram na auditoria automaticamente.
+
+**FKs são julgadas pela classificação das tabelas, não pelas colunas atuais** (`foreignKeyViolations`):
+- tenant → `tenants`: exatamente `(tenant_id) → tenants(id)`;
+- tenant → tenant: `tenant_id` nos dois lados (FK composta);
+- tenant → **global declarada**: FK simples permitida (ex.: `role_permissions.permission_id → permissions.id`);
+- global/raiz/ferramenta → tenant ou raiz: proibido; qualquer FK → `_prisma_migrations`: proibido.
+
+Não há exceção genérica: uma FK simples só é aceita se o alvo estiver em `GLOBAL_TABLES`. Sondas provam que FK simples tenant → tenant é rejeitada, tenant → global declarada é aceita, a mesma FK para uma tabela não declarada é rejeitada e uma tabela global não pode apontar para dado de tenant.
 
 ### Validações que ficam fora do banco
 - **CNPJ completo** (dígitos verificadores; raiz do CNPJ da Branch x Company): responsabilidade futura de `packages/validation`. O banco garante só o formato (14 dígitos) e a unicidade por tenant.
