@@ -9,7 +9,7 @@ import {
 } from "../../src/generated/prisma/client.js";
 import { createPrismaClient } from "../../src/database/create-prisma-client.js";
 
-// Tenant -> Company -> Branch (and User) structural integrity (M1.4, M1.5).
+// Tenant -> Company -> Branch, User and UserBranchAccess structural integrity (M1.4-M1.6).
 // Per-entity behaviour (creation, uniqueness, CHECKs) lives in tenant/company/branch tests.
 
 const ROOT_TABLE = "tenants";
@@ -36,7 +36,7 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
     }
 
     it("covers every tenant-scoped table (guards against an empty audit)", async () => {
-      expect(await tenantScopedTables()).toEqual(["branches", "companies", "users"]);
+      expect(await tenantScopedTables()).toEqual(["branches", "companies", "user_branch_access", "users"]);
     });
 
     it("keeps tenants as the root, without tenant_id", async () => {
@@ -73,7 +73,7 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
       expect(rows.map((r) => r.table)).toEqual(await tenantScopedTables());
     });
 
-    it("has exactly the expected organizational FKs, including the composite Branch -> Company FK", async () => {
+    it("has exactly the expected FKs, including the composite tenant-carrying FKs", async () => {
       const rows = await prisma.$queryRaw<{ name: string; definition: string }[]>`
         SELECT con.conname AS name, pg_get_constraintdef(con.oid) AS definition
         FROM pg_constraint con JOIN pg_namespace n ON n.oid = con.connamespace
@@ -91,6 +91,20 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
         {
           name: "companies_tenant_id_fkey",
           definition: "FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+        },
+        {
+          name: "user_branch_access_tenant_id_branch_id_fkey",
+          definition:
+            "FOREIGN KEY (tenant_id, branch_id) REFERENCES branches(tenant_id, id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+        },
+        {
+          name: "user_branch_access_tenant_id_fkey",
+          definition: "FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+        },
+        {
+          name: "user_branch_access_tenant_id_user_id_fkey",
+          definition:
+            "FOREIGN KEY (tenant_id, user_id) REFERENCES users(tenant_id, id) ON UPDATE RESTRICT ON DELETE RESTRICT",
         },
         {
           name: "users_tenant_id_fkey",
@@ -139,7 +153,11 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
           AND EXISTS (SELECT 1 FROM pg_attribute a
                       WHERE a.attrelid = con.confrelid AND a.attname = 'tenant_id' AND NOT a.attisdropped)
         ORDER BY con.conname`;
-      expect(rows).toEqual([{ name: "branches_tenant_id_company_id_fkey", carriesTenant: true }]);
+      expect(rows).toEqual([
+        { name: "branches_tenant_id_company_id_fkey", carriesTenant: true },
+        { name: "user_branch_access_tenant_id_branch_id_fkey", carriesTenant: true },
+        { name: "user_branch_access_tenant_id_user_id_fkey", carriesTenant: true },
+      ]);
     });
   });
 

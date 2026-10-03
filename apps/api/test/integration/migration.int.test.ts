@@ -25,6 +25,7 @@ describe("migrations on a clean PostgreSQL database", () => {
       { name: "20261002010000_create_companies", finished: true, rolledBack: false },
       { name: "20261002020000_create_branches", finished: true, rolledBack: false },
       { name: "20261002030000_create_users", finished: true, rolledBack: false },
+      { name: "20261002040000_create_user_branch_access", finished: true, rolledBack: false },
     ]);
   });
 
@@ -32,7 +33,7 @@ describe("migrations on a clean PostgreSQL database", () => {
     const tables = await prisma.$queryRaw<{ name: string }[]>`
       SELECT table_name AS name FROM information_schema.tables
       WHERE table_schema = 'public' ORDER BY table_name`;
-    expect(tables.map((t) => t.name)).toEqual(["_prisma_migrations", "branches", "companies", "tenants", "users"]);
+    expect(tables.map((t) => t.name)).toEqual(["_prisma_migrations", "branches", "companies", "tenants", "user_branch_access", "users"]);
   });
 
   it("creates the tenant_status enum with exactly the approved values", async () => {
@@ -187,6 +188,7 @@ describe("migrations on a clean PostgreSQL database", () => {
       "CREATE UNIQUE INDEX branches_tenant_id_cnpj_key (tenant_id, cnpj)",
       "CREATE UNIQUE INDEX branches_tenant_id_code_key (tenant_id, code)",
       "CREATE INDEX branches_tenant_id_company_id_idx (tenant_id, company_id)",
+      "CREATE UNIQUE INDEX branches_tenant_id_id_key (tenant_id, id)",
       "CREATE INDEX branches_tenant_id_status_idx (tenant_id, status)",
     ]);
   });
@@ -247,7 +249,57 @@ describe("migrations on a clean PostgreSQL database", () => {
     expect(indexes.map((i) => i.definition.replace(/ ON public\.users USING btree/, ""))).toEqual([
       "CREATE UNIQUE INDEX users_pkey (id)",
       "CREATE UNIQUE INDEX users_tenant_id_employee_number_key (tenant_id, employee_number)",
+      "CREATE UNIQUE INDEX users_tenant_id_id_key (tenant_id, id)",
       "CREATE INDEX users_tenant_id_status_idx (tenant_id, status)",
+    ]);
+  });
+
+  it("defines the user_branch_access columns (no updated_at, no status)", async () => {
+    const columns = await prisma.$queryRaw<{ name: string; type: string; nullable: string }[]>`
+      SELECT column_name AS name, format_type(a.atttypid, a.atttypmod) AS type, c.is_nullable AS nullable
+      FROM information_schema.columns c
+      JOIN pg_attribute a ON a.attrelid = 'public.user_branch_access'::regclass AND a.attname = c.column_name
+      WHERE c.table_schema = 'public' AND c.table_name = 'user_branch_access'
+      ORDER BY c.ordinal_position`;
+    expect(columns).toEqual([
+      { name: "id", type: "uuid", nullable: "NO" },
+      { name: "tenant_id", type: "uuid", nullable: "NO" },
+      { name: "user_id", type: "uuid", nullable: "NO" },
+      { name: "branch_id", type: "uuid", nullable: "NO" },
+      { name: "created_at", type: "timestamp(3) with time zone", nullable: "NO" },
+    ]);
+  });
+
+  it("defines the user_branch_access constraints (PK, tenant FK, composite user/branch FKs)", async () => {
+    const constraints = await prisma.$queryRaw<{ name: string; definition: string }[]>`
+      SELECT conname AS name, pg_get_constraintdef(oid) AS definition
+      FROM pg_constraint WHERE conrelid = 'public.user_branch_access'::regclass ORDER BY conname`;
+    expect(constraints).toEqual([
+      { name: "user_branch_access_pkey", definition: "PRIMARY KEY (id)" },
+      {
+        name: "user_branch_access_tenant_id_branch_id_fkey",
+        definition:
+          "FOREIGN KEY (tenant_id, branch_id) REFERENCES branches(tenant_id, id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+      },
+      {
+        name: "user_branch_access_tenant_id_fkey",
+        definition: "FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+      },
+      {
+        name: "user_branch_access_tenant_id_user_id_fkey",
+        definition: "FOREIGN KEY (tenant_id, user_id) REFERENCES users(tenant_id, id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+      },
+    ]);
+  });
+
+  it("defines only the approved user_branch_access indexes", async () => {
+    const indexes = await prisma.$queryRaw<{ definition: string }[]>`
+      SELECT indexdef AS definition FROM pg_indexes
+      WHERE schemaname = 'public' AND tablename = 'user_branch_access' ORDER BY indexname`;
+    expect(indexes.map((i) => i.definition.replace(/ ON public\.user_branch_access USING btree/, ""))).toEqual([
+      "CREATE UNIQUE INDEX user_branch_access_pkey (id)",
+      "CREATE INDEX user_branch_access_tenant_id_branch_id_idx (tenant_id, branch_id)",
+      "CREATE UNIQUE INDEX user_branch_access_tenant_id_user_id_branch_id_key (tenant_id, user_id, branch_id)",
     ]);
   });
 
