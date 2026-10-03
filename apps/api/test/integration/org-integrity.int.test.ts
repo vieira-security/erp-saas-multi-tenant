@@ -43,6 +43,7 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
       const kinds = Object.fromEntries((await listTables(prisma)).map((t) => [t, classifyTable(t)]));
       expect(kinds).toEqual({
         _prisma_migrations: "tooling",
+        audit_logs: "tenant",
         branches: "tenant",
         companies: "tenant",
         devices: "tenant",
@@ -93,6 +94,7 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
 
     it("covers every tenant-scoped table", async () => {
       expect(await tenantScopedTables(prisma)).toEqual([
+        "audit_logs",
         "branches",
         "companies",
         "devices",
@@ -158,6 +160,22 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
         FROM pg_constraint con JOIN pg_namespace n ON n.oid = con.connamespace
         WHERE n.nspname = 'public' AND con.contype = 'f' ORDER BY con.conname`;
       expect(rows).toEqual([
+        {
+          name: "audit_logs_tenant_id_branch_id_fkey",
+          definition: "FOREIGN KEY (tenant_id, branch_id) REFERENCES branches(tenant_id, id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+        },
+        {
+          name: "audit_logs_tenant_id_device_id_fkey",
+          definition: "FOREIGN KEY (tenant_id, device_id) REFERENCES devices(tenant_id, id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+        },
+        {
+          name: "audit_logs_tenant_id_fkey",
+          definition: "FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+        },
+        {
+          name: "audit_logs_tenant_id_user_id_fkey",
+          definition: "FOREIGN KEY (tenant_id, user_id) REFERENCES users(tenant_id, id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+        },
         {
           name: "branches_tenant_id_company_id_fkey",
           definition:
@@ -308,6 +326,9 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
         WHERE n.nspname = 'public' AND con.contype = 'f' AND con.confrelid <> 'public.tenants'::regclass
         ORDER BY con.conname`;
       expect(rows.map((r) => [r.name, `${classifyTable(r.child)} -> ${classifyTable(r.parent)}`])).toEqual([
+        ["audit_logs_tenant_id_branch_id_fkey", "tenant -> tenant"],
+        ["audit_logs_tenant_id_device_id_fkey", "tenant -> tenant"],
+        ["audit_logs_tenant_id_user_id_fkey", "tenant -> tenant"],
         ["branches_tenant_id_company_id_fkey", "tenant -> tenant"],
         ["devices_tenant_id_branch_id_fkey", "tenant -> tenant"],
         ["role_permissions_permission_id_fkey", "tenant -> global"],
@@ -334,8 +355,11 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
         ORDER BY con.conname`;
 
       for (const row of rows) expect(row.nullableColumns, row.name).not.toContain("tenant_id");
-      // Composite FKs with a nullable column: only the optional branch/device links (MATCH SIMPLE, NULL = none).
+      // Composite FKs with a nullable column: only the optional user/branch/device links (MATCH SIMPLE, NULL = none).
       expect(rows.filter((r) => r.nullableColumns.length > 0)).toEqual([
+        { name: "audit_logs_tenant_id_branch_id_fkey", match: "s", nullableColumns: ["branch_id"] },
+        { name: "audit_logs_tenant_id_device_id_fkey", match: "s", nullableColumns: ["device_id"] },
+        { name: "audit_logs_tenant_id_user_id_fkey", match: "s", nullableColumns: ["user_id"] },
         { name: "devices_tenant_id_branch_id_fkey", match: "s", nullableColumns: ["branch_id"] },
         { name: "sessions_tenant_id_device_id_fkey", match: "s", nullableColumns: ["device_id"] },
         { name: "user_roles_tenant_id_user_id_branch_id_fkey", match: "s", nullableColumns: ["branch_id"] },

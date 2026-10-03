@@ -32,6 +32,7 @@ describe("migrations on a clean PostgreSQL database", () => {
       { name: "20261002080000_create_user_roles", finished: true, rolledBack: false },
       { name: "20261002090000_create_devices", finished: true, rolledBack: false },
       { name: "20261002100000_create_sessions", finished: true, rolledBack: false },
+      { name: "20261002110000_create_audit_logs", finished: true, rolledBack: false },
     ]);
   });
 
@@ -41,6 +42,7 @@ describe("migrations on a clean PostgreSQL database", () => {
       WHERE table_schema = 'public' ORDER BY table_name`;
     expect(tables.map((t) => t.name)).toEqual([
       "_prisma_migrations",
+      "audit_logs",
       "branches",
       "companies",
       "devices",
@@ -638,6 +640,70 @@ describe("migrations on a clean PostgreSQL database", () => {
       "CREATE UNIQUE INDEX sessions_refresh_token_hash_key (refresh_token_hash)",
       "CREATE INDEX sessions_tenant_id_device_id_idx (tenant_id, device_id)",
       "CREATE INDEX sessions_tenant_id_user_id_idx (tenant_id, user_id)",
+    ]);
+  });
+
+  it("defines the audit_logs columns (append-only: no updated_at, deleted_at or status)", async () => {
+    const columns = await prisma.$queryRaw<{ name: string; type: string; nullable: string; default: string | null }[]>`
+      SELECT column_name AS name, format_type(a.atttypid, a.atttypmod) AS type, c.is_nullable AS nullable,
+             c.column_default AS default
+      FROM information_schema.columns c
+      JOIN pg_attribute a ON a.attrelid = 'public.audit_logs'::regclass AND a.attname = c.column_name
+      WHERE c.table_schema = 'public' AND c.table_name = 'audit_logs'
+      ORDER BY c.ordinal_position`;
+    expect(columns).toEqual([
+      { name: "id", type: "uuid", nullable: "NO", default: null },
+      { name: "tenant_id", type: "uuid", nullable: "NO", default: null },
+      { name: "user_id", type: "uuid", nullable: "YES", default: null },
+      { name: "branch_id", type: "uuid", nullable: "YES", default: null },
+      { name: "device_id", type: "uuid", nullable: "YES", default: null },
+      { name: "action", type: "text", nullable: "NO", default: null },
+      { name: "resource_type", type: "text", nullable: "NO", default: null },
+      { name: "resource_id", type: "uuid", nullable: "YES", default: null },
+      { name: "metadata", type: "jsonb", nullable: "YES", default: null },
+      { name: "ip_address", type: "inet", nullable: "YES", default: null },
+      { name: "created_at", type: "timestamp(3) with time zone", nullable: "NO", default: "CURRENT_TIMESTAMP" },
+    ]);
+  });
+
+  it("defines the audit_logs constraints (PK, tenant FK, composite user/branch/device FKs, CHECKs; no resource FK)", async () => {
+    const constraints = await prisma.$queryRaw<{ name: string; definition: string }[]>`
+      SELECT conname AS name, pg_get_constraintdef(oid) AS definition
+      FROM pg_constraint WHERE conrelid = 'public.audit_logs'::regclass ORDER BY conname`;
+    expect(constraints).toEqual([
+      { name: "audit_logs_action_check", definition: "CHECK ((action ~ '^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$'::text))" },
+      { name: "audit_logs_pkey", definition: "PRIMARY KEY (id)" },
+      { name: "audit_logs_resource_type_check", definition: "CHECK ((resource_type ~ '^[a-z][a-z0-9_]*$'::text))" },
+      {
+        name: "audit_logs_tenant_id_branch_id_fkey",
+        definition: "FOREIGN KEY (tenant_id, branch_id) REFERENCES branches(tenant_id, id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+      },
+      {
+        name: "audit_logs_tenant_id_device_id_fkey",
+        definition: "FOREIGN KEY (tenant_id, device_id) REFERENCES devices(tenant_id, id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+      },
+      {
+        name: "audit_logs_tenant_id_fkey",
+        definition: "FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+      },
+      {
+        name: "audit_logs_tenant_id_user_id_fkey",
+        definition: "FOREIGN KEY (tenant_id, user_id) REFERENCES users(tenant_id, id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+      },
+    ]);
+  });
+
+  it("defines only the approved audit_logs indexes", async () => {
+    const indexes = await prisma.$queryRaw<{ definition: string }[]>`
+      SELECT indexdef AS definition FROM pg_indexes
+      WHERE schemaname = 'public' AND tablename = 'audit_logs' ORDER BY indexname`;
+    expect(indexes.map((i) => i.definition.replace(/ ON public\.audit_logs USING btree/, ""))).toEqual([
+      "CREATE UNIQUE INDEX audit_logs_pkey (id)",
+      "CREATE INDEX audit_logs_tenant_id_branch_id_created_at_idx (tenant_id, branch_id, created_at)",
+      "CREATE INDEX audit_logs_tenant_id_created_at_idx (tenant_id, created_at)",
+      "CREATE INDEX audit_logs_tenant_id_device_id_created_at_idx (tenant_id, device_id, created_at)",
+      "CREATE INDEX audit_logs_tenant_id_resource_type_resource_id_created_at_idx (tenant_id, resource_type, resource_id, created_at)",
+      "CREATE INDEX audit_logs_tenant_id_user_id_created_at_idx (tenant_id, user_id, created_at)",
     ]);
   });
 
