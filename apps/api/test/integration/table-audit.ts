@@ -106,6 +106,25 @@ export async function foreignKeyViolations(
   return violations;
 }
 
+/**
+ * Hashed credentials allowed to be stored, as "<table>.<column>". Anything else whose name looks like a
+ * credential (password, token, secret, api/private key, pin...) is reported, including in other tables.
+ */
+export const HASHED_CREDENTIAL_COLUMNS: readonly string[] = ["sessions.refresh_token_hash", "users.password_hash"];
+
+const CREDENTIAL_NAME = "(^|_)(password|passwd|pwd|senha|secret|pin|credentials?|token|api_?key|private_?key)(_|$)";
+
+/** Text-like columns named like a credential and not in the hashed allowlist (flags are not credentials). */
+export async function credentialColumnViolations(db: Queryable): Promise<string[]> {
+  const rows = await db.$queryRaw<{ column: string }[]>`
+    SELECT table_name || '.' || column_name AS "column" FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND data_type IN ('text', 'character varying', 'character', 'bytea', 'json', 'jsonb')
+      AND column_name ~* ${CREDENTIAL_NAME}
+    ORDER BY 1`;
+  return rows.map((r) => r.column).filter((c) => !HASHED_CREDENTIAL_COLUMNS.includes(c));
+}
+
 const ROLLBACK = Symbol("rollback");
 
 /** Runs `fn` inside a transaction that is always rolled back (DDL included). */

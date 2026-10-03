@@ -11,8 +11,10 @@ import {
 import { createPrismaClient } from "../../src/database/create-prisma-client.js";
 import {
   GLOBAL_TABLES,
+  HASHED_CREDENTIAL_COLUMNS,
   ROOT_TABLE,
   classifyTable,
+  credentialColumnViolations,
   foreignKeyViolations,
   inRolledBackTransaction,
   listTables,
@@ -20,7 +22,7 @@ import {
   tenantScopedTables,
 } from "./table-audit.js";
 
-// Multi-tenant structural integrity (M1.4-M1.11): tenant tables, explicit global tables, Prisma tooling.
+// Multi-tenant structural integrity (M1.4-M1.12): tenant tables, explicit global tables, Prisma tooling.
 // Per-entity behaviour (creation, uniqueness, CHECKs) lives in the per-model tests.
 
 const CROSS_TENANT_FK = /branches_tenant_id_company_id_fkey/;
@@ -47,6 +49,7 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
         permissions: "global",
         role_permissions: "tenant",
         roles: "tenant",
+        sessions: "tenant",
         tenants: "root",
         user_branch_access: "tenant",
         user_roles: "tenant",
@@ -95,6 +98,7 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
         "devices",
         "role_permissions",
         "roles",
+        "sessions",
         "user_branch_access",
         "user_roles",
         "users",
@@ -194,6 +198,20 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
           definition: "FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON UPDATE RESTRICT ON DELETE RESTRICT",
         },
         {
+          name: "sessions_tenant_id_device_id_fkey",
+          definition:
+            "FOREIGN KEY (tenant_id, device_id) REFERENCES devices(tenant_id, id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+        },
+        {
+          name: "sessions_tenant_id_fkey",
+          definition: "FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+        },
+        {
+          name: "sessions_tenant_id_user_id_fkey",
+          definition:
+            "FOREIGN KEY (tenant_id, user_id) REFERENCES users(tenant_id, id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+        },
+        {
           name: "user_branch_access_tenant_id_branch_id_fkey",
           definition:
             "FOREIGN KEY (tenant_id, branch_id) REFERENCES branches(tenant_id, id) ON UPDATE RESTRICT ON DELETE RESTRICT",
@@ -233,15 +251,38 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
       ]);
     });
 
-    it("stores no plain-text credential column (only users.password_hash)", async () => {
-      // Only column types able to hold a secret; flags such as must_change_password are not credentials.
-      const rows = await prisma.$queryRaw<{ column: string }[]>`
-        SELECT table_name || '.' || column_name AS "column" FROM information_schema.columns
-        WHERE table_schema = 'public'
-          AND data_type IN ('text', 'character varying', 'character', 'bytea', 'json', 'jsonb')
-          AND column_name ~* '(^|_)(password|passwd|pwd|senha|secret|pin|credentials?)(_|$)'
-        ORDER BY 1`;
-      expect(rows.map((r) => r.column)).toEqual(["users.password_hash"]);
+    it("allows only the explicitly listed hashed credential columns", () => {
+      expect(HASHED_CREDENTIAL_COLUMNS).toEqual(["sessions.refresh_token_hash", "users.password_hash"]);
+      for (const column of HASHED_CREDENTIAL_COLUMNS) expect(column).toMatch(/_hash$/);
+    });
+
+    it("stores no plain-text credential column (password, token, secret, keys, pin)", async () => {
+      expect(await credentialColumnViolations(prisma)).toEqual([]);
+    });
+
+    it("probe: plain-text credential columns are reported; the hash allowlist is table-specific", async () => {
+      const violations = await inRolledBackTransaction(prisma, async (tx) => {
+        await tx.$executeRawUnsafe(`
+          CREATE TABLE "audit_probe_tokens" (
+            "id" uuid PRIMARY KEY,
+            "refresh_token" text, "access_token" text, "token" text, "api_key" text, "apikey" varchar(64),
+            "private_key" text, "client_secret" text, "senha" text, "pin" text,
+            "refresh_token_hash" text, "must_change_password" boolean, "device_key" text
+          )`);
+        return credentialColumnViolations(tx);
+      });
+      expect(violations).toEqual([
+        "audit_probe_tokens.access_token",
+        "audit_probe_tokens.api_key",
+        "audit_probe_tokens.apikey",
+        "audit_probe_tokens.client_secret",
+        "audit_probe_tokens.pin",
+        "audit_probe_tokens.private_key",
+        "audit_probe_tokens.refresh_token",
+        "audit_probe_tokens.refresh_token_hash",
+        "audit_probe_tokens.senha",
+        "audit_probe_tokens.token",
+      ]);
     });
 
     it("uses no CASCADE / SET NULL / SET DEFAULT on any FK", async () => {
@@ -271,6 +312,8 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
         ["devices_tenant_id_branch_id_fkey", "tenant -> tenant"],
         ["role_permissions_permission_id_fkey", "tenant -> global"],
         ["role_permissions_tenant_id_role_id_fkey", "tenant -> tenant"],
+        ["sessions_tenant_id_device_id_fkey", "tenant -> tenant"],
+        ["sessions_tenant_id_user_id_fkey", "tenant -> tenant"],
         ["user_branch_access_tenant_id_branch_id_fkey", "tenant -> tenant"],
         ["user_branch_access_tenant_id_user_id_fkey", "tenant -> tenant"],
         ["user_roles_tenant_id_role_id_fkey", "tenant -> tenant"],
@@ -291,9 +334,10 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
         ORDER BY con.conname`;
 
       for (const row of rows) expect(row.nullableColumns, row.name).not.toContain("tenant_id");
-      // Composite FKs with a nullable column are only the optional branch scopes (MATCH SIMPLE, NULL = no branch).
+      // Composite FKs with a nullable column: only the optional branch/device links (MATCH SIMPLE, NULL = none).
       expect(rows.filter((r) => r.nullableColumns.length > 0)).toEqual([
         { name: "devices_tenant_id_branch_id_fkey", match: "s", nullableColumns: ["branch_id"] },
+        { name: "sessions_tenant_id_device_id_fkey", match: "s", nullableColumns: ["device_id"] },
         { name: "user_roles_tenant_id_user_id_branch_id_fkey", match: "s", nullableColumns: ["branch_id"] },
       ]);
     });
