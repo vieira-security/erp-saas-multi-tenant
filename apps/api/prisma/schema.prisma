@@ -28,18 +28,19 @@ enum TenantStatus {
 
 // Raiz do multi-tenancy: por isso NÃO possui `tenant_id`.
 model Tenant {
-  id             String             @id @default(uuid(7)) @db.Uuid
-  name           String
-  status         TenantStatus
-  trialStartedAt DateTime?          @map("trial_started_at") @db.Timestamptz(3)
-  trialEndsAt    DateTime?          @map("trial_ends_at") @db.Timestamptz(3)
-  createdAt      DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt      DateTime           @updatedAt @map("updated_at") @db.Timestamptz(3)
-  companies      Company[]
-  branches       Branch[]
-  users          User[]
-  branchAccesses UserBranchAccess[]
-  roles          Role[]
+  id              String             @id @default(uuid(7)) @db.Uuid
+  name            String
+  status          TenantStatus
+  trialStartedAt  DateTime?          @map("trial_started_at") @db.Timestamptz(3)
+  trialEndsAt     DateTime?          @map("trial_ends_at") @db.Timestamptz(3)
+  createdAt       DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt       DateTime           @updatedAt @map("updated_at") @db.Timestamptz(3)
+  companies       Company[]
+  branches        Branch[]
+  users           User[]
+  branchAccesses  UserBranchAccess[]
+  roles           Role[]
+  rolePermissions RolePermission[]
 
   @@map("tenants")
 }
@@ -173,18 +174,21 @@ enum RoleStatus {
 // Sozinha, uma Role não concede permissão alguma (Permission/RolePermission/UserRole ainda não existem).
 // CHECKs (fora do PSL, definidos na migration): code e name não vazios.
 model Role {
-  id          String     @id @default(uuid(7)) @db.Uuid
-  tenantId    String     @map("tenant_id") @db.Uuid
+  id          String           @id @default(uuid(7)) @db.Uuid
+  tenantId    String           @map("tenant_id") @db.Uuid
   code        String
   name        String
   description String?
-  isSystem    Boolean    @default(false) @map("is_system")
+  isSystem    Boolean          @default(false) @map("is_system")
   status      RoleStatus
-  createdAt   DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt   DateTime   @updatedAt @map("updated_at") @db.Timestamptz(3)
-  tenant      Tenant     @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  createdAt   DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime         @updatedAt @map("updated_at") @db.Timestamptz(3)
+  tenant      Tenant           @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  permissions RolePermission[]
 
   @@unique([tenantId, code])
+  // Alvo da FK composta de RolePermission (id já é PK; não cria regra funcional nova).
+  @@unique([tenantId, id])
   @@index([tenantId, status])
   @@map("roles")
 }
@@ -194,12 +198,31 @@ model Role {
 // Sem tenant, usuário, role ou escopo de filial: associações entram em módulos posteriores.
 // CHECKs (fora do PSL, definidos na migration): formato de code; module e description não vazios.
 model Permission {
-  id          String   @id @default(uuid(7)) @db.Uuid
-  code        String   @unique
+  id          String           @id @default(uuid(7)) @db.Uuid
+  code        String           @unique
   module      String
   description String
-  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  createdAt   DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
+  roles       RolePermission[]
 
   @@index([module])
   @@map("permissions")
+}
+
+// Permissões concedidas a uma Role do tenant. Role é por tenant (FK composta); Permission é global
+// (FK simples). Sem updated_at: o vínculo existe ou não existe. Não liga Role a User.
+model RolePermission {
+  id           String     @id @default(uuid(7)) @db.Uuid
+  tenantId     String     @map("tenant_id") @db.Uuid
+  roleId       String     @map("role_id") @db.Uuid
+  permissionId String     @map("permission_id") @db.Uuid
+  createdAt    DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
+  tenant       Tenant     @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  role         Role       @relation(fields: [tenantId, roleId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@unique([tenantId, roleId, permissionId])
+  // Consulta inversa (quais roles usam a permissão) e checagem do RESTRICT ao apagar uma permissão.
+  @@index([permissionId])
+  @@map("role_permissions")
 }
