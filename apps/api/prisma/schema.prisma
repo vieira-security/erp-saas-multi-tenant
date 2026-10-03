@@ -41,6 +41,7 @@ model Tenant {
   branchAccesses  UserBranchAccess[]
   roles           Role[]
   rolePermissions RolePermission[]
+  userRoles       UserRole[]
 
   @@map("tenants")
 }
@@ -135,6 +136,7 @@ model User {
   updatedAt           DateTime           @updatedAt @map("updated_at") @db.Timestamptz(3)
   tenant              Tenant             @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
   branchAccesses      UserBranchAccess[]
+  roles               UserRole[]
 
   @@unique([tenantId, employeeNumber])
   // Alvo da FK composta de UserBranchAccess.
@@ -146,15 +148,17 @@ model User {
 // Filiais que um usuário pode acessar (0..N, mesmo tenant). Não é papel/permissão.
 // Sem updated_at: o vínculo não tem dados mutáveis; existe ou não existe.
 model UserBranchAccess {
-  id        String   @id @default(uuid(7)) @db.Uuid
-  tenantId  String   @map("tenant_id") @db.Uuid
-  userId    String   @map("user_id") @db.Uuid
-  branchId  String   @map("branch_id") @db.Uuid
-  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
-  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  id        String     @id @default(uuid(7)) @db.Uuid
+  tenantId  String     @map("tenant_id") @db.Uuid
+  userId    String     @map("user_id") @db.Uuid
+  branchId  String     @map("branch_id") @db.Uuid
+  createdAt DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
+  tenant    Tenant     @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
   // FKs compostas: User e Branch precisam pertencer ao mesmo tenant do vínculo.
-  user      User     @relation(fields: [tenantId, userId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
-  branch    Branch   @relation(fields: [tenantId, branchId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  user      User       @relation(fields: [tenantId, userId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  branch    Branch     @relation(fields: [tenantId, branchId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  // Roles escopadas a esta filial dependem deste acesso.
+  userRoles UserRole[]
 
   @@unique([tenantId, userId, branchId])
   @@index([tenantId, branchId])
@@ -185,6 +189,7 @@ model Role {
   updatedAt   DateTime         @updatedAt @map("updated_at") @db.Timestamptz(3)
   tenant      Tenant           @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
   permissions RolePermission[]
+  userRoles   UserRole[]
 
   @@unique([tenantId, code])
   // Alvo da FK composta de RolePermission (id já é PK; não cria regra funcional nova).
@@ -225,4 +230,30 @@ model RolePermission {
   // Consulta inversa (quais roles usam a permissão) e checagem do RESTRICT ao apagar uma permissão.
   @@index([permissionId])
   @@map("role_permissions")
+}
+
+// Role atribuída a um User. branch_id NULL = role válida em todo o tenant; preenchido = só naquela filial,
+// e então exige UserBranchAccess (FK composta, verificada pelo PostgreSQL apenas quando branch_id não é NULL).
+// Sem updated_at: para mudar uma atribuição, apagar e criar outra.
+// Índices únicos parciais (fora do PSL, definidos na migration):
+//   user_roles_tenant_scope_key  (tenant_id, user_id, role_id)            WHERE branch_id IS NULL
+//   user_roles_branch_scope_key  (tenant_id, user_id, role_id, branch_id) WHERE branch_id IS NOT NULL
+model UserRole {
+  id           String            @id @default(uuid(7)) @db.Uuid
+  tenantId     String            @map("tenant_id") @db.Uuid
+  userId       String            @map("user_id") @db.Uuid
+  roleId       String            @map("role_id") @db.Uuid
+  branchId     String?           @map("branch_id") @db.Uuid
+  createdAt    DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
+  tenant       Tenant            @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  user         User              @relation(fields: [tenantId, userId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  role         Role              @relation(fields: [tenantId, roleId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  // Escopo por filial: garante Branch no mesmo tenant e acesso do usuário (dispensa FK direta para Branch).
+  branchAccess UserBranchAccess? @relation(fields: [tenantId, userId, branchId], references: [tenantId, userId, branchId], onDelete: Restrict, onUpdate: Restrict)
+
+  // Roles de um usuário (todas ou numa filial) e lookups das FKs para users e user_branch_access.
+  @@index([tenantId, userId, branchId])
+  // Usuários com uma role (consulta inversa) e lookup da FK para roles.
+  @@index([tenantId, roleId])
+  @@map("user_roles")
 }
