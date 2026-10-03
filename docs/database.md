@@ -1,7 +1,7 @@
 # Banco de dados
 
 ## Estado atual
-PostgreSQL via Prisma. Models: `Tenant` (tabela `tenants`, migration `20261002000000_create_tenants`), `Company` (tabela `companies`, migration `20261002010000_create_companies`), `Branch` (tabela `branches`, migration `20261002020000_create_branches`) e `User` (tabela `users`, migration `20261002030000_create_users`). A URL de conexão vem de `DATABASE_URL` (lida em `apps/api/prisma.config.ts`), nunca do código.
+PostgreSQL via Prisma. Models: `Tenant` (tabela `tenants`, migration `20261002000000_create_tenants`), `Company` (tabela `companies`, migration `20261002010000_create_companies`), `Branch` (tabela `branches`, migration `20261002020000_create_branches`), `User` (tabela `users`, migration `20261002030000_create_users`) e `UserBranchAccess` (tabela `user_branch_access`, migration `20261002040000_create_user_branch_access`). A URL de conexão vem de `DATABASE_URL` (lida em `apps/api/prisma.config.ts`), nunca do código.
 
 ## Tenant
 Raiz do multi-tenancy; por isso **não** possui `tenant_id`.
@@ -54,7 +54,7 @@ Filial/unidade física. Pertence a uma Company **e** ao mesmo Tenant dessa Compa
 | `created_at` | `timestamptz(3)` | não | default `CURRENT_TIMESTAMP` |
 | `updated_at` | `timestamptz(3)` | não | mantido pelo Prisma (`@updatedAt`) |
 
-- Índices: `(tenant_id, company_id)` (também atende a FK composta), `(tenant_id, status)` e as uniques `(tenant_id, code)` e `(tenant_id, cnpj)`. Sem índice isolado em `tenant_id`: todos os compostos começam por ele.
+- Índices: `(tenant_id, company_id)` (também atende a FK composta), `(tenant_id, status)` e as uniques `(tenant_id, code)`, `(tenant_id, cnpj)` e `(tenant_id, id)` (alvo da FK composta de UserBranchAccess, criada no M1.6). Sem índice isolado em `tenant_id`: todos os compostos começam por ele.
 - `code` é único por tenant (não por company): duas companies do mesmo tenant não repetem código. A unique compara o texto exato; a camada de aplicação (futura) normalizará o código com **trim + uppercase** antes de gravar, de modo que `morumbi ` e `MORUMBI` não coexistam. Nada disso é imposto no banco hoje.
 - CNPJ nulo: a unique usa o padrão `NULLS DISTINCT` do PostgreSQL, logo várias branches sem CNPJ são aceitas e CNPJ preenchido não se repete no tenant. Não é globalmente único e não é comparado com o CNPJ da Company.
 - Remoção física de Tenant ou Company com Branch falha (`RESTRICT`); sem cascade e sem soft delete.
@@ -85,11 +85,28 @@ Funcionário individual do tenant (sem usuários compartilhados). Login futuro n
 | `created_at` | `timestamptz(3)` | não | default `CURRENT_TIMESTAMP` |
 | `updated_at` | `timestamptz(3)` | não | mantido pelo Prisma (`@updatedAt`) |
 
-- Índices: unique `(tenant_id, employee_number)` e `(tenant_id, status)`.
+- Índices: unique `(tenant_id, employee_number)`, `(tenant_id, status)` e unique `(tenant_id, id)` (alvo da FK composta de UserBranchAccess, criada no M1.6).
 - **Matrícula única por tenant**, não global: a mesma matrícula pode existir em outro tenant. Comparação exata (sem normalização além de impedir vazio/espaços).
 - **Senha nunca é persistida em texto puro.** Não existe coluna `password`, `plain_password`, `temporary_password` nem equivalente; a auditoria do catálogo falha se surgir coluna textual com nome de credencial além de `users.password_hash`. O algoritmo (previsão: Argon2id) pertence ao M2.
 - **Sem exclusão física no fluxo normal:** o usuário é desativado (`status = DISABLED`) e permanece no histórico. Sem soft delete universal e sem cascade; Tenant com User não pode ser apagado.
 - Coerência entre `status` e `disabled_at`/`locked_until` **não** é imposta no banco (ex.: reativação, bloqueio sem prazo); fica para a camada de aplicação (Auth/M2).
+
+## UserBranchAccess
+Define quais filiais um usuário pode acessar: **User 0..N Branches, sempre no mesmo Tenant**. É **separado de papel/permissão**: dizer que o usuário acessa a filial não diz o que ele pode fazer nela. Roles (inclusive por filial) serão modeladas depois. Relações Tenant/User/Branch **1 → N** UserBranchAccess.
+
+| Coluna | Tipo PostgreSQL | Nulo | Observação |
+|---|---|---|---|
+| `id` | `uuid` (PK) | não | UUIDv7 gerado pelo Prisma Client |
+| `tenant_id` | `uuid` | não | FK `tenants.id` (`RESTRICT`) |
+| `user_id` | `uuid` | não | FK composta `(tenant_id, user_id)` → `users(tenant_id, id)` (`RESTRICT`) |
+| `branch_id` | `uuid` | não | FK composta `(tenant_id, branch_id)` → `branches(tenant_id, id)` (`RESTRICT`) |
+| `created_at` | `timestamptz(3)` | não | default `CURRENT_TIMESTAMP` |
+
+- Sem `updated_at`, status, `revoked_at` ou `expires_at`: o vínculo existe ou não existe. Validade temporária será evolução explícita.
+- `UNIQUE (tenant_id, user_id, branch_id)`: o mesmo acesso não é concedido duas vezes; também atende consultas por usuário e a FK composta de User. Índice `(tenant_id, branch_id)` para listar usuários de uma filial (e atender a FK composta de Branch).
+- O banco rejeita, por Prisma ou SQL: User de outro tenant, Branch de outro tenant, User e Branch de tenants diferentes, e alterações posteriores de `user_id`, `branch_id` ou só `tenant_id` que criem combinação cross-tenant.
+- User ou Branch com acesso não pode ser apagado (`RESTRICT`), coerente com a política de desativação; também não pode mudar de tenant (`ON UPDATE RESTRICT` nas FKs compostas).
+- Sem regra de "filial padrão", convite ou expiração.
 
 ## Integridade organizacional (M1.4)
 Regras: relações cross-tenant devem ser **bloqueadas no banco** sempre que possível, não só na aplicação; nenhuma FK organizacional usa `CASCADE`, `SET NULL` ou `SET DEFAULT` (apenas `RESTRICT`).
@@ -105,7 +122,10 @@ Depois de criado, um registro pertencente a um tenant **não** muda de tenant (C
 | Company: `tenant_id` para tenant inexistente | bloqueada | `companies_tenant_id_fkey` |
 | Branch: `tenant_id` **e** `company_id` juntos, consistentes | **aceita** (lacuna) | — |
 | Company **sem** Branches: `tenant_id` para outro tenant existente | **aceita** (lacuna) | — |
-| User: `tenant_id` para outro tenant existente | **aceita** (lacuna) | — |
+| User **sem** acessos: `tenant_id` para outro tenant existente | **aceita** (lacuna) | — |
+| User ou Branch **com** acessos: `tenant_id` | bloqueada | FKs compostas de `user_branch_access`, `ON UPDATE RESTRICT` |
+| UserBranchAccess: só `tenant_id`, só `user_id` ou só `branch_id` para outro tenant | bloqueada | FKs compostas |
+| UserBranchAccess: `tenant_id` + `user_id` + `branch_id` juntos, consistentes | **aceita** (lacuna) | — |
 | User: `tenant_id` para tenant inexistente | bloqueada | `users_tenant_id_fkey` |
 
 As lacunas não criam relação cruzada, mas violam a imutabilidade. CHECK não enxerga o valor anterior e FK não impede uma mudança consistente; a proteção robusta é um trigger `BEFORE UPDATE OF tenant_id ... WHEN (OLD.tenant_id IS DISTINCT FROM NEW.tenant_id)` que lança erro, com uma função compartilhada por todas as tabelas de tenant. Foi prototipado em Company/Branch (bloqueia as lacunas e não afeta updates no mesmo tenant), mas por ser um trigger genérico ficou para o **M1.14**. Os testes `GAP (M1.14)` em `org-integrity.int.test.ts` fixam o comportamento atual e devem ser invertidos quando a proteção entrar. Até lá, a camada de aplicação não deve expor alteração de `tenant_id`.
