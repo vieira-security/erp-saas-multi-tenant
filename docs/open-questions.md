@@ -63,6 +63,8 @@ Registro único dos pontos em aberto. Resolver antes de implementar o módulo af
 3. **Índices candidatos a remoção:** `companies_tenant_id_idx` (coberto por `(tenant_id, status)`, `(tenant_id, cnpj)` e `(tenant_id, id)`). Remover só com migration dedicada e revisão.
 4. **Normalização de `Branch.code`** (trim + uppercase) na aplicação; avaliar unique por `(tenant_id, upper(code))` no banco.
 5. **Validações em `packages/validation`:** CNPJ completo (dígitos verificadores, raiz Branch x Company) e timezone IANA.
+6. ~~TRUNCATE em `audit_logs`~~ **Resolvido no M1.14.2a** (migration `20261002121000_forbid_audit_logs_truncate`).
+7. **M1.14.2b — modelo de privilégios do PostgreSQL:** as proteções por trigger (append-only de `audit_logs`, imutabilidade de `tenant_id`) valem com triggers ativos e não resistem a superusuário/dono da tabela (`DISABLE TRIGGER`, `session_replication_role`, `CREATE OR REPLACE FUNCTION`, `DROP TRIGGER`, `DROP TABLE`). Definir papel de migração (dono) separado do papel da aplicação (sem ownership, sem superusuário, sem `TRUNCATE`/`UPDATE`/`DELETE` em `audit_logs`), GRANT/REVOKE e o equivalente no RDS (#7, #18).
 
 ## Pendências de dispositivos (M2/Edge) originadas no M1.11
 1. Autenticação/pairing de dispositivo, credencial e armazenamento seguro de segredos (módulo próprio, nunca em texto puro).
@@ -76,7 +78,7 @@ Registro único dos pontos em aberto. Resolver antes de implementar o módulo af
 3. Revogar UserBranchAccess com roles escopadas exige remover as roles antes (`RESTRICT`); definir o fluxo administrativo.
 
 ## Pendências do AuditService originadas no M1.13
-1. ~~Impor append-only no banco~~ **Resolvido no M1.13.1** (trigger `audit_logs_append_only`). Restam: bloquear `TRUNCATE` (trigger `BEFORE TRUNCATE` de statement e/ou privilégio); revogar `UPDATE`/`DELETE`/`TRUNCATE` do papel da aplicação e garantir que ele não seja dono das tabelas (estratégia de papéis, #7); como conciliar com remoção exigida por LGPD (#9), que hoje exigiria desabilitar o trigger em operação administrativa controlada.
+1. ~~Impor append-only no banco~~ **Resolvido no M1.13.1** (trigger `audit_logs_append_only`); ~~bloquear `TRUNCATE`~~ **resolvido no M1.14.2a** (trigger `audit_logs_no_truncate`). Restam (M1.14.2b): revogar `UPDATE`/`DELETE`/`TRUNCATE` do papel da aplicação e garantir que ele não seja dono das tabelas nem superusuário, para que não possa desabilitar/remover triggers ou alterar funções (estratégia de papéis, #7); como conciliar com remoção exigida por LGPD (#9), que hoje exigiria desabilitar o trigger em operação administrativa controlada.
 2. **Sanitização de `metadata`:** filtro/máscara de credenciais e dados sensíveis (senha, hashes, tokens, segredos, chaves, PIN, cartão) antes de gravar; preferir allowlist de campos por ação. Limite de tamanho e forma (ex.: só objeto JSON) ainda não definidos.
 3. **Catálogo de ações e de `resource_type`:** onde fica (constantes em `packages/contracts`?), quais eventos são obrigatórios por módulo (#8) e se o banco deve validar contra um catálogo.
 4. **Instrumentação:** quais controllers/services/workers gravam, na mesma transação da operação ou de forma assíncrona; origem de `ip_address` atrás de proxy/load balancer.
