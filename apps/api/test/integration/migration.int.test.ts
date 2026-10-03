@@ -27,6 +27,7 @@ describe("migrations on a clean PostgreSQL database", () => {
       { name: "20261002030000_create_users", finished: true, rolledBack: false },
       { name: "20261002040000_create_user_branch_access", finished: true, rolledBack: false },
       { name: "20261002050000_create_roles", finished: true, rolledBack: false },
+      { name: "20261002060000_create_permissions", finished: true, rolledBack: false },
     ]);
   });
 
@@ -34,7 +35,7 @@ describe("migrations on a clean PostgreSQL database", () => {
     const tables = await prisma.$queryRaw<{ name: string }[]>`
       SELECT table_name AS name FROM information_schema.tables
       WHERE table_schema = 'public' ORDER BY table_name`;
-    expect(tables.map((t) => t.name)).toEqual(["_prisma_migrations", "branches", "companies", "roles", "tenants", "user_branch_access", "users"]);
+    expect(tables.map((t) => t.name)).toEqual(["_prisma_migrations", "branches", "companies", "permissions", "roles", "tenants", "user_branch_access", "users"]);
   });
 
   it("creates the tenant_status enum with exactly the approved values", async () => {
@@ -355,6 +356,45 @@ describe("migrations on a clean PostgreSQL database", () => {
       "CREATE UNIQUE INDEX roles_pkey (id)",
       "CREATE UNIQUE INDEX roles_tenant_id_code_key (tenant_id, code)",
       "CREATE INDEX roles_tenant_id_status_idx (tenant_id, status)",
+    ]);
+  });
+
+  it("defines the permissions columns (global: no tenant_id, updated_at or status)", async () => {
+    const columns = await prisma.$queryRaw<{ name: string; type: string; nullable: string }[]>`
+      SELECT column_name AS name, format_type(a.atttypid, a.atttypmod) AS type, c.is_nullable AS nullable
+      FROM information_schema.columns c
+      JOIN pg_attribute a ON a.attrelid = 'public.permissions'::regclass AND a.attname = c.column_name
+      WHERE c.table_schema = 'public' AND c.table_name = 'permissions'
+      ORDER BY c.ordinal_position`;
+    expect(columns).toEqual([
+      { name: "id", type: "uuid", nullable: "NO" },
+      { name: "code", type: "text", nullable: "NO" },
+      { name: "module", type: "text", nullable: "NO" },
+      { name: "description", type: "text", nullable: "NO" },
+      { name: "created_at", type: "timestamp(3) with time zone", nullable: "NO" },
+    ]);
+  });
+
+  it("defines the permissions constraints (PK and CHECKs only, no FK)", async () => {
+    const constraints = await prisma.$queryRaw<{ name: string; definition: string }[]>`
+      SELECT conname AS name, pg_get_constraintdef(oid) AS definition
+      FROM pg_constraint WHERE conrelid = 'public.permissions'::regclass ORDER BY conname`;
+    expect(constraints).toEqual([
+      { name: "permissions_code_check", definition: "CHECK ((code ~ '^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$'::text))" },
+      { name: "permissions_description_check", definition: "CHECK ((btrim(description) <> ''::text))" },
+      { name: "permissions_module_check", definition: "CHECK ((btrim(module) <> ''::text))" },
+      { name: "permissions_pkey", definition: "PRIMARY KEY (id)" },
+    ]);
+  });
+
+  it("defines only the approved permissions indexes", async () => {
+    const indexes = await prisma.$queryRaw<{ definition: string }[]>`
+      SELECT indexdef AS definition FROM pg_indexes
+      WHERE schemaname = 'public' AND tablename = 'permissions' ORDER BY indexname`;
+    expect(indexes.map((i) => i.definition.replace(/ ON public\.permissions USING btree/, ""))).toEqual([
+      "CREATE UNIQUE INDEX permissions_code_key (code)",
+      "CREATE INDEX permissions_module_idx (module)",
+      "CREATE UNIQUE INDEX permissions_pkey (id)",
     ]);
   });
 
