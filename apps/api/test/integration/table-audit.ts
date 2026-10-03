@@ -128,13 +128,38 @@ export async function credentialColumnViolations(db: Queryable): Promise<string[
 /** Shared function behind every `<table>_tenant_id_immutable` trigger. */
 export const TENANT_ID_IMMUTABILITY_FUNCTION = "forbid_tenant_id_change";
 
+type ProtectedEvent = "UPDATE" | "DELETE" | "TRUNCATE";
+
+interface PolicyTrigger {
+  name: string;
+  level: "row" | "statement";
+  events: readonly ProtectedEvent[];
+}
+
+export interface SpecialTenantIdPolicy {
+  policy: "append-only";
+  fn: string;
+  triggers: readonly PolicyTrigger[];
+}
+
+/** Every operation an append-only table must block (INSERT stays allowed). */
+export const APPEND_ONLY_BLOCKED_EVENTS: readonly ProtectedEvent[] = ["UPDATE", "DELETE", "TRUNCATE"];
+
 /**
  * Tenant tables protected by a dedicated policy instead of the generic tenant_id trigger. Adding one here is an
  * explicit, reviewed decision; the policy itself is verified (it is not a silent exemption).
- * - append-only: every UPDATE and DELETE is rejected, so tenant_id can never change either.
+ * - append-only: UPDATE, DELETE and TRUNCATE are all rejected (BEFORE triggers), so tenant_id can never change
+ *   either. Exactly the listed triggers may exist on the table; a partially protected table is a violation.
  */
-export const SPECIAL_TENANT_ID_POLICIES: Readonly<Record<string, { policy: "append-only"; trigger: string; fn: string }>> = {
-  audit_logs: { policy: "append-only", trigger: "audit_logs_append_only", fn: "forbid_audit_log_mutation" },
+export const SPECIAL_TENANT_ID_POLICIES: Readonly<Record<string, SpecialTenantIdPolicy>> = {
+  audit_logs: {
+    policy: "append-only",
+    fn: "forbid_audit_log_mutation",
+    triggers: [
+      { name: "audit_logs_append_only", level: "row", events: ["UPDATE", "DELETE"] },
+      { name: "audit_logs_no_truncate", level: "statement", events: ["TRUNCATE"] },
+    ],
+  },
 };
 
 interface TriggerRow {
@@ -176,34 +201,73 @@ export function tenantIdTriggerDefinition(table: string): string {
   );
 }
 
+function triggerEvents(t: TriggerRow): ProtectedEvent[] {
+  const events: ProtectedEvent[] = [];
+  if (t.onUpdate) events.push("UPDATE");
+  if (t.onDelete) events.push("DELETE");
+  if (t.onTruncate) events.push("TRUNCATE");
+  return events;
+}
+
+/** Verifies a special policy completely: required triggers exactly as declared, every blocked event, nothing else. */
+function specialPolicyViolations(table: string, special: SpecialTenantIdPolicy, triggers: TriggerRow[]): string[] {
+  const violations: string[] = [];
+  const onTable = triggers.filter((t) => t.table === table);
+
+  const declared = new Set(special.triggers.flatMap((t) => t.events));
+  for (const event of APPEND_ONLY_BLOCKED_EVENTS) {
+    if (!declared.has(event)) violations.push(`${table}: ${special.policy} policy must block ${event}`);
+  }
+
+  for (const required of special.triggers) {
+    const t = onTable.find((x) => x.name === required.name);
+    if (!t) {
+      violations.push(`${table}: missing ${special.policy} trigger ${required.name}`);
+      continue;
+    }
+    const ok =
+      t.fn === special.fn &&
+      t.enabled === "O" &&
+      t.before &&
+      t.row === (required.level === "row") &&
+      !t.onInsert &&
+      triggerEvents(t).join(",") === required.events.join(",") &&
+      t.columns.length === 0;
+    if (!ok) {
+      violations.push(
+        `${table}: ${required.name} must be an enabled BEFORE ${required.events.join(" OR ")} ${required.level} trigger calling ${special.fn}()`,
+      );
+    }
+  }
+
+  for (const t of onTable.filter((x) => !special.triggers.some((r) => r.name === x.name))) {
+    violations.push(
+      t.fn === TENANT_ID_IMMUTABILITY_FUNCTION
+        ? `${table}: ${special.policy} table must not use the generic tenant_id trigger`
+        : `${table}: unexpected trigger ${t.name} on ${special.policy} table`,
+    );
+  }
+  return violations;
+}
+
 /**
  * tenant_id immutability violations, as "<table>: <problem>". Fail-closed: every tenant table (derived from the
  * classification, never from a manual list) needs exactly the approved trigger, unless it is declared in
  * SPECIAL_TENANT_ID_POLICIES, whose own policy is then verified. Non-tenant tables must not use the trigger.
  */
-export async function tenantIdImmutabilityViolations(db: Queryable): Promise<string[]> {
+export async function tenantIdImmutabilityViolations(
+  db: Queryable,
+  policies: Readonly<Record<string, SpecialTenantIdPolicy>> = SPECIAL_TENANT_ID_POLICIES,
+): Promise<string[]> {
   const triggers = await listTriggers(db);
   const violations: string[] = [];
 
   for (const table of await tenantScopedTables(db)) {
     const generic = triggers.filter((t) => t.table === table && t.fn === TENANT_ID_IMMUTABILITY_FUNCTION);
-    const special = SPECIAL_TENANT_ID_POLICIES[table];
+    const special = policies[table];
 
     if (special) {
-      const policy = triggers.find((t) => t.table === table && t.name === special.trigger);
-      if (generic.length > 0) violations.push(`${table}: ${special.policy} table must not use the generic tenant_id trigger`);
-      if (!policy) violations.push(`${table}: missing ${special.policy} trigger ${special.trigger}`);
-      else if (
-        policy.fn !== special.fn ||
-        policy.enabled !== "O" ||
-        !policy.row ||
-        !policy.before ||
-        !policy.onUpdate ||
-        !policy.onDelete ||
-        policy.columns.length > 0
-      ) {
-        violations.push(`${table}: ${special.trigger} must be an enabled BEFORE UPDATE OR DELETE row trigger calling ${special.fn}()`);
-      }
+      violations.push(...specialPolicyViolations(table, special, triggers));
       continue;
     }
 
@@ -227,7 +291,7 @@ export async function tenantIdImmutabilityViolations(db: Queryable): Promise<str
   for (const t of triggers.filter((t) => t.fn === TENANT_ID_IMMUTABILITY_FUNCTION && !tenantTables.has(t.table))) {
     violations.push(`${t.table}: non-tenant table must not use ${TENANT_ID_IMMUTABILITY_FUNCTION}()`);
   }
-  for (const [table, special] of Object.entries(SPECIAL_TENANT_ID_POLICIES)) {
+  for (const [table, special] of Object.entries(policies)) {
     for (const t of triggers.filter((t) => t.fn === special.fn && t.table !== table)) {
       violations.push(`${t.table}: ${special.fn}() is specific to ${table}`);
     }

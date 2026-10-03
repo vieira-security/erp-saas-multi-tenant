@@ -35,6 +35,7 @@ describe("migrations on a clean PostgreSQL database", () => {
       { name: "20261002110000_create_audit_logs", finished: true, rolledBack: false },
       { name: "20261002111000_make_audit_logs_append_only", finished: true, rolledBack: false },
       { name: "20261002120000_make_tenant_id_immutable", finished: true, rolledBack: false },
+      { name: "20261002121000_forbid_audit_logs_truncate", finished: true, rolledBack: false },
     ]);
   });
 
@@ -721,6 +722,7 @@ describe("migrations on a clean PostgreSQL database", () => {
     expect(functions.map((f) => f.name)).toEqual(["forbid_audit_log_mutation", "forbid_tenant_id_change"]);
     expect(triggers).toEqual([
       { table: "audit_logs", name: "audit_logs_append_only" },
+      { table: "audit_logs", name: "audit_logs_no_truncate" },
       { table: "branches", name: "branches_tenant_id_immutable" },
       { table: "companies", name: "companies_tenant_id_immutable" },
       { table: "devices", name: "devices_tenant_id_immutable" },

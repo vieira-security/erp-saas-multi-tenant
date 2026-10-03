@@ -14,6 +14,7 @@ import {
   GLOBAL_TABLES,
   HASHED_CREDENTIAL_COLUMNS,
   ROOT_TABLE,
+  APPEND_ONLY_BLOCKED_EVENTS,
   SPECIAL_TENANT_ID_POLICIES,
   classifyTable,
   credentialColumnViolations,
@@ -434,10 +435,18 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
       expect(await tenantIdImmutabilityViolations(prisma)).toEqual([]);
     });
 
-    it("declares audit_logs as the only tenant table with a special policy (append-only)", () => {
+    it("declares audit_logs as the only tenant table with a special policy (append-only: UPDATE, DELETE, TRUNCATE)", () => {
       expect(SPECIAL_TENANT_ID_POLICIES).toEqual({
-        audit_logs: { policy: "append-only", trigger: "audit_logs_append_only", fn: "forbid_audit_log_mutation" },
+        audit_logs: {
+          policy: "append-only",
+          fn: "forbid_audit_log_mutation",
+          triggers: [
+            { name: "audit_logs_append_only", level: "row", events: ["UPDATE", "DELETE"] },
+            { name: "audit_logs_no_truncate", level: "statement", events: ["TRUNCATE"] },
+          ],
+        },
       });
+      expect(APPEND_ONLY_BLOCKED_EVENTS).toEqual(["UPDATE", "DELETE", "TRUNCATE"]);
     });
 
     it("protects every editable tenant table with exactly the approved trigger", async () => {
@@ -561,8 +570,8 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
         return tenantIdImmutabilityViolations(tx);
       });
       expect(violations).toEqual([
-        "audit_logs: append-only table must not use the generic tenant_id trigger",
         "audit_logs: audit_logs_append_only must be an enabled BEFORE UPDATE OR DELETE row trigger calling forbid_audit_log_mutation()",
+        "audit_logs: append-only table must not use the generic tenant_id trigger",
       ]);
 
       const missing = await inRolledBackTransaction(prisma, async (tx) => {
@@ -570,6 +579,57 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
         return tenantIdImmutabilityViolations(tx);
       });
       expect(missing).toEqual(["audit_logs: missing append-only trigger audit_logs_append_only"]);
+    });
+
+    const TRUNCATE_GUARD = "audit_logs: audit_logs_no_truncate must be an enabled BEFORE TRUNCATE statement trigger calling forbid_audit_log_mutation()";
+
+    it.each([
+      ["missing", `DROP TRIGGER audit_logs_no_truncate ON audit_logs`, "audit_logs: missing append-only trigger audit_logs_no_truncate"],
+      ["disabled", `ALTER TABLE audit_logs DISABLE TRIGGER audit_logs_no_truncate`, TRUNCATE_GUARD],
+      [
+        "AFTER instead of BEFORE",
+        `DROP TRIGGER audit_logs_no_truncate ON audit_logs;
+         CREATE TRIGGER audit_logs_no_truncate AFTER TRUNCATE ON audit_logs FOR EACH STATEMENT EXECUTE FUNCTION forbid_audit_log_mutation()`,
+        TRUNCATE_GUARD,
+      ],
+      [
+        "calling another function",
+        `DROP TRIGGER audit_logs_no_truncate ON audit_logs;
+         CREATE TRIGGER audit_logs_no_truncate BEFORE TRUNCATE ON audit_logs FOR EACH STATEMENT EXECUTE FUNCTION forbid_tenant_id_change()`,
+        TRUNCATE_GUARD,
+      ],
+      [
+        "also covering INSERT",
+        `DROP TRIGGER audit_logs_no_truncate ON audit_logs;
+         CREATE TRIGGER audit_logs_no_truncate BEFORE INSERT OR TRUNCATE ON audit_logs FOR EACH STATEMENT EXECUTE FUNCTION forbid_audit_log_mutation()`,
+        TRUNCATE_GUARD,
+      ],
+    ])("reports a TRUNCATE guard that is %s", async (_, ddl, expected) => {
+      const violations = await inRolledBackTransaction(prisma, async (tx) => {
+        for (const statement of ddl.split(";")) await tx.$executeRawUnsafe(statement);
+        return tenantIdImmutabilityViolations(tx);
+      });
+      expect(violations).toEqual([expected]);
+    });
+
+    it("reports an unexpected extra trigger on the append-only table", async () => {
+      const violations = await inRolledBackTransaction(prisma, async (tx) => {
+        await tx.$executeRawUnsafe(`CREATE TRIGGER "probe_extra" AFTER INSERT ON "audit_logs"
+          FOR EACH STATEMENT EXECUTE FUNCTION "forbid_audit_log_mutation"()`);
+        return tenantIdImmutabilityViolations(tx);
+      });
+      expect(violations).toEqual(["audit_logs: unexpected trigger probe_extra on append-only table"]);
+    });
+
+    it("rejects a partially protected append-only policy (e.g. without TRUNCATE)", async () => {
+      const policy = SPECIAL_TENANT_ID_POLICIES.audit_logs;
+      if (!policy) throw new Error("audit_logs policy missing");
+      const partial = { audit_logs: { ...policy, triggers: policy.triggers.filter((t) => !t.events.includes("TRUNCATE")) } };
+
+      expect(await tenantIdImmutabilityViolations(prisma, partial)).toEqual([
+        "audit_logs: append-only policy must block TRUNCATE",
+        "audit_logs: unexpected trigger audit_logs_no_truncate on append-only table",
+      ]);
     });
 
     it("reports either trigger function used on the wrong table", async () => {

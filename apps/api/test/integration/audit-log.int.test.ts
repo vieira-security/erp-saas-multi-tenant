@@ -14,6 +14,7 @@ import {
   type User,
 } from "../../src/generated/prisma/client.js";
 import { createPrismaClient } from "../../src/database/create-prisma-client.js";
+import { createDisposableDatabase, dropDatabase, runPrisma, testServerUrl } from "./database.js";
 import { inRolledBackTransaction } from "./table-audit.js";
 import { expectTenantIdImmutable } from "./tenant-immutability.js";
 import { UUID_V7, uuidV7Millis } from "./uuid.js";
@@ -21,6 +22,27 @@ import { UUID_V7, uuidV7Millis } from "./uuid.js";
 const APPEND_ONLY = /AuditLog is append-only: (UPDATE|DELETE) on audit_logs is not allowed/;
 const APPEND_ONLY_UPDATE = /AuditLog is append-only: UPDATE on audit_logs is not allowed/;
 const APPEND_ONLY_DELETE = /AuditLog is append-only: DELETE on audit_logs is not allowed/;
+/** SQLSTATE of forbid_audit_log_mutation() (plain RAISE EXCEPTION = raise_exception). */
+const APPEND_ONLY_SQLSTATE = "P0001";
+
+interface DriverCause {
+  originalCode?: string;
+  originalMessage?: string;
+}
+
+/** Asserts a rejection by forbid_audit_log_mutation() for `operation`, by SQLSTATE and operation (not full text). */
+async function expectAppendOnlyRejection(action: Promise<unknown>, operation: "UPDATE" | "DELETE" | "TRUNCATE"): Promise<void> {
+  let caught: unknown;
+  try {
+    await action;
+  } catch (error) {
+    caught = error;
+  }
+  expect(caught, `${operation} on audit_logs should be rejected`).toBeDefined();
+  const cause = (caught as { meta?: { driverAdapterError?: { cause?: DriverCause } } }).meta?.driverAdapterError?.cause;
+  expect(cause?.originalCode, String(caught)).toBe(APPEND_ONLY_SQLSTATE);
+  expect(cause?.originalMessage).toContain(`${operation} on audit_logs`);
+}
 const USER_FK = /audit_logs_tenant_id_user_id_fkey/;
 const BRANCH_FK = /audit_logs_tenant_id_branch_id_fkey/;
 const DEVICE_FK = /audit_logs_tenant_id_device_id_fkey/;
@@ -589,7 +611,7 @@ describe("AuditLog (PostgreSQL)", () => {
       expect(rows).toEqual([{ name: "forbid_audit_log_mutation", returns: "trigger", language: "plpgsql", args: "" }]);
     });
 
-    it("attaches an enabled BEFORE UPDATE OR DELETE row trigger to audit_logs (and only there)", async () => {
+    it("attaches exactly the enabled BEFORE UPDATE OR DELETE row trigger and BEFORE TRUNCATE statement trigger, only to audit_logs", async () => {
       const rows = await prisma.$queryRaw<
         { name: string; table: string; enabled: string; row: boolean; before: boolean; onInsert: boolean; onUpdate: boolean; onDelete: boolean; onTruncate: boolean; definition: string }[]
       >`
@@ -598,7 +620,8 @@ describe("AuditLog (PostgreSQL)", () => {
                (t.tgtype & 16) <> 0 AS "onUpdate", (t.tgtype & 8) <> 0 AS "onDelete", (t.tgtype & 32) <> 0 AS "onTruncate",
                pg_get_triggerdef(t.oid) AS definition
         FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
-        WHERE NOT t.tgisinternal AND t.tgfoid = 'public.forbid_audit_log_mutation()'::regprocedure`;
+        WHERE NOT t.tgisinternal AND t.tgfoid = 'public.forbid_audit_log_mutation()'::regprocedure
+        ORDER BY t.tgname`;
       expect(rows).toEqual([
         {
           name: "audit_logs_append_only",
@@ -614,7 +637,116 @@ describe("AuditLog (PostgreSQL)", () => {
           definition:
             "CREATE TRIGGER audit_logs_append_only BEFORE DELETE OR UPDATE ON public.audit_logs FOR EACH ROW EXECUTE FUNCTION forbid_audit_log_mutation()",
         },
+        {
+          name: "audit_logs_no_truncate",
+          table: "audit_logs",
+          enabled: "O",
+          row: false,
+          before: true,
+          onInsert: false,
+          onUpdate: false,
+          onDelete: false,
+          onTruncate: true,
+          definition:
+            "CREATE TRIGGER audit_logs_no_truncate BEFORE TRUNCATE ON public.audit_logs FOR EACH STATEMENT EXECUTE FUNCTION forbid_audit_log_mutation()",
+        },
       ]);
+    });
+
+    it("has no other trigger on audit_logs", async () => {
+      const rows = await prisma.$queryRaw<{ name: string }[]>`
+        SELECT tgname::text AS name FROM pg_trigger
+        WHERE tgrelid = 'public.audit_logs'::regclass AND NOT tgisinternal ORDER BY tgname`;
+      expect(rows.map((r) => r.name)).toEqual(["audit_logs_append_only", "audit_logs_no_truncate"]);
+    });
+  });
+
+  describe("no TRUNCATE (trigger audit_logs_no_truncate)", () => {
+    /** Every row of `tenantId`, as stored. */
+    async function rowsOf(tenantId: string) {
+      return prisma.$queryRaw<{ row: unknown }[]>`
+        SELECT to_jsonb(l) AS row FROM audit_logs l WHERE tenant_id = ${tenantId}::uuid ORDER BY id`;
+    }
+
+    async function orgWithLogs() {
+      const org = await newOrg();
+      await newLog(org.tenantId, { userId: org.user.id, action: "user.created", resourceId: org.user.id, metadata: { n: 1 } });
+      await newLog(org.tenantId, { deviceId: org.device.id, action: "device.revoked", resourceType: "device", resourceId: org.device.id });
+      await newLog(org.tenantId, { branchId: org.branch.id, action: "cash.closed", resourceType: "cash_register", ipAddress: "203.0.113.10" });
+      return { org, before: await rowsOf(org.tenantId) };
+    }
+
+    async function totalLogs(): Promise<bigint> {
+      const [row] = await prisma.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM audit_logs`;
+      return row?.n ?? -1n;
+    }
+
+    it.each([
+      "TRUNCATE audit_logs",
+      "TRUNCATE TABLE audit_logs",
+      "TRUNCATE ONLY audit_logs",
+      "TRUNCATE audit_logs RESTART IDENTITY",
+      "TRUNCATE audit_logs CONTINUE IDENTITY RESTRICT",
+      "TRUNCATE audit_logs CASCADE",
+      "TRUNCATE TABLE public.audit_logs RESTART IDENTITY CASCADE",
+    ])("rejects `%s` and keeps every existing row intact", async (statement) => {
+      const { org, before } = await orgWithLogs();
+      const totalBefore = await totalLogs();
+
+      await expectAppendOnlyRejection(prisma.$executeRawUnsafe(statement), "TRUNCATE");
+
+      expect(before).toHaveLength(3);
+      expect(await rowsOf(org.tenantId)).toEqual(before);
+      // Other test files insert concurrently, so the table can only grow.
+      expect(await totalLogs()).toBeGreaterThanOrEqual(totalBefore);
+    });
+
+    it("keeps INSERT working after a rejected TRUNCATE, while UPDATE and DELETE stay forbidden", async () => {
+      const { org, before } = await orgWithLogs();
+      await expectAppendOnlyRejection(prisma.$executeRawUnsafe("TRUNCATE audit_logs"), "TRUNCATE");
+
+      const next = await newLog(org.tenantId, { action: "user.disabled", resourceId: org.user.id });
+      await rawInsert({ tenantId: org.tenantId });
+
+      expect(await prisma.auditLog.count({ where: { tenantId: org.tenantId } })).toBe(5);
+      await expectAppendOnlyRejection(prisma.$executeRaw`UPDATE audit_logs SET action = 'x.y' WHERE id = ${next.id}::uuid`, "UPDATE");
+      await expectAppendOnlyRejection(prisma.$executeRaw`DELETE FROM audit_logs WHERE id = ${next.id}::uuid`, "DELETE");
+      expect(await rowsOf(org.tenantId)).toEqual(expect.arrayContaining(before));
+    });
+
+    it("rejects the TRUNCATE inside a transaction and rolls the whole transaction back", async () => {
+      const { org, before } = await orgWithLogs();
+
+      await expectAppendOnlyRejection(
+        prisma.$transaction([
+          prisma.auditLog.create({ data: { tenantId: org.tenantId, action: "user.created", resourceType: "user" } }),
+          prisma.$executeRawUnsafe("TRUNCATE audit_logs"),
+        ]),
+        "TRUNCATE",
+      );
+      expect(await rowsOf(org.tenantId)).toEqual(before);
+    });
+
+    // A cascade from a parent table would also truncate audit_logs. Run on a private database: the statement locks
+    // every table, and if the guard ever regressed it must not wipe the data other test files are using.
+    it("blocks a TRUNCATE ... CASCADE from a parent table (tenants) from reaching audit_logs", async () => {
+      const serverUrl = testServerUrl();
+      const db = await createDisposableDatabase(serverUrl);
+      const isolated = createPrismaClient(db.url);
+      try {
+        const migrate = await runPrisma(["migrate", "deploy"], db.url);
+        expect(migrate.code, migrate.output).toBe(0);
+        const tenant = await isolated.tenant.create({ data: { name: "T", status: TenantStatus.ACTIVE } });
+        await isolated.auditLog.create({ data: { tenantId: tenant.id, action: "tenant.created", resourceType: "tenant", resourceId: tenant.id } });
+
+        await expectAppendOnlyRejection(isolated.$executeRawUnsafe("TRUNCATE tenants CASCADE"), "TRUNCATE");
+
+        expect(await isolated.tenant.count()).toBe(1);
+        expect(await isolated.auditLog.count()).toBe(1);
+      } finally {
+        await isolated.$disconnect();
+        await dropDatabase(serverUrl, db.name);
+      }
     });
   });
 
