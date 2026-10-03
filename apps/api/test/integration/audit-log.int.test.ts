@@ -14,8 +14,12 @@ import {
   type User,
 } from "../../src/generated/prisma/client.js";
 import { createPrismaClient } from "../../src/database/create-prisma-client.js";
+import { inRolledBackTransaction } from "./table-audit.js";
 import { UUID_V7, uuidV7Millis } from "./uuid.js";
 
+const APPEND_ONLY = /AuditLog is append-only: (UPDATE|DELETE) on audit_logs is not allowed/;
+const APPEND_ONLY_UPDATE = /AuditLog is append-only: UPDATE on audit_logs is not allowed/;
+const APPEND_ONLY_DELETE = /AuditLog is append-only: DELETE on audit_logs is not allowed/;
 const USER_FK = /audit_logs_tenant_id_user_id_fkey/;
 const BRANCH_FK = /audit_logs_tenant_id_branch_id_fkey/;
 const DEVICE_FK = /audit_logs_tenant_id_device_id_fkey/;
@@ -483,56 +487,206 @@ describe("AuditLog (PostgreSQL)", () => {
       ]);
     });
 
-    // Append-only is an application rule for now: no trigger blocks UPDATE/DELETE on audit_logs yet.
-    it("GAP (append-only): the database still accepts UPDATE and DELETE of an audit log", async () => {
+  });
+
+  describe("append-only (trigger audit_logs_append_only)", () => {
+    /** Full row as stored, to prove a rejected mutation left it untouched. */
+    async function snapshot(id: string) {
+      const [row] = await prisma.$queryRaw<Record<string, unknown>[]>`
+        SELECT to_jsonb(l) AS row FROM audit_logs l WHERE id = ${id}::uuid`;
+      return row?.row;
+    }
+
+    async function linkedLog() {
       const org = await newOrg();
-      const log = await newLog(org.tenantId);
+      const log = await newLog(org.tenantId, {
+        userId: org.user.id,
+        branchId: org.branch.id,
+        deviceId: org.device.id,
+        action: "user.disabled",
+        resourceType: "user",
+        resourceId: org.user.id,
+        metadata: { reason: "desligamento" },
+        ipAddress: "203.0.113.10",
+      });
+      return { org, log, before: await snapshot(log.id) };
+    }
 
-      await prisma.$executeRaw`UPDATE audit_logs SET action = 'user.updated' WHERE id = ${log.id}::uuid`;
-      await prisma.$executeRaw`DELETE FROM audit_logs WHERE id = ${log.id}::uuid`;
+    it("keeps INSERT working (Prisma and SQL)", async () => {
+      const org = await newOrg();
+      await newLog(org.tenantId);
+      await rawInsert({ tenantId: org.tenantId, userId: org.user.id });
 
-      expect(await prisma.auditLog.findUnique({ where: { id: log.id } })).toBeNull();
+      expect(await prisma.auditLog.count({ where: { tenantId: org.tenantId } })).toBe(2);
+    });
+
+    it("rejects UPDATE via Prisma and leaves the row intact", async () => {
+      const { log, before } = await linkedLog();
+
+      await expect(prisma.auditLog.update({ where: { id: log.id }, data: { action: "user.enabled" } })).rejects.toThrow(
+        APPEND_ONLY,
+      );
+      await expect(prisma.auditLog.updateMany({ where: { id: log.id }, data: { metadata: Prisma.DbNull } })).rejects.toThrow(
+        APPEND_ONLY,
+      );
+      expect(await snapshot(log.id)).toEqual(before);
+    });
+
+    it("rejects UPDATE via SQL, including a no-op and a bulk update, and leaves the row intact", async () => {
+      const { org, log, before } = await linkedLog();
+
+      await expect(prisma.$executeRaw`UPDATE audit_logs SET action = 'user.enabled' WHERE id = ${log.id}::uuid`).rejects.toThrow(
+        APPEND_ONLY_UPDATE,
+      );
+      await expect(prisma.$executeRaw`UPDATE audit_logs SET action = action WHERE id = ${log.id}::uuid`).rejects.toThrow(
+        APPEND_ONLY_UPDATE,
+      );
+      await expect(
+        prisma.$executeRaw`UPDATE audit_logs SET metadata = NULL WHERE tenant_id = ${org.tenantId}::uuid`,
+      ).rejects.toThrow(APPEND_ONLY_UPDATE);
+      expect(await snapshot(log.id)).toEqual(before);
+    });
+
+    it("rejects DELETE via Prisma and leaves the row intact", async () => {
+      const { log, before } = await linkedLog();
+
+      await expect(prisma.auditLog.delete({ where: { id: log.id } })).rejects.toThrow(APPEND_ONLY);
+      await expect(prisma.auditLog.deleteMany({ where: { id: log.id } })).rejects.toThrow(APPEND_ONLY);
+      expect(await snapshot(log.id)).toEqual(before);
+    });
+
+    it("rejects DELETE via SQL, including a bulk delete, and leaves the row intact", async () => {
+      const { org, log, before } = await linkedLog();
+
+      await expect(prisma.$executeRaw`DELETE FROM audit_logs WHERE id = ${log.id}::uuid`).rejects.toThrow(APPEND_ONLY_DELETE);
+      await expect(prisma.$executeRaw`DELETE FROM audit_logs WHERE tenant_id = ${org.tenantId}::uuid`).rejects.toThrow(
+        APPEND_ONLY_DELETE,
+      );
+      expect(await snapshot(log.id)).toEqual(before);
+    });
+
+    it("keeps accepting INSERTs after rejected mutations", async () => {
+      const { org, log } = await linkedLog();
+      await expect(prisma.$executeRaw`UPDATE audit_logs SET action = 'x.y' WHERE id = ${log.id}::uuid`).rejects.toThrow(
+        APPEND_ONLY_UPDATE,
+      );
+      await expect(prisma.$executeRaw`DELETE FROM audit_logs WHERE id = ${log.id}::uuid`).rejects.toThrow(APPEND_ONLY_DELETE);
+
+      const next = await newLog(org.tenantId, { action: "user.enabled", resourceId: org.user.id });
+      await rawInsert({ tenantId: org.tenantId });
+
+      expect(next.action).toBe("user.enabled");
+      expect(await prisma.auditLog.count({ where: { tenantId: org.tenantId } })).toBe(3);
+    });
+
+    it("defines forbid_audit_log_mutation() as a trigger function in public", async () => {
+      const rows = await prisma.$queryRaw<{ name: string; returns: string; language: string; args: string }[]>`
+        SELECT p.proname::text AS name, format_type(p.prorettype, NULL) AS returns, l.lanname::text AS language,
+               pg_get_function_identity_arguments(p.oid) AS args
+        FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace JOIN pg_language l ON l.oid = p.prolang
+        WHERE n.nspname = 'public' AND p.proname = 'forbid_audit_log_mutation'`;
+      expect(rows).toEqual([{ name: "forbid_audit_log_mutation", returns: "trigger", language: "plpgsql", args: "" }]);
+    });
+
+    it("attaches an enabled BEFORE UPDATE OR DELETE row trigger to audit_logs (and only there)", async () => {
+      const rows = await prisma.$queryRaw<
+        { name: string; table: string; enabled: string; row: boolean; before: boolean; onInsert: boolean; onUpdate: boolean; onDelete: boolean; onTruncate: boolean; definition: string }[]
+      >`
+        SELECT t.tgname::text AS name, c.relname::text AS "table", t.tgenabled::text AS enabled,
+               (t.tgtype & 1) <> 0 AS row, (t.tgtype & 2) <> 0 AS before, (t.tgtype & 4) <> 0 AS "onInsert",
+               (t.tgtype & 16) <> 0 AS "onUpdate", (t.tgtype & 8) <> 0 AS "onDelete", (t.tgtype & 32) <> 0 AS "onTruncate",
+               pg_get_triggerdef(t.oid) AS definition
+        FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
+        WHERE NOT t.tgisinternal AND t.tgfoid = 'public.forbid_audit_log_mutation()'::regprocedure`;
+      expect(rows).toEqual([
+        {
+          name: "audit_logs_append_only",
+          table: "audit_logs",
+          // 'O' = enabled in origin and local replication modes (default).
+          enabled: "O",
+          row: true,
+          before: true,
+          onInsert: false,
+          onUpdate: true,
+          onDelete: true,
+          onTruncate: false,
+          definition:
+            "CREATE TRIGGER audit_logs_append_only BEFORE DELETE OR UPDATE ON public.audit_logs FOR EACH ROW EXECUTE FUNCTION forbid_audit_log_mutation()",
+        },
+      ]);
     });
   });
 
   describe("multi-tenant isolation on update", () => {
-    it("rejects changing user_id, branch_id or device_id to another tenant, including from NULL (Prisma and SQL)", async () => {
+    /**
+     * Runs one UPDATE with the append-only trigger disabled, inside a transaction that is always rolled back,
+     * and returns its error message (null if accepted). Proves the composite FKs still guard on their own.
+     */
+    function updateWithoutAppendOnly(update: Prisma.Sql): Promise<string | null> {
+      return inRolledBackTransaction(prisma, async (tx) => {
+        await tx.$executeRawUnsafe(`ALTER TABLE audit_logs DISABLE TRIGGER audit_logs_append_only`);
+        try {
+          await tx.$queryRaw(update);
+          return null;
+        } catch (error) {
+          return error instanceof Error ? error.message : String(error);
+        }
+      });
+    }
+
+    it("rejects changing user_id, branch_id or device_id, including from NULL (append-only, Prisma and SQL)", async () => {
       const a = await newOrg("A");
       const b = await newOrg("B");
       const linked = await newLog(a.tenantId, { userId: a.user.id, branchId: a.branch.id, deviceId: a.device.id });
       const bare = await newLog(a.tenantId);
 
       for (const { id } of [linked, bare]) {
-        await expect(prisma.auditLog.update({ where: { id }, data: { userId: b.user.id } })).rejects.toMatchObject({ code: "P2003" });
-        await expect(prisma.auditLog.update({ where: { id }, data: { branchId: b.branch.id } })).rejects.toMatchObject({
-          code: "P2003",
-        });
-        await expect(prisma.auditLog.update({ where: { id }, data: { deviceId: b.device.id } })).rejects.toMatchObject({
-          code: "P2003",
-        });
+        await expect(prisma.auditLog.update({ where: { id }, data: { userId: b.user.id } })).rejects.toThrow(APPEND_ONLY);
+        await expect(prisma.auditLog.update({ where: { id }, data: { branchId: b.branch.id } })).rejects.toThrow(APPEND_ONLY);
+        await expect(prisma.auditLog.update({ where: { id }, data: { deviceId: b.device.id } })).rejects.toThrow(APPEND_ONLY);
         await expect(prisma.$executeRaw`UPDATE audit_logs SET user_id = ${b.user.id}::uuid WHERE id = ${id}::uuid`).rejects.toThrow(
-          USER_FK,
+          APPEND_ONLY_UPDATE,
         );
-        await expect(
-          prisma.$executeRaw`UPDATE audit_logs SET branch_id = ${b.branch.id}::uuid WHERE id = ${id}::uuid`,
-        ).rejects.toThrow(BRANCH_FK);
-        await expect(
-          prisma.$executeRaw`UPDATE audit_logs SET device_id = ${b.device.id}::uuid WHERE id = ${id}::uuid`,
-        ).rejects.toThrow(DEVICE_FK);
       }
     });
 
-    it("rejects changing only tenant_id when user, branch or device is set (Prisma and SQL)", async () => {
+    it("still rejects cross-tenant user, branch or device through the composite FKs when the trigger is disabled", async () => {
       const a = await newOrg("A");
       const b = await newOrg("B");
-      const log = await newLog(a.tenantId, { userId: a.user.id, branchId: a.branch.id, deviceId: a.device.id });
+      const linked = await newLog(a.tenantId, { userId: a.user.id, branchId: a.branch.id, deviceId: a.device.id });
+      const bare = await newLog(a.tenantId);
 
-      await expect(prisma.auditLog.update({ where: { id: log.id }, data: { tenantId: b.tenantId } })).rejects.toMatchObject({
-        code: "P2003",
-      });
-      await expect(
-        prisma.$executeRaw`UPDATE audit_logs SET tenant_id = ${b.tenantId}::uuid WHERE id = ${log.id}::uuid`,
-      ).rejects.toThrow(/audit_logs_tenant_id_(user|branch|device)_id_fkey/);
+      for (const { id } of [linked, bare]) {
+        expect(await updateWithoutAppendOnly(Prisma.sql`UPDATE audit_logs SET user_id = ${b.user.id}::uuid WHERE id = ${id}::uuid`)).toMatch(
+          USER_FK,
+        );
+        expect(
+          await updateWithoutAppendOnly(Prisma.sql`UPDATE audit_logs SET branch_id = ${b.branch.id}::uuid WHERE id = ${id}::uuid`),
+        ).toMatch(BRANCH_FK);
+        expect(
+          await updateWithoutAppendOnly(Prisma.sql`UPDATE audit_logs SET device_id = ${b.device.id}::uuid WHERE id = ${id}::uuid`),
+        ).toMatch(DEVICE_FK);
+      }
+      expect(
+        await updateWithoutAppendOnly(Prisma.sql`UPDATE audit_logs SET tenant_id = ${b.tenantId}::uuid WHERE id = ${linked.id}::uuid`),
+      ).toMatch(/audit_logs_tenant_id_(user|branch|device)_id_fkey/);
+      // The rollback restored the trigger.
+      await expect(prisma.$executeRaw`DELETE FROM audit_logs WHERE id = ${bare.id}::uuid`).rejects.toThrow(APPEND_ONLY_DELETE);
+    });
+
+    it("rejects changing tenant_id, with or without user, branch or device (append-only, Prisma and SQL)", async () => {
+      const a = await newOrg("A");
+      const b = await newOrg("B");
+      const linked = await newLog(a.tenantId, { userId: a.user.id, branchId: a.branch.id, deviceId: a.device.id });
+      const bare = await newLog(a.tenantId);
+
+      for (const log of [linked, bare]) {
+        await expect(prisma.auditLog.update({ where: { id: log.id }, data: { tenantId: b.tenantId } })).rejects.toThrow(APPEND_ONLY);
+        await expect(
+          prisma.$executeRaw`UPDATE audit_logs SET tenant_id = ${b.tenantId}::uuid WHERE id = ${log.id}::uuid`,
+        ).rejects.toThrow(APPEND_ONLY_UPDATE);
+        expect((await prisma.auditLog.findUniqueOrThrow({ where: { id: log.id } })).tenantId).toBe(a.tenantId);
+      }
     });
 
     it("blocks moving a user, branch or device referenced by an audit log to another tenant", async () => {
@@ -552,17 +706,6 @@ describe("AuditLog (PostgreSQL)", () => {
       await expect(
         prisma.$executeRaw`UPDATE branches SET tenant_id = ${b.tenantId}::uuid, code = 'X-1' WHERE id = ${a.branch.id}::uuid`,
       ).rejects.toThrow(/violates foreign key constraint/);
-    });
-
-    // tenant_id is conceptually immutable; the schema cannot forbid a move with no tenant-scoped link (M1.14).
-    it("GAP (M1.14): accepts moving a log with no user, branch or device to another existing tenant", async () => {
-      const a = await newOrg("A");
-      const b = await newOrg("B");
-      const log = await newLog(a.tenantId);
-
-      const moved = await prisma.auditLog.update({ where: { id: log.id }, data: { tenantId: b.tenantId } });
-
-      expect(moved.tenantId).toBe(b.tenantId);
     });
 
     it("has no audit log in the database whose user, branch or device belongs to another tenant", async () => {
