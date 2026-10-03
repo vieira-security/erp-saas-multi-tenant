@@ -36,6 +36,7 @@ model Tenant {
   createdAt      DateTime     @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt      DateTime     @updatedAt @map("updated_at") @db.Timestamptz(3)
   companies      Company[]
+  branches       Branch[]
 
   @@map("tenants")
 }
@@ -59,9 +60,43 @@ model Company {
   createdAt DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt DateTime      @updatedAt @map("updated_at") @db.Timestamptz(3)
   tenant    Tenant        @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  branches  Branch[]
 
   @@unique([tenantId, cnpj])
+  // Alvo da FK composta de Branch: garante que a Company pertence ao mesmo tenant da Branch.
+  @@unique([tenantId, id])
   @@index([tenantId])
   @@index([tenantId, status])
   @@map("companies")
+}
+
+enum BranchStatus {
+  ACTIVE
+  INACTIVE
+
+  @@map("branch_status")
+}
+
+// CHECKs (fora do PSL, definidos na migration): name e code não vazios; cnpj nulo ou 14 dígitos.
+model Branch {
+  id        String       @id @default(uuid(7)) @db.Uuid
+  tenantId  String       @map("tenant_id") @db.Uuid
+  companyId String       @map("company_id") @db.Uuid
+  name      String
+  code      String
+  cnpj      String?
+  status    BranchStatus
+  timezone  String
+  createdAt DateTime     @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime     @updatedAt @map("updated_at") @db.Timestamptz(3)
+  tenant    Tenant       @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  // FK composta (tenant_id, company_id) -> companies(tenant_id, id): impede Company de outro tenant.
+  company   Company      @relation(fields: [tenantId, companyId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@unique([tenantId, code])
+  // NULLS DISTINCT (padrão do PostgreSQL): várias branches sem CNPJ são permitidas.
+  @@unique([tenantId, cnpj])
+  @@index([tenantId, companyId])
+  @@index([tenantId, status])
+  @@map("branches")
 }
