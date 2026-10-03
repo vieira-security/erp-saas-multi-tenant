@@ -10,6 +10,7 @@ import {
   type PrismaClient,
 } from "../../src/generated/prisma/client.js";
 import { createPrismaClient } from "../../src/database/create-prisma-client.js";
+import { expectTenantIdImmutable } from "./tenant-immutability.js";
 import { UUID_V7, uuidV7Millis } from "./uuid.js";
 
 const BRANCH_FK = /devices_tenant_id_branch_id_fkey/;
@@ -329,12 +330,11 @@ describe("Device (PostgreSQL)", () => {
       const b = await newOrg("B");
       const device = await newDevice(a.tenantId, { branchId: a.branch.id });
 
-      await expect(prisma.device.update({ where: { id: device.id }, data: { tenantId: b.tenantId } })).rejects.toMatchObject({
-        code: "P2003",
-      });
-      await expect(
+      await expectTenantIdImmutable(prisma.device.update({ where: { id: device.id }, data: { tenantId: b.tenantId } }), "devices");
+      await expectTenantIdImmutable(
         prisma.$executeRaw`UPDATE devices SET tenant_id = ${b.tenantId}::uuid WHERE id = ${device.id}::uuid`,
-      ).rejects.toThrow(BRANCH_FK);
+        "devices",
+      );
     });
 
     it("blocks moving a branch that has devices to another tenant, even consistently with its company", async () => {
@@ -342,35 +342,46 @@ describe("Device (PostgreSQL)", () => {
       const b = await newOrg("B");
       await newDevice(a.tenantId, { branchId: a.branch.id });
 
-      await expect(
+      await expectTenantIdImmutable(
         prisma.$executeRaw`UPDATE branches SET tenant_id = ${b.tenantId}::uuid, company_id = ${b.branch.companyId}::uuid,
                                                code = 'X-1'
                            WHERE id = ${a.branch.id}::uuid`,
-      ).rejects.toThrow(BRANCH_FK);
+        "branches",
+      );
     });
 
-    // tenant_id is conceptually immutable; the schema cannot forbid a consistent move.
-    it("GAP (M1.14): accepts moving a tenant-level device (branch_id NULL) to another tenant", async () => {
+    // Formerly GAP (M1.14): consistent moves were accepted; devices_tenant_id_immutable now forbids them.
+    it("blocks moving a tenant-level device (branch_id NULL) to another tenant (Prisma and SQL)", async () => {
       const a = await newOrg("A");
       const b = await newOrg("B");
       const device = await newDevice(a.tenantId, { branchId: null });
 
-      const moved = await prisma.device.update({ where: { id: device.id }, data: { tenantId: b.tenantId } });
-
-      expect(moved.tenantId).toBe(b.tenantId);
+      await expectTenantIdImmutable(prisma.device.update({ where: { id: device.id }, data: { tenantId: b.tenantId } }), "devices");
+      await expectTenantIdImmutable(
+        prisma.$executeRaw`UPDATE devices SET tenant_id = ${b.tenantId}::uuid WHERE id = ${device.id}::uuid`,
+        "devices",
+      );
+      expect((await prisma.device.findUniqueOrThrow({ where: { id: device.id } })).tenantId).toBe(a.tenantId);
     });
 
-    it("GAP (M1.14): accepts moving a device when tenant_id and branch_id change together", async () => {
+    it("blocks moving a device when tenant_id and branch_id change together (Prisma and SQL)", async () => {
       const a = await newOrg("A");
       const b = await newOrg("B");
       const device = await newDevice(a.tenantId, { branchId: a.branch.id });
 
-      const moved = await prisma.device.update({
-        where: { id: device.id },
-        data: { tenantId: b.tenantId, branchId: b.branch.id },
+      await expectTenantIdImmutable(
+        prisma.device.update({ where: { id: device.id }, data: { tenantId: b.tenantId, branchId: b.branch.id } }),
+        "devices",
+      );
+      await expectTenantIdImmutable(
+        prisma.$executeRaw`UPDATE devices SET tenant_id = ${b.tenantId}::uuid, branch_id = ${b.branch.id}::uuid
+                           WHERE id = ${device.id}::uuid`,
+        "devices",
+      );
+      expect(await prisma.device.findUniqueOrThrow({ where: { id: device.id } })).toMatchObject({
+        tenantId: a.tenantId,
+        branchId: a.branch.id,
       });
-
-      expect(moved).toMatchObject({ tenantId: b.tenantId, branchId: b.branch.id });
     });
 
     it("has no device in the database linked to a branch of another tenant", async () => {

@@ -12,6 +12,7 @@ import {
   type User,
 } from "../../src/generated/prisma/client.js";
 import { createPrismaClient } from "../../src/database/create-prisma-client.js";
+import { expectTenantIdImmutable } from "./tenant-immutability.js";
 import { UUID_V7, uuidV7Millis } from "./uuid.js";
 
 const USER_FK = /sessions_tenant_id_user_id_fkey/;
@@ -431,12 +432,11 @@ describe("Session (PostgreSQL)", () => {
       const b = await newOrg("B");
       const session = await newSession(a.tenantId, a.user.id, { deviceId: a.device.id });
 
-      await expect(prisma.session.update({ where: { id: session.id }, data: { tenantId: b.tenantId } })).rejects.toMatchObject({
-        code: "P2003",
-      });
-      await expect(
+      await expectTenantIdImmutable(prisma.session.update({ where: { id: session.id }, data: { tenantId: b.tenantId } }), "sessions");
+      await expectTenantIdImmutable(
         prisma.$executeRaw`UPDATE sessions SET tenant_id = ${b.tenantId}::uuid WHERE id = ${session.id}::uuid`,
-      ).rejects.toThrow(/sessions_tenant_id_(user|device)_id_fkey/);
+        "sessions",
+      );
     });
 
     it("blocks moving a user or a device that has sessions to another tenant", async () => {
@@ -445,26 +445,55 @@ describe("Session (PostgreSQL)", () => {
       const tenantLevelDevice = await addDevice(a.tenantId, null, "admin-001");
       await newSession(a.tenantId, a.user.id, { deviceId: tenantLevelDevice.id });
 
-      await expect(
+      await expectTenantIdImmutable(
         prisma.$executeRaw`UPDATE users SET tenant_id = ${b.tenantId}::uuid, employee_number = 'X-1' WHERE id = ${a.user.id}::uuid`,
-      ).rejects.toThrow(USER_FK);
-      await expect(
+        "users",
+      );
+      await expectTenantIdImmutable(
         prisma.$executeRaw`UPDATE devices SET tenant_id = ${b.tenantId}::uuid, device_key = 'X-1' WHERE id = ${tenantLevelDevice.id}::uuid`,
-      ).rejects.toThrow(DEVICE_FK);
+        "devices",
+      );
     });
 
-    // tenant_id is conceptually immutable; the schema cannot forbid a fully consistent move.
-    it("GAP (M1.14): accepts moving a whole session when tenant, user and device change together", async () => {
+    // Formerly GAP (M1.14): consistent moves were accepted; sessions_tenant_id_immutable now forbids them.
+    it("blocks moving a whole session when tenant, user and device change together, with or without device (Prisma and SQL)", async () => {
       const a = await newOrg("A");
       const b = await newOrg("B");
-      const session = await newSession(a.tenantId, a.user.id, { deviceId: a.device.id });
+      const withDevice = await newSession(a.tenantId, a.user.id, { deviceId: a.device.id });
+      const withoutDevice = await newSession(a.tenantId, a.user.id);
 
-      const moved = await prisma.session.update({
-        where: { id: session.id },
-        data: { tenantId: b.tenantId, userId: b.user.id, deviceId: b.device.id },
+      await expectTenantIdImmutable(
+        prisma.session.update({
+          where: { id: withDevice.id },
+          data: { tenantId: b.tenantId, userId: b.user.id, deviceId: b.device.id },
+        }),
+        "sessions",
+      );
+      await expectTenantIdImmutable(
+        prisma.$executeRaw`UPDATE sessions SET tenant_id = ${b.tenantId}::uuid, user_id = ${b.user.id}::uuid,
+                                               device_id = ${b.device.id}::uuid
+                           WHERE id = ${withDevice.id}::uuid`,
+        "sessions",
+      );
+      await expectTenantIdImmutable(
+        prisma.session.update({ where: { id: withoutDevice.id }, data: { tenantId: b.tenantId, userId: b.user.id } }),
+        "sessions",
+      );
+      await expectTenantIdImmutable(
+        prisma.$executeRaw`UPDATE sessions SET tenant_id = ${b.tenantId}::uuid, user_id = ${b.user.id}::uuid
+                           WHERE id = ${withoutDevice.id}::uuid`,
+        "sessions",
+      );
+      expect(await prisma.session.findUniqueOrThrow({ where: { id: withDevice.id } })).toMatchObject({
+        tenantId: a.tenantId,
+        userId: a.user.id,
+        deviceId: a.device.id,
       });
-
-      expect(moved).toMatchObject({ tenantId: b.tenantId, userId: b.user.id, deviceId: b.device.id });
+      expect(await prisma.session.findUniqueOrThrow({ where: { id: withoutDevice.id } })).toMatchObject({
+        tenantId: a.tenantId,
+        userId: a.user.id,
+        deviceId: null,
+      });
     });
 
     it("has no session in the database whose user or device belongs to another tenant", async () => {

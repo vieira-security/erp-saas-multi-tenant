@@ -8,6 +8,7 @@ import {
   type PrismaClient,
 } from "../../src/generated/prisma/client.js";
 import { createPrismaClient } from "../../src/database/create-prisma-client.js";
+import { expectTenantIdImmutable } from "./tenant-immutability.js";
 import { UUID_V7, uuidV7Millis } from "./uuid.js";
 
 const CNPJ = "11222333000181";
@@ -163,12 +164,14 @@ describe("Branch (PostgreSQL)", () => {
       const companyB = await newTenantWithCompany("B");
       const branch = await newBranch(companyA.tenantId, companyA.id);
 
-      await expect(
+      await expectTenantIdImmutable(
         prisma.branch.update({ where: { id: branch.id }, data: { tenantId: companyB.tenantId } }),
-      ).rejects.toMatchObject({ code: "P2003" });
-      await expect(
+        "branches",
+      );
+      await expectTenantIdImmutable(
         prisma.$executeRaw`UPDATE branches SET tenant_id = ${companyB.tenantId}::uuid WHERE id = ${branch.id}::uuid`,
-      ).rejects.toThrow(CROSS_TENANT_FK);
+        "branches",
+      );
     });
 
     it("rejects moving a company with branches to another tenant", async () => {
@@ -176,13 +179,15 @@ describe("Branch (PostgreSQL)", () => {
       const companyB = await newTenantWithCompany("B");
       await newBranch(companyA.tenantId, companyA.id);
 
-      await expect(
+      await expectTenantIdImmutable(
         prisma.company.update({ where: { id: companyA.id }, data: { tenantId: companyB.tenantId, cnpj: OTHER_CNPJ } }),
-      ).rejects.toThrow();
-      await expect(
+        "companies",
+      );
+      await expectTenantIdImmutable(
         prisma.$executeRaw`UPDATE companies SET tenant_id = ${companyB.tenantId}::uuid, cnpj = ${OTHER_CNPJ}
                            WHERE id = ${companyA.id}::uuid`,
-      ).rejects.toThrow(CROSS_TENANT_FK);
+        "companies",
+      );
     });
 
     it("has no branch in the database pointing to a company of another tenant", async () => {

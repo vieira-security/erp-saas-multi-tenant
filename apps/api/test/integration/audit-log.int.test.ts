@@ -15,6 +15,7 @@ import {
 } from "../../src/generated/prisma/client.js";
 import { createPrismaClient } from "../../src/database/create-prisma-client.js";
 import { inRolledBackTransaction } from "./table-audit.js";
+import { expectTenantIdImmutable } from "./tenant-immutability.js";
 import { UUID_V7, uuidV7Millis } from "./uuid.js";
 
 const APPEND_ONLY = /AuditLog is append-only: (UPDATE|DELETE) on audit_logs is not allowed/;
@@ -697,15 +698,18 @@ describe("AuditLog (PostgreSQL)", () => {
       });
       await newLog(a.tenantId, { userId: a.user.id, branchId: a.branch.id, deviceId: tenantLevelDevice.id });
 
-      await expect(
+      await expectTenantIdImmutable(
         prisma.$executeRaw`UPDATE users SET tenant_id = ${b.tenantId}::uuid, employee_number = 'X-1' WHERE id = ${a.user.id}::uuid`,
-      ).rejects.toThrow(USER_FK);
-      await expect(
+        "users",
+      );
+      await expectTenantIdImmutable(
         prisma.$executeRaw`UPDATE devices SET tenant_id = ${b.tenantId}::uuid, device_key = 'X-1' WHERE id = ${tenantLevelDevice.id}::uuid`,
-      ).rejects.toThrow(DEVICE_FK);
-      await expect(
+        "devices",
+      );
+      await expectTenantIdImmutable(
         prisma.$executeRaw`UPDATE branches SET tenant_id = ${b.tenantId}::uuid, code = 'X-1' WHERE id = ${a.branch.id}::uuid`,
-      ).rejects.toThrow(/violates foreign key constraint/);
+        "branches",
+      );
     });
 
     it("has no audit log in the database whose user, branch or device belongs to another tenant", async () => {

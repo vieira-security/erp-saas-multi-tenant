@@ -9,6 +9,7 @@ import {
   type PrismaClient,
 } from "../../src/generated/prisma/client.js";
 import { createPrismaClient } from "../../src/database/create-prisma-client.js";
+import { expectTenantIdImmutable } from "./tenant-immutability.js";
 import {
   GLOBAL_TABLES,
   HASHED_CREDENTIAL_COLUMNS,
@@ -466,12 +467,12 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
       const other = await newTenant("B");
       const branch = await newBranch(company);
 
-      await expect(prisma.branch.update({ where: { id: branch.id }, data: { tenantId: other.id } })).rejects.toMatchObject({
-        code: "P2003",
-      });
-      await expect(
+      await expectTenantIdImmutable(prisma.branch.update({ where: { id: branch.id }, data: { tenantId: other.id } }), "branches");
+      await expectTenantIdImmutable(
         prisma.$executeRaw`UPDATE branches SET tenant_id = ${other.id}::uuid WHERE id = ${branch.id}::uuid`,
-      ).rejects.toThrow(CROSS_TENANT_FK);
+        "branches",
+      );
+      expect((await prisma.branch.findUniqueOrThrow({ where: { id: branch.id } })).tenantId).toBe(company.tenantId);
     });
 
     it("blocks a branch company_id change to another tenant's company (Prisma and SQL)", async () => {
@@ -492,43 +493,54 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
       const other = await newTenant("B");
       await newBranch(company);
 
-      await expect(prisma.company.update({ where: { id: company.id }, data: { tenantId: other.id } })).rejects.toThrow();
-      await expect(
+      await expectTenantIdImmutable(prisma.company.update({ where: { id: company.id }, data: { tenantId: other.id } }), "companies");
+      await expectTenantIdImmutable(
         prisma.$executeRaw`UPDATE companies SET tenant_id = ${other.id}::uuid WHERE id = ${company.id}::uuid`,
-      ).rejects.toThrow(CROSS_TENANT_FK);
+        "companies",
+      );
     });
 
-    it("blocks a company tenant_id change to a non-existent tenant", async () => {
+    it("blocks a company tenant_id change to a non-existent tenant (immutability fires before the FK)", async () => {
       const company = await newCompany((await newTenant("A")).id);
 
-      await expect(
+      await expectTenantIdImmutable(
         prisma.$executeRaw`UPDATE companies SET tenant_id = gen_random_uuid() WHERE id = ${company.id}::uuid`,
-      ).rejects.toThrow(/companies_tenant_id_fkey/);
+        "companies",
+      );
     });
 
-    // Known gaps: tenant_id is conceptually immutable, but the schema alone cannot forbid a
-    // *consistent* move. These tests pin today's behaviour so the M1.14 protection flips them.
-    it("GAP (M1.14): accepts moving a branch when tenant_id and company_id change together", async () => {
+    // Formerly GAP (M1.14): consistent moves were accepted; companies/branches_tenant_id_immutable now forbid them.
+    it("blocks moving a branch when tenant_id and company_id change together (Prisma and SQL)", async () => {
       const company = await newCompany((await newTenant("A")).id);
       const target = await newCompany((await newTenant("B")).id);
       const branch = await newBranch(company);
 
-      const moved = await prisma.branch.update({
-        where: { id: branch.id },
-        data: { tenantId: target.tenantId, companyId: target.id },
+      await expectTenantIdImmutable(
+        prisma.branch.update({ where: { id: branch.id }, data: { tenantId: target.tenantId, companyId: target.id } }),
+        "branches",
+      );
+      await expectTenantIdImmutable(
+        prisma.$executeRaw`UPDATE branches SET tenant_id = ${target.tenantId}::uuid, company_id = ${target.id}::uuid
+                           WHERE id = ${branch.id}::uuid`,
+        "branches",
+      );
+      expect(await prisma.branch.findUniqueOrThrow({ where: { id: branch.id } })).toMatchObject({
+        tenantId: company.tenantId,
+        companyId: company.id,
       });
-
-      expect(moved).toMatchObject({ tenantId: target.tenantId, companyId: target.id });
-      expect(await crossTenantBranches()).toBe(0n); // consistent move: no cross-tenant relation is created
+      expect(await crossTenantBranches()).toBe(0n);
     });
 
-    it("GAP (M1.14): accepts moving a company without branches to another tenant", async () => {
+    it("blocks moving a company without branches to another tenant (Prisma and SQL)", async () => {
       const company = await newCompany((await newTenant("A")).id);
       const other = await newTenant("B");
 
-      const moved = await prisma.company.update({ where: { id: company.id }, data: { tenantId: other.id } });
-
-      expect(moved.tenantId).toBe(other.id);
+      await expectTenantIdImmutable(prisma.company.update({ where: { id: company.id }, data: { tenantId: other.id } }), "companies");
+      await expectTenantIdImmutable(
+        prisma.$executeRaw`UPDATE companies SET tenant_id = ${other.id}::uuid WHERE id = ${company.id}::uuid`,
+        "companies",
+      );
+      expect((await prisma.company.findUniqueOrThrow({ where: { id: company.id } })).tenantId).toBe(company.tenantId);
     });
   });
 
@@ -540,21 +552,26 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
       });
     }
 
-    it("blocks a user tenant_id change to a non-existent tenant", async () => {
+    it("blocks a user tenant_id change to a non-existent tenant (immutability fires before the FK)", async () => {
       const user = await newUser("A");
 
-      await expect(
+      await expectTenantIdImmutable(
         prisma.$executeRaw`UPDATE users SET tenant_id = gen_random_uuid() WHERE id = ${user.id}::uuid`,
-      ).rejects.toThrow(/users_tenant_id_fkey/);
+        "users",
+      );
     });
 
-    it("GAP (M1.14): accepts moving a user to another existing tenant", async () => {
+    // Formerly GAP (M1.14).
+    it("blocks moving a user without links to another existing tenant (Prisma and SQL)", async () => {
       const user = await newUser("A");
       const other = await prisma.tenant.create({ data: { name: "B", status: TenantStatus.ACTIVE } });
 
-      const moved = await prisma.user.update({ where: { id: user.id }, data: { tenantId: other.id } });
-
-      expect(moved.tenantId).toBe(other.id);
+      await expectTenantIdImmutable(prisma.user.update({ where: { id: user.id }, data: { tenantId: other.id } }), "users");
+      await expectTenantIdImmutable(
+        prisma.$executeRaw`UPDATE users SET tenant_id = ${other.id}::uuid WHERE id = ${user.id}::uuid`,
+        "users",
+      );
+      expect((await prisma.user.findUniqueOrThrow({ where: { id: user.id } })).tenantId).toBe(user.tenantId);
     });
   });
 
@@ -564,21 +581,26 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
       return prisma.role.create({ data: { tenantId: tenant.id, code: "OWNER", name: "Proprietário", status: RoleStatus.ACTIVE } });
     }
 
-    it("blocks a role tenant_id change to a non-existent tenant", async () => {
+    it("blocks a role tenant_id change to a non-existent tenant (immutability fires before the FK)", async () => {
       const role = await newRole("A");
 
-      await expect(
+      await expectTenantIdImmutable(
         prisma.$executeRaw`UPDATE roles SET tenant_id = gen_random_uuid() WHERE id = ${role.id}::uuid`,
-      ).rejects.toThrow(/roles_tenant_id_fkey/);
+        "roles",
+      );
     });
 
-    it("GAP (M1.14): accepts moving a role to another existing tenant", async () => {
+    // Formerly GAP (M1.14).
+    it("blocks moving a role without links to another existing tenant (Prisma and SQL)", async () => {
       const role = await newRole("A");
       const other = await prisma.tenant.create({ data: { name: "B", status: TenantStatus.ACTIVE } });
 
-      const moved = await prisma.role.update({ where: { id: role.id }, data: { tenantId: other.id } });
-
-      expect(moved.tenantId).toBe(other.id);
+      await expectTenantIdImmutable(prisma.role.update({ where: { id: role.id }, data: { tenantId: other.id } }), "roles");
+      await expectTenantIdImmutable(
+        prisma.$executeRaw`UPDATE roles SET tenant_id = ${other.id}::uuid WHERE id = ${role.id}::uuid`,
+        "roles",
+      );
+      expect((await prisma.role.findUniqueOrThrow({ where: { id: role.id } })).tenantId).toBe(role.tenantId);
     });
   });
 
@@ -600,24 +622,33 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
         data: { tenantId: role.tenantId, roleId: role.id, permissionId: (await anyPermission()).id },
       });
 
-      await expect(
+      await expectTenantIdImmutable(
         prisma.$executeRaw`UPDATE roles SET tenant_id = ${other.id}::uuid WHERE id = ${role.id}::uuid`,
-      ).rejects.toThrow(/role_permissions_tenant_id_role_id_fkey/);
+        "roles",
+      );
     });
 
-    it("GAP (M1.14): accepts moving a role-permission when tenant_id and role_id change together", async () => {
+    // Formerly GAP (M1.14).
+    it("blocks moving a role-permission when tenant_id and role_id change together (Prisma and SQL)", async () => {
       const roleA = await newRole("A");
       const roleB = await newRole("B");
       const link = await prisma.rolePermission.create({
         data: { tenantId: roleA.tenantId, roleId: roleA.id, permissionId: (await anyPermission()).id },
       });
 
-      const moved = await prisma.rolePermission.update({
-        where: { id: link.id },
-        data: { tenantId: roleB.tenantId, roleId: roleB.id },
+      await expectTenantIdImmutable(
+        prisma.rolePermission.update({ where: { id: link.id }, data: { tenantId: roleB.tenantId, roleId: roleB.id } }),
+        "role_permissions",
+      );
+      await expectTenantIdImmutable(
+        prisma.$executeRaw`UPDATE role_permissions SET tenant_id = ${roleB.tenantId}::uuid, role_id = ${roleB.id}::uuid
+                           WHERE id = ${link.id}::uuid`,
+        "role_permissions",
+      );
+      expect(await prisma.rolePermission.findUniqueOrThrow({ where: { id: link.id } })).toMatchObject({
+        tenantId: roleA.tenantId,
+        roleId: roleA.id,
       });
-
-      expect(moved).toMatchObject({ tenantId: roleB.tenantId, roleId: roleB.id });
     });
   });
 

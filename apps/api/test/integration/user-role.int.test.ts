@@ -12,6 +12,7 @@ import {
   type User,
 } from "../../src/generated/prisma/client.js";
 import { createPrismaClient } from "../../src/database/create-prisma-client.js";
+import { expectTenantIdImmutable } from "./tenant-immutability.js";
 import { UUID_V7, uuidV7Millis } from "./uuid.js";
 
 const USER_FK = /user_roles_tenant_id_user_id_fkey/;
@@ -316,12 +317,11 @@ describe("UserRole (PostgreSQL)", () => {
       const scoped = await assign(a.tenantId, a.user.id, a.attendant.id, a.branchA.id);
 
       for (const { id } of [global, scoped]) {
-        await expect(prisma.userRole.update({ where: { id }, data: { tenantId: b.tenantId } })).rejects.toMatchObject({
-          code: "P2003",
-        });
-        await expect(
+        await expectTenantIdImmutable(prisma.userRole.update({ where: { id }, data: { tenantId: b.tenantId } }), "user_roles");
+        await expectTenantIdImmutable(
           prisma.$executeRaw`UPDATE user_roles SET tenant_id = ${b.tenantId}::uuid WHERE id = ${id}::uuid`,
-        ).rejects.toThrow(ANY_COMPOSITE_FK);
+          "user_roles",
+        );
       }
     });
 
@@ -330,26 +330,41 @@ describe("UserRole (PostgreSQL)", () => {
       const b = await newOrg("B");
       await assign(a.tenantId, a.user.id, a.manager.id);
 
-      await expect(
+      await expectTenantIdImmutable(
         prisma.$executeRaw`UPDATE users SET tenant_id = ${b.tenantId}::uuid, employee_number = 'X-1'
                            WHERE id = ${a.user.id}::uuid`,
-      ).rejects.toThrow(USER_FK);
+        "users",
+      );
     });
 
-    // tenant_id is conceptually immutable; the schema cannot forbid a fully consistent move.
-    it("GAP (M1.14): accepts moving a whole user-role when tenant, user, role and branch change together", async () => {
+    // Formerly GAP (M1.14): consistent moves were accepted; user_roles_tenant_id_immutable now forbids them.
+    it("blocks moving a whole user-role when tenant, user, role and branch change together (Prisma and SQL)", async () => {
       const a = await newOrg("A");
       const b = await newOrg("B");
       await grantAccess(a.tenantId, a.user.id, a.branchA.id);
       await grantAccess(b.tenantId, b.user.id, b.branchA.id);
       const created = await assign(a.tenantId, a.user.id, a.manager.id, a.branchA.id);
 
-      const moved = await prisma.userRole.update({
-        where: { id: created.id },
-        data: { tenantId: b.tenantId, userId: b.user.id, roleId: b.manager.id, branchId: b.branchA.id },
+      await expectTenantIdImmutable(
+        prisma.userRole.update({
+          where: { id: created.id },
+          data: { tenantId: b.tenantId, userId: b.user.id, roleId: b.manager.id, branchId: b.branchA.id },
+        }),
+        "user_roles",
+      );
+      await expectTenantIdImmutable(
+        prisma.$executeRaw`UPDATE user_roles
+                           SET tenant_id = ${b.tenantId}::uuid, user_id = ${b.user.id}::uuid,
+                               role_id = ${b.manager.id}::uuid, branch_id = ${b.branchA.id}::uuid
+                           WHERE id = ${created.id}::uuid`,
+        "user_roles",
+      );
+      expect(await prisma.userRole.findUniqueOrThrow({ where: { id: created.id } })).toMatchObject({
+        tenantId: a.tenantId,
+        userId: a.user.id,
+        roleId: a.manager.id,
+        branchId: a.branchA.id,
       });
-
-      expect(moved).toMatchObject({ tenantId: b.tenantId, userId: b.user.id, roleId: b.manager.id, branchId: b.branchA.id });
     });
 
     it("has no user-role in the database pointing to another tenant or to a branch without access", async () => {

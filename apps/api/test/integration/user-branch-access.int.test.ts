@@ -10,6 +10,7 @@ import {
   type User,
 } from "../../src/generated/prisma/client.js";
 import { createPrismaClient } from "../../src/database/create-prisma-client.js";
+import { expectTenantIdImmutable } from "./tenant-immutability.js";
 import { UUID_V7, uuidV7Millis } from "./uuid.js";
 
 const USER_FK = /user_branch_access_tenant_id_user_id_fkey/;
@@ -218,12 +219,14 @@ describe("UserBranchAccess (PostgreSQL)", () => {
       const b = await newOrg("B");
       const access = await grant(a.tenantId, a.user.id, a.branch.id);
 
-      await expect(
+      await expectTenantIdImmutable(
         prisma.userBranchAccess.update({ where: { id: access.id }, data: { tenantId: b.tenantId } }),
-      ).rejects.toMatchObject({ code: "P2003" });
-      await expect(
+        "user_branch_access",
+      );
+      await expectTenantIdImmutable(
         prisma.$executeRaw`UPDATE user_branch_access SET tenant_id = ${b.tenantId}::uuid WHERE id = ${access.id}::uuid`,
-      ).rejects.toThrow(CROSS_TENANT_FK);
+        "user_branch_access",
+      );
     });
 
     it("blocks moving a user or a branch that has accesses to another tenant", async () => {
@@ -231,29 +234,43 @@ describe("UserBranchAccess (PostgreSQL)", () => {
       const b = await newOrg("B");
       await grant(a.tenantId, a.user.id, a.branch.id);
 
-      await expect(
+      await expectTenantIdImmutable(
         prisma.$executeRaw`UPDATE users SET tenant_id = ${b.tenantId}::uuid, employee_number = 'X-1'
                            WHERE id = ${a.user.id}::uuid`,
-      ).rejects.toThrow(USER_FK);
-      await expect(
+        "users",
+      );
+      await expectTenantIdImmutable(
         prisma.$executeRaw`UPDATE branches SET tenant_id = ${b.tenantId}::uuid, company_id = ${b.companyId}::uuid,
                                                code = 'X-1'
                            WHERE id = ${a.branch.id}::uuid`,
-      ).rejects.toThrow(BRANCH_FK);
+        "branches",
+      );
     });
 
-    // tenant_id is conceptually immutable; the schema cannot forbid a fully consistent move.
-    it("GAP (M1.14): accepts moving an access when tenant_id, user_id and branch_id change together", async () => {
+    // Formerly GAP (M1.14): consistent moves were accepted; user_branch_access_tenant_id_immutable now forbids them.
+    it("blocks moving an access when tenant_id, user_id and branch_id change together (Prisma and SQL)", async () => {
       const a = await newOrg("A");
       const b = await newOrg("B");
       const access = await grant(a.tenantId, a.user.id, a.branch.id);
 
-      const moved = await prisma.userBranchAccess.update({
-        where: { id: access.id },
-        data: { tenantId: b.tenantId, userId: b.user.id, branchId: b.branch.id },
+      await expectTenantIdImmutable(
+        prisma.userBranchAccess.update({
+          where: { id: access.id },
+          data: { tenantId: b.tenantId, userId: b.user.id, branchId: b.branch.id },
+        }),
+        "user_branch_access",
+      );
+      await expectTenantIdImmutable(
+        prisma.$executeRaw`UPDATE user_branch_access
+                           SET tenant_id = ${b.tenantId}::uuid, user_id = ${b.user.id}::uuid, branch_id = ${b.branch.id}::uuid
+                           WHERE id = ${access.id}::uuid`,
+        "user_branch_access",
+      );
+      expect(await prisma.userBranchAccess.findUniqueOrThrow({ where: { id: access.id } })).toMatchObject({
+        tenantId: a.tenantId,
+        userId: a.user.id,
+        branchId: a.branch.id,
       });
-
-      expect(moved).toMatchObject({ tenantId: b.tenantId, userId: b.user.id, branchId: b.branch.id });
     });
 
     it("has no access in the database whose user or branch belongs to another tenant", async () => {

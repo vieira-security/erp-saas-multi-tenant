@@ -8,6 +8,7 @@ import {
   type Role,
 } from "../../src/generated/prisma/client.js";
 import { createPrismaClient } from "../../src/database/create-prisma-client.js";
+import { expectTenantIdImmutable } from "./tenant-immutability.js";
 import { UUID_V7, uuidV7Millis } from "./uuid.js";
 
 const ROLE_FK = /role_permissions_tenant_id_role_id_fkey/;
@@ -164,12 +165,14 @@ describe("RolePermission (PostgreSQL)", () => {
       const roleB = await newRole("B");
       const created = await link(roleA.tenantId, roleA.id, (await newPermission()).id);
 
-      await expect(
+      await expectTenantIdImmutable(
         prisma.rolePermission.update({ where: { id: created.id }, data: { tenantId: roleB.tenantId } }),
-      ).rejects.toMatchObject({ code: "P2003" });
-      await expect(
+        "role_permissions",
+      );
+      await expectTenantIdImmutable(
         prisma.$executeRaw`UPDATE role_permissions SET tenant_id = ${roleB.tenantId}::uuid WHERE id = ${created.id}::uuid`,
-      ).rejects.toThrow(ROLE_FK);
+        "role_permissions",
+      );
     });
 
     it("has no role-permission in the database whose role belongs to another tenant", async () => {
