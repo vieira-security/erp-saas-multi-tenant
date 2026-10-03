@@ -13,13 +13,14 @@ import {
   GLOBAL_TABLES,
   ROOT_TABLE,
   classifyTable,
+  foreignKeyViolations,
   inRolledBackTransaction,
   listTables,
   tenantScopeViolations,
   tenantScopedTables,
 } from "./table-audit.js";
 
-// Multi-tenant structural integrity (M1.4-M1.8): tenant tables, explicit global tables, Prisma tooling.
+// Multi-tenant structural integrity (M1.4-M1.9): tenant tables, explicit global tables, Prisma tooling.
 // Per-entity behaviour (creation, uniqueness, CHECKs) lives in the per-model tests.
 
 const CROSS_TENANT_FK = /branches_tenant_id_company_id_fkey/;
@@ -43,6 +44,7 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
         branches: "tenant",
         companies: "tenant",
         permissions: "global",
+        role_permissions: "tenant",
         roles: "tenant",
         tenants: "root",
         user_branch_access: "tenant",
@@ -85,7 +87,14 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
     });
 
     it("covers every tenant-scoped table", async () => {
-      expect(await tenantScopedTables(prisma)).toEqual(["branches", "companies", "roles", "user_branch_access", "users"]);
+      expect(await tenantScopedTables(prisma)).toEqual([
+        "branches",
+        "companies",
+        "role_permissions",
+        "roles",
+        "user_branch_access",
+        "users",
+      ]);
     });
 
     it("keeps global tables free of tenant_id and of FKs to tenants", async () => {
@@ -155,6 +164,19 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
           definition: "FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON UPDATE RESTRICT ON DELETE RESTRICT",
         },
         {
+          name: "role_permissions_permission_id_fkey",
+          definition: "FOREIGN KEY (permission_id) REFERENCES permissions(id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+        },
+        {
+          name: "role_permissions_tenant_id_fkey",
+          definition: "FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+        },
+        {
+          name: "role_permissions_tenant_id_role_id_fkey",
+          definition:
+            "FOREIGN KEY (tenant_id, role_id) REFERENCES roles(tenant_id, id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+        },
+        {
           name: "roles_tenant_id_fkey",
           definition: "FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON UPDATE RESTRICT ON DELETE RESTRICT",
         },
@@ -204,26 +226,76 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
       }
     });
 
-    it("makes every FK between tenant-scoped tables carry tenant_id on both sides", async () => {
-      const rows = await prisma.$queryRaw<{ name: string; carriesTenant: boolean }[]>`
-        SELECT con.conname AS name,
-               EXISTS (
-                 SELECT 1 FROM unnest(con.conkey, con.confkey) AS k(child_att, parent_att)
-                 JOIN pg_attribute ca ON ca.attrelid = con.conrelid AND ca.attnum = k.child_att
-                 JOIN pg_attribute pa ON pa.attrelid = con.confrelid AND pa.attnum = k.parent_att
-                 WHERE ca.attname = 'tenant_id' AND pa.attname = 'tenant_id'
-               ) AS "carriesTenant"
-        FROM pg_constraint con JOIN pg_namespace n ON n.oid = con.connamespace
-        WHERE n.nspname = 'public' AND con.contype = 'f'
-          AND con.confrelid <> 'public.tenants'::regclass
-          AND EXISTS (SELECT 1 FROM pg_attribute a
-                      WHERE a.attrelid = con.confrelid AND a.attname = 'tenant_id' AND NOT a.attisdropped)
+    it("classifies every FK by the kind of its target table", async () => {
+      const rows = await prisma.$queryRaw<{ name: string; child: string; parent: string }[]>`
+        SELECT con.conname AS name, cl.relname AS child, pr.relname AS parent
+        FROM pg_constraint con
+        JOIN pg_class cl ON cl.oid = con.conrelid JOIN pg_class pr ON pr.oid = con.confrelid
+        JOIN pg_namespace n ON n.oid = cl.relnamespace
+        WHERE n.nspname = 'public' AND con.contype = 'f' AND con.confrelid <> 'public.tenants'::regclass
         ORDER BY con.conname`;
-      expect(rows).toEqual([
-        { name: "branches_tenant_id_company_id_fkey", carriesTenant: true },
-        { name: "user_branch_access_tenant_id_branch_id_fkey", carriesTenant: true },
-        { name: "user_branch_access_tenant_id_user_id_fkey", carriesTenant: true },
+      expect(rows.map((r) => [r.name, `${classifyTable(r.child)} -> ${classifyTable(r.parent)}`])).toEqual([
+        ["branches_tenant_id_company_id_fkey", "tenant -> tenant"],
+        ["role_permissions_permission_id_fkey", "tenant -> global"],
+        ["role_permissions_tenant_id_role_id_fkey", "tenant -> tenant"],
+        ["user_branch_access_tenant_id_branch_id_fkey", "tenant -> tenant"],
+        ["user_branch_access_tenant_id_user_id_fkey", "tenant -> tenant"],
       ]);
+    });
+
+    it("reports no FK violation: tenant -> tenant FKs carry tenant_id, tenant -> global FKs may be simple", async () => {
+      expect(await foreignKeyViolations(prisma)).toEqual([]);
+    });
+
+    it("probe: a simple FK from a tenant table to another tenant table is rejected", async () => {
+      const violations = await inRolledBackTransaction(prisma, async (tx) => {
+        await tx.$executeRawUnsafe(`
+          CREATE TABLE "audit_probe_fk" (
+            "id" uuid PRIMARY KEY,
+            "tenant_id" uuid NOT NULL REFERENCES "tenants"("id"),
+            "role_id" uuid NOT NULL REFERENCES "roles"("id")
+          )`);
+        return foreignKeyViolations(tx);
+      });
+      expect(violations).toEqual(["audit_probe_fk_role_id_fkey: FK to tenant table roles must include tenant_id on both sides"]);
+    });
+
+    it("probe: a simple FK from a tenant table to a declared global table is accepted", async () => {
+      const violations = await inRolledBackTransaction(prisma, async (tx) => {
+        await tx.$executeRawUnsafe(`
+          CREATE TABLE "audit_probe_fk" (
+            "id" uuid PRIMARY KEY,
+            "tenant_id" uuid NOT NULL REFERENCES "tenants"("id"),
+            "permission_id" uuid NOT NULL REFERENCES "permissions"("id")
+          )`);
+        return [...(await foreignKeyViolations(tx)), ...(await tenantScopeViolations(tx))];
+      });
+      expect(violations).toEqual([]);
+    });
+
+    it("probe: the same simple FK is rejected when the target is not declared global", async () => {
+      const violations = await inRolledBackTransaction(prisma, async (tx) => {
+        await tx.$executeRawUnsafe(`CREATE TABLE "audit_probe_catalog" ("id" uuid PRIMARY KEY)`);
+        await tx.$executeRawUnsafe(`
+          CREATE TABLE "audit_probe_fk" (
+            "id" uuid PRIMARY KEY,
+            "tenant_id" uuid NOT NULL REFERENCES "tenants"("id"),
+            "catalog_id" uuid NOT NULL REFERENCES "audit_probe_catalog"("id")
+          )`);
+        return foreignKeyViolations(tx);
+      });
+      expect(violations).toEqual([
+        "audit_probe_fk_catalog_id_fkey: FK to tenant table audit_probe_catalog must include tenant_id on both sides",
+      ]);
+    });
+
+    it("probe: a global table must not reference tenant data", async () => {
+      const violations = await inRolledBackTransaction(prisma, async (tx) => {
+        await tx.$executeRawUnsafe(`
+          CREATE TABLE "audit_probe_catalog" ("id" uuid PRIMARY KEY, "role_id" uuid REFERENCES "roles"("id"))`);
+        return foreignKeyViolations(tx, [...GLOBAL_TABLES, "audit_probe_catalog"]);
+      });
+      expect(violations).toEqual(["audit_probe_catalog_role_id_fkey: global table must not reference tenant table roles"]);
     });
   });
 
@@ -384,6 +456,45 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
       const moved = await prisma.role.update({ where: { id: role.id }, data: { tenantId: other.id } });
 
       expect(moved.tenantId).toBe(other.id);
+    });
+  });
+
+  describe("tenant_id changes (RolePermission)", () => {
+    async function newRole(name: string) {
+      const tenant = await prisma.tenant.create({ data: { name, status: TenantStatus.ACTIVE } });
+      return prisma.role.create({ data: { tenantId: tenant.id, code: "OWNER", name: "Proprietário", status: RoleStatus.ACTIVE } });
+    }
+
+    async function anyPermission() {
+      const module = `t${Math.random().toString(16).slice(2, 10)}`;
+      return prisma.permission.create({ data: { code: `${module}.read`, module, description: "Teste" } });
+    }
+
+    it("blocks moving a role that has permissions to another tenant", async () => {
+      const role = await newRole("A");
+      const other = await prisma.tenant.create({ data: { name: "B", status: TenantStatus.ACTIVE } });
+      await prisma.rolePermission.create({
+        data: { tenantId: role.tenantId, roleId: role.id, permissionId: (await anyPermission()).id },
+      });
+
+      await expect(
+        prisma.$executeRaw`UPDATE roles SET tenant_id = ${other.id}::uuid WHERE id = ${role.id}::uuid`,
+      ).rejects.toThrow(/role_permissions_tenant_id_role_id_fkey/);
+    });
+
+    it("GAP (M1.14): accepts moving a role-permission when tenant_id and role_id change together", async () => {
+      const roleA = await newRole("A");
+      const roleB = await newRole("B");
+      const link = await prisma.rolePermission.create({
+        data: { tenantId: roleA.tenantId, roleId: roleA.id, permissionId: (await anyPermission()).id },
+      });
+
+      const moved = await prisma.rolePermission.update({
+        where: { id: link.id },
+        data: { tenantId: roleB.tenantId, roleId: roleB.id },
+      });
+
+      expect(moved).toMatchObject({ tenantId: roleB.tenantId, roleId: roleB.id });
     });
   });
 
