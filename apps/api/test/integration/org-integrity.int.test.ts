@@ -3,12 +3,13 @@ import {
   BranchStatus,
   CompanyStatus,
   TenantStatus,
+  UserStatus,
   type Company,
   type PrismaClient,
 } from "../../src/generated/prisma/client.js";
 import { createPrismaClient } from "../../src/database/create-prisma-client.js";
 
-// Tenant -> Company -> Branch structural integrity (M1.4).
+// Tenant -> Company -> Branch (and User) structural integrity (M1.4, M1.5).
 // Per-entity behaviour (creation, uniqueness, CHECKs) lives in tenant/company/branch tests.
 
 const ROOT_TABLE = "tenants";
@@ -34,8 +35,8 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
       return rows.map((r) => r.name).filter((t) => t !== ROOT_TABLE && !TOOLING_TABLES.includes(t));
     }
 
-    it("covers the organizational tables (guards against an empty audit)", async () => {
-      expect(await tenantScopedTables()).toEqual(["branches", "companies"]);
+    it("covers every tenant-scoped table (guards against an empty audit)", async () => {
+      expect(await tenantScopedTables()).toEqual(["branches", "companies", "users"]);
     });
 
     it("keeps tenants as the root, without tenant_id", async () => {
@@ -91,7 +92,22 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
           name: "companies_tenant_id_fkey",
           definition: "FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON UPDATE RESTRICT ON DELETE RESTRICT",
         },
+        {
+          name: "users_tenant_id_fkey",
+          definition: "FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+        },
       ]);
+    });
+
+    it("stores no plain-text credential column (only users.password_hash)", async () => {
+      // Only column types able to hold a secret; flags such as must_change_password are not credentials.
+      const rows = await prisma.$queryRaw<{ column: string }[]>`
+        SELECT table_name || '.' || column_name AS "column" FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND data_type IN ('text', 'character varying', 'character', 'bytea', 'json', 'jsonb')
+          AND column_name ~* '(^|_)(password|passwd|pwd|senha|secret|pin|credentials?)(_|$)'
+        ORDER BY 1`;
+      expect(rows.map((r) => r.column)).toEqual(["users.password_hash"]);
     });
 
     it("uses no CASCADE / SET NULL / SET DEFAULT on any FK", async () => {
@@ -232,6 +248,32 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
       const other = await newTenant("B");
 
       const moved = await prisma.company.update({ where: { id: company.id }, data: { tenantId: other.id } });
+
+      expect(moved.tenantId).toBe(other.id);
+    });
+  });
+
+  describe("tenant_id changes (User)", () => {
+    async function newUser(name: string) {
+      const tenant = await prisma.tenant.create({ data: { name, status: TenantStatus.ACTIVE } });
+      return prisma.user.create({
+        data: { tenantId: tenant.id, name: "U", employeeNumber: "1001", passwordHash: "x", status: UserStatus.ACTIVE },
+      });
+    }
+
+    it("blocks a user tenant_id change to a non-existent tenant", async () => {
+      const user = await newUser("A");
+
+      await expect(
+        prisma.$executeRaw`UPDATE users SET tenant_id = gen_random_uuid() WHERE id = ${user.id}::uuid`,
+      ).rejects.toThrow(/users_tenant_id_fkey/);
+    });
+
+    it("GAP (M1.14): accepts moving a user to another existing tenant", async () => {
+      const user = await newUser("A");
+      const other = await prisma.tenant.create({ data: { name: "B", status: TenantStatus.ACTIVE } });
+
+      const moved = await prisma.user.update({ where: { id: user.id }, data: { tenantId: other.id } });
 
       expect(moved.tenantId).toBe(other.id);
     });
