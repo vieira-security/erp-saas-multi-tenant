@@ -30,6 +30,7 @@ describe("migrations on a clean PostgreSQL database", () => {
       { name: "20261002060000_create_permissions", finished: true, rolledBack: false },
       { name: "20261002070000_create_role_permissions", finished: true, rolledBack: false },
       { name: "20261002080000_create_user_roles", finished: true, rolledBack: false },
+      { name: "20261002090000_create_devices", finished: true, rolledBack: false },
     ]);
   });
 
@@ -41,6 +42,7 @@ describe("migrations on a clean PostgreSQL database", () => {
       "_prisma_migrations",
       "branches",
       "companies",
+      "devices",
       "permissions",
       "role_permissions",
       "roles",
@@ -513,6 +515,69 @@ describe("migrations on a clean PostgreSQL database", () => {
       "CREATE INDEX user_roles_tenant_id_role_id_idx (tenant_id, role_id)",
       "CREATE INDEX user_roles_tenant_id_user_id_branch_id_idx (tenant_id, user_id, branch_id)",
       "CREATE UNIQUE INDEX user_roles_tenant_scope_key (tenant_id, user_id, role_id) WHERE (branch_id IS NULL)",
+    ]);
+  });
+
+  it("creates the device_type and device_status enums with exactly the approved values", async () => {
+    const rows = await prisma.$queryRaw<{ type: string; labels: string[] }[]>`
+      SELECT t.typname::text AS type, array_agg(e.enumlabel::text ORDER BY e.enumsortorder) AS labels
+      FROM pg_enum e JOIN pg_type t ON t.oid = e.enumtypid
+      WHERE t.typname IN ('device_type', 'device_status') GROUP BY t.typname ORDER BY t.typname`;
+    expect(rows).toEqual([
+      { type: "device_status", labels: ["ACTIVE", "INACTIVE", "REVOKED"] },
+      { type: "device_type", labels: ["POS", "TABLET", "ADMIN", "KITCHEN_DISPLAY", "EDGE"] },
+    ]);
+  });
+
+  it("defines the devices columns with the expected types and nullability", async () => {
+    const columns = await prisma.$queryRaw<{ name: string; type: string; nullable: string }[]>`
+      SELECT column_name AS name, format_type(a.atttypid, a.atttypmod) AS type, c.is_nullable AS nullable
+      FROM information_schema.columns c
+      JOIN pg_attribute a ON a.attrelid = 'public.devices'::regclass AND a.attname = c.column_name
+      WHERE c.table_schema = 'public' AND c.table_name = 'devices'
+      ORDER BY c.ordinal_position`;
+    expect(columns).toEqual([
+      { name: "id", type: "uuid", nullable: "NO" },
+      { name: "tenant_id", type: "uuid", nullable: "NO" },
+      { name: "branch_id", type: "uuid", nullable: "YES" },
+      { name: "name", type: "text", nullable: "NO" },
+      { name: "device_type", type: "device_type", nullable: "NO" },
+      { name: "device_key", type: "text", nullable: "NO" },
+      { name: "status", type: "device_status", nullable: "NO" },
+      { name: "last_seen_at", type: "timestamp(3) with time zone", nullable: "YES" },
+      { name: "created_at", type: "timestamp(3) with time zone", nullable: "NO" },
+      { name: "updated_at", type: "timestamp(3) with time zone", nullable: "NO" },
+    ]);
+  });
+
+  it("defines the devices constraints (PK, tenant FK, composite branch FK, CHECKs)", async () => {
+    const constraints = await prisma.$queryRaw<{ name: string; definition: string }[]>`
+      SELECT conname AS name, pg_get_constraintdef(oid) AS definition
+      FROM pg_constraint WHERE conrelid = 'public.devices'::regclass ORDER BY conname`;
+    expect(constraints).toEqual([
+      { name: "devices_device_key_check", definition: "CHECK ((btrim(device_key) <> ''::text))" },
+      { name: "devices_name_check", definition: "CHECK ((btrim(name) <> ''::text))" },
+      { name: "devices_pkey", definition: "PRIMARY KEY (id)" },
+      {
+        name: "devices_tenant_id_branch_id_fkey",
+        definition: "FOREIGN KEY (tenant_id, branch_id) REFERENCES branches(tenant_id, id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+      },
+      {
+        name: "devices_tenant_id_fkey",
+        definition: "FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+      },
+    ]);
+  });
+
+  it("defines only the approved devices indexes", async () => {
+    const indexes = await prisma.$queryRaw<{ definition: string }[]>`
+      SELECT indexdef AS definition FROM pg_indexes
+      WHERE schemaname = 'public' AND tablename = 'devices' ORDER BY indexname`;
+    expect(indexes.map((i) => i.definition.replace(/ ON public\.devices USING btree/, ""))).toEqual([
+      "CREATE UNIQUE INDEX devices_pkey (id)",
+      "CREATE INDEX devices_tenant_id_branch_id_idx (tenant_id, branch_id)",
+      "CREATE UNIQUE INDEX devices_tenant_id_device_key_key (tenant_id, device_key)",
+      "CREATE INDEX devices_tenant_id_status_idx (tenant_id, status)",
     ]);
   });
 

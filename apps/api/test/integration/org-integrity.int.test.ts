@@ -20,7 +20,7 @@ import {
   tenantScopedTables,
 } from "./table-audit.js";
 
-// Multi-tenant structural integrity (M1.4-M1.10): tenant tables, explicit global tables, Prisma tooling.
+// Multi-tenant structural integrity (M1.4-M1.11): tenant tables, explicit global tables, Prisma tooling.
 // Per-entity behaviour (creation, uniqueness, CHECKs) lives in the per-model tests.
 
 const CROSS_TENANT_FK = /branches_tenant_id_company_id_fkey/;
@@ -43,6 +43,7 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
         _prisma_migrations: "tooling",
         branches: "tenant",
         companies: "tenant",
+        devices: "tenant",
         permissions: "global",
         role_permissions: "tenant",
         roles: "tenant",
@@ -91,6 +92,7 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
       expect(await tenantScopedTables(prisma)).toEqual([
         "branches",
         "companies",
+        "devices",
         "role_permissions",
         "roles",
         "user_branch_access",
@@ -163,6 +165,15 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
         },
         {
           name: "companies_tenant_id_fkey",
+          definition: "FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+        },
+        {
+          name: "devices_tenant_id_branch_id_fkey",
+          definition:
+            "FOREIGN KEY (tenant_id, branch_id) REFERENCES branches(tenant_id, id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+        },
+        {
+          name: "devices_tenant_id_fkey",
           definition: "FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON UPDATE RESTRICT ON DELETE RESTRICT",
         },
         {
@@ -257,6 +268,7 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
         ORDER BY con.conname`;
       expect(rows.map((r) => [r.name, `${classifyTable(r.child)} -> ${classifyTable(r.parent)}`])).toEqual([
         ["branches_tenant_id_company_id_fkey", "tenant -> tenant"],
+        ["devices_tenant_id_branch_id_fkey", "tenant -> tenant"],
         ["role_permissions_permission_id_fkey", "tenant -> global"],
         ["role_permissions_tenant_id_role_id_fkey", "tenant -> tenant"],
         ["user_branch_access_tenant_id_branch_id_fkey", "tenant -> tenant"],
@@ -279,8 +291,9 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
         ORDER BY con.conname`;
 
       for (const row of rows) expect(row.nullableColumns, row.name).not.toContain("tenant_id");
-      // The only composite FK with a nullable column is the optional branch scope of user_roles.
+      // Composite FKs with a nullable column are only the optional branch scopes (MATCH SIMPLE, NULL = no branch).
       expect(rows.filter((r) => r.nullableColumns.length > 0)).toEqual([
+        { name: "devices_tenant_id_branch_id_fkey", match: "s", nullableColumns: ["branch_id"] },
         { name: "user_roles_tenant_id_user_id_branch_id_fkey", match: "s", nullableColumns: ["branch_id"] },
       ]);
     });
