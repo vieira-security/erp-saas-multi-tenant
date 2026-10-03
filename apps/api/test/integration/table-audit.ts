@@ -125,6 +125,116 @@ export async function credentialColumnViolations(db: Queryable): Promise<string[
   return rows.map((r) => r.column).filter((c) => !HASHED_CREDENTIAL_COLUMNS.includes(c));
 }
 
+/** Shared function behind every `<table>_tenant_id_immutable` trigger. */
+export const TENANT_ID_IMMUTABILITY_FUNCTION = "forbid_tenant_id_change";
+
+/**
+ * Tenant tables protected by a dedicated policy instead of the generic tenant_id trigger. Adding one here is an
+ * explicit, reviewed decision; the policy itself is verified (it is not a silent exemption).
+ * - append-only: every UPDATE and DELETE is rejected, so tenant_id can never change either.
+ */
+export const SPECIAL_TENANT_ID_POLICIES: Readonly<Record<string, { policy: "append-only"; trigger: string; fn: string }>> = {
+  audit_logs: { policy: "append-only", trigger: "audit_logs_append_only", fn: "forbid_audit_log_mutation" },
+};
+
+interface TriggerRow {
+  table: string;
+  name: string;
+  fn: string;
+  enabled: string;
+  row: boolean;
+  before: boolean;
+  onInsert: boolean;
+  onUpdate: boolean;
+  onDelete: boolean;
+  onTruncate: boolean;
+  columns: string[];
+  definition: string;
+}
+
+async function listTriggers(db: Queryable): Promise<TriggerRow[]> {
+  return db.$queryRaw<TriggerRow[]>`
+    SELECT c.relname::text AS "table", t.tgname::text AS name, p.proname::text AS fn, t.tgenabled::text AS enabled,
+           (t.tgtype & 1) <> 0 AS row, (t.tgtype & 2) <> 0 AS before, (t.tgtype & 4) <> 0 AS "onInsert",
+           (t.tgtype & 16) <> 0 AS "onUpdate", (t.tgtype & 8) <> 0 AS "onDelete", (t.tgtype & 32) <> 0 AS "onTruncate",
+           COALESCE((SELECT array_agg(a.attname::text ORDER BY a.attname) FROM pg_attribute a
+                     WHERE a.attrelid = t.tgrelid AND a.attnum = ANY(t.tgattr)), '{}') AS columns,
+           pg_get_triggerdef(t.oid) AS definition
+    FROM pg_trigger t
+    JOIN pg_class c ON c.oid = t.tgrelid
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    JOIN pg_proc p ON p.oid = t.tgfoid
+    WHERE n.nspname = 'public' AND NOT t.tgisinternal
+    ORDER BY c.relname, t.tgname`;
+}
+
+/** Exact approved definition of the tenant_id immutability trigger of `table`. */
+export function tenantIdTriggerDefinition(table: string): string {
+  return (
+    `CREATE TRIGGER ${table}_tenant_id_immutable BEFORE UPDATE OF tenant_id ON public.${table} FOR EACH ROW ` +
+    `WHEN ((old.tenant_id IS DISTINCT FROM new.tenant_id)) EXECUTE FUNCTION ${TENANT_ID_IMMUTABILITY_FUNCTION}()`
+  );
+}
+
+/**
+ * tenant_id immutability violations, as "<table>: <problem>". Fail-closed: every tenant table (derived from the
+ * classification, never from a manual list) needs exactly the approved trigger, unless it is declared in
+ * SPECIAL_TENANT_ID_POLICIES, whose own policy is then verified. Non-tenant tables must not use the trigger.
+ */
+export async function tenantIdImmutabilityViolations(db: Queryable): Promise<string[]> {
+  const triggers = await listTriggers(db);
+  const violations: string[] = [];
+
+  for (const table of await tenantScopedTables(db)) {
+    const generic = triggers.filter((t) => t.table === table && t.fn === TENANT_ID_IMMUTABILITY_FUNCTION);
+    const special = SPECIAL_TENANT_ID_POLICIES[table];
+
+    if (special) {
+      const policy = triggers.find((t) => t.table === table && t.name === special.trigger);
+      if (generic.length > 0) violations.push(`${table}: ${special.policy} table must not use the generic tenant_id trigger`);
+      if (!policy) violations.push(`${table}: missing ${special.policy} trigger ${special.trigger}`);
+      else if (
+        policy.fn !== special.fn ||
+        policy.enabled !== "O" ||
+        !policy.row ||
+        !policy.before ||
+        !policy.onUpdate ||
+        !policy.onDelete ||
+        policy.columns.length > 0
+      ) {
+        violations.push(`${table}: ${special.trigger} must be an enabled BEFORE UPDATE OR DELETE row trigger calling ${special.fn}()`);
+      }
+      continue;
+    }
+
+    if (generic.length === 0) {
+      violations.push(`${table}: missing tenant_id immutability trigger (${table}_tenant_id_immutable)`);
+      continue;
+    }
+    if (generic.length > 1) violations.push(`${table}: more than one tenant_id immutability trigger`);
+    for (const t of generic) {
+      if (t.name !== `${table}_tenant_id_immutable`) violations.push(`${table}: trigger ${t.name} must be named ${table}_tenant_id_immutable`);
+      if (!t.before) violations.push(`${table}: ${t.name} must be BEFORE`);
+      if (!t.row) violations.push(`${table}: ${t.name} must be FOR EACH ROW`);
+      if (!t.onUpdate || t.onInsert || t.onDelete || t.onTruncate) violations.push(`${table}: ${t.name} must fire on UPDATE only`);
+      if (t.columns.join(",") !== "tenant_id") violations.push(`${table}: ${t.name} must be UPDATE OF tenant_id`);
+      if (t.enabled !== "O") violations.push(`${table}: ${t.name} must be enabled`);
+      if (t.definition !== tenantIdTriggerDefinition(table)) violations.push(`${table}: ${t.name} differs from the approved definition`);
+    }
+  }
+
+  const tenantTables = new Set(await tenantScopedTables(db));
+  for (const t of triggers.filter((t) => t.fn === TENANT_ID_IMMUTABILITY_FUNCTION && !tenantTables.has(t.table))) {
+    violations.push(`${t.table}: non-tenant table must not use ${TENANT_ID_IMMUTABILITY_FUNCTION}()`);
+  }
+  for (const [table, special] of Object.entries(SPECIAL_TENANT_ID_POLICIES)) {
+    for (const t of triggers.filter((t) => t.fn === special.fn && t.table !== table)) {
+      violations.push(`${t.table}: ${special.fn}() is specific to ${table}`);
+    }
+  }
+  return violations;
+}
+
 const ROLLBACK = Symbol("rollback");
 
 /** Runs `fn` inside a transaction that is always rolled back (DDL included). */

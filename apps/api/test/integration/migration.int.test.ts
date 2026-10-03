@@ -34,6 +34,7 @@ describe("migrations on a clean PostgreSQL database", () => {
       { name: "20261002100000_create_sessions", finished: true, rolledBack: false },
       { name: "20261002110000_create_audit_logs", finished: true, rolledBack: false },
       { name: "20261002111000_make_audit_logs_append_only", finished: true, rolledBack: false },
+      { name: "20261002120000_make_tenant_id_immutable", finished: true, rolledBack: false },
     ]);
   });
 
@@ -717,8 +718,19 @@ describe("migrations on a clean PostgreSQL database", () => {
       SELECT c.relname::text AS "table", t.tgname::text AS name
       FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace
       WHERE n.nspname = 'public' AND NOT t.tgisinternal ORDER BY c.relname, t.tgname`;
-    expect(functions.map((f) => f.name)).toEqual(["forbid_audit_log_mutation"]);
-    expect(triggers).toEqual([{ table: "audit_logs", name: "audit_logs_append_only" }]);
+    expect(functions.map((f) => f.name)).toEqual(["forbid_audit_log_mutation", "forbid_tenant_id_change"]);
+    expect(triggers).toEqual([
+      { table: "audit_logs", name: "audit_logs_append_only" },
+      { table: "branches", name: "branches_tenant_id_immutable" },
+      { table: "companies", name: "companies_tenant_id_immutable" },
+      { table: "devices", name: "devices_tenant_id_immutable" },
+      { table: "role_permissions", name: "role_permissions_tenant_id_immutable" },
+      { table: "roles", name: "roles_tenant_id_immutable" },
+      { table: "sessions", name: "sessions_tenant_id_immutable" },
+      { table: "user_branch_access", name: "user_branch_access_tenant_id_immutable" },
+      { table: "user_roles", name: "user_roles_tenant_id_immutable" },
+      { table: "users", name: "users_tenant_id_immutable" },
+    ]);
   });
 
   it("matches schema.prisma (no drift)", async () => {

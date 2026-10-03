@@ -14,11 +14,14 @@ import {
   GLOBAL_TABLES,
   HASHED_CREDENTIAL_COLUMNS,
   ROOT_TABLE,
+  SPECIAL_TENANT_ID_POLICIES,
   classifyTable,
   credentialColumnViolations,
   foreignKeyViolations,
   inRolledBackTransaction,
   listTables,
+  tenantIdImmutabilityViolations,
+  tenantIdTriggerDefinition,
   tenantScopeViolations,
   tenantScopedTables,
 } from "./table-audit.js";
@@ -420,6 +423,171 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
         return foreignKeyViolations(tx, [...GLOBAL_TABLES, "audit_probe_catalog"]);
       });
       expect(violations).toEqual(["audit_probe_catalog_role_id_fkey: global table must not reference tenant table roles"]);
+    });
+  });
+
+  describe("tenant_id immutability audit (M1.14.1)", () => {
+    const PROBE = "audit_probe_tenant_imm";
+    const createProbe = `CREATE TABLE "${PROBE}" ("id" uuid PRIMARY KEY, "tenant_id" uuid NOT NULL REFERENCES tenants(id) ON DELETE RESTRICT ON UPDATE RESTRICT)`;
+
+    it("reports no violation in the migrated schema", async () => {
+      expect(await tenantIdImmutabilityViolations(prisma)).toEqual([]);
+    });
+
+    it("declares audit_logs as the only tenant table with a special policy (append-only)", () => {
+      expect(SPECIAL_TENANT_ID_POLICIES).toEqual({
+        audit_logs: { policy: "append-only", trigger: "audit_logs_append_only", fn: "forbid_audit_log_mutation" },
+      });
+    });
+
+    it("protects every editable tenant table with exactly the approved trigger", async () => {
+      const editable = (await tenantScopedTables(prisma)).filter((t) => !(t in SPECIAL_TENANT_ID_POLICIES));
+      const rows = await prisma.$queryRaw<{ table: string; enabled: string; definition: string }[]>`
+        SELECT c.relname::text AS "table", t.tgenabled::text AS enabled, pg_get_triggerdef(t.oid) AS definition
+        FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
+        WHERE NOT t.tgisinternal AND t.tgfoid = 'public.forbid_tenant_id_change()'::regprocedure
+        ORDER BY c.relname`;
+
+      expect(editable).toEqual([
+        "branches",
+        "companies",
+        "devices",
+        "role_permissions",
+        "roles",
+        "sessions",
+        "user_branch_access",
+        "user_roles",
+        "users",
+      ]);
+      expect(rows).toEqual(editable.map((table) => ({ table, enabled: "O", definition: tenantIdTriggerDefinition(table) })));
+    });
+
+    it("defines forbid_tenant_id_change() as a shared plpgsql trigger function without table-specific arguments", async () => {
+      const rows = await prisma.$queryRaw<{ returns: string; language: string; args: string; body: string }[]>`
+        SELECT format_type(p.prorettype, NULL) AS returns, l.lanname::text AS language,
+               pg_get_function_identity_arguments(p.oid) AS args, p.prosrc AS body
+        FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace JOIN pg_language l ON l.oid = p.prolang
+        WHERE n.nspname = 'public' AND p.proname = 'forbid_tenant_id_change'`;
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ returns: "trigger", language: "plpgsql", args: "" });
+      // Not coupled to table names: it reports TG_TABLE_NAME and re-checks the change itself.
+      expect(rows[0]?.body).toContain("TG_TABLE_NAME");
+      expect(rows[0]?.body).toContain("NEW.tenant_id IS DISTINCT FROM OLD.tenant_id");
+      for (const table of await tenantScopedTables(prisma)) expect(rows[0]?.body).not.toContain(table);
+    });
+
+    it("fails closed: a new tenant table without the trigger is reported", async () => {
+      const violations = await inRolledBackTransaction(prisma, async (tx) => {
+        await tx.$executeRawUnsafe(createProbe);
+        return tenantIdImmutabilityViolations(tx);
+      });
+      expect(violations).toEqual([`${PROBE}: missing tenant_id immutability trigger (${PROBE}_tenant_id_immutable)`]);
+    });
+
+    it("accepts a new tenant table with the approved trigger", async () => {
+      const violations = await inRolledBackTransaction(prisma, async (tx) => {
+        await tx.$executeRawUnsafe(createProbe);
+        await tx.$executeRawUnsafe(`CREATE TRIGGER "${PROBE}_tenant_id_immutable" BEFORE UPDATE OF "tenant_id" ON "${PROBE}"
+          FOR EACH ROW WHEN (OLD."tenant_id" IS DISTINCT FROM NEW."tenant_id") EXECUTE FUNCTION "forbid_tenant_id_change"()`);
+        return tenantIdImmutabilityViolations(tx);
+      });
+      expect(violations).toEqual([]);
+    });
+
+    it.each([
+      [
+        "AFTER instead of BEFORE",
+        `AFTER UPDATE OF "tenant_id" ON "${PROBE}" FOR EACH ROW WHEN (OLD."tenant_id" IS DISTINCT FROM NEW."tenant_id")`,
+        [`${PROBE}: ${PROBE}_tenant_id_immutable must be BEFORE`],
+      ],
+      [
+        "per statement",
+        `BEFORE UPDATE OF "tenant_id" ON "${PROBE}" FOR EACH STATEMENT`,
+        [`${PROBE}: ${PROBE}_tenant_id_immutable must be FOR EACH ROW`],
+      ],
+      [
+        "any column, no WHEN",
+        `BEFORE UPDATE ON "${PROBE}" FOR EACH ROW`,
+        [`${PROBE}: ${PROBE}_tenant_id_immutable must be UPDATE OF tenant_id`],
+      ],
+      [
+        "missing WHEN",
+        `BEFORE UPDATE OF "tenant_id" ON "${PROBE}" FOR EACH ROW`,
+        [],
+      ],
+      [
+        "also on DELETE",
+        `BEFORE UPDATE OF "tenant_id" OR DELETE ON "${PROBE}" FOR EACH ROW`,
+        [`${PROBE}: ${PROBE}_tenant_id_immutable must fire on UPDATE only`],
+      ],
+    ])("reports a trigger %s", async (_, timing, expected) => {
+      const violations = await inRolledBackTransaction(prisma, async (tx) => {
+        await tx.$executeRawUnsafe(createProbe);
+        await tx.$executeRawUnsafe(`CREATE TRIGGER "${PROBE}_tenant_id_immutable" ${timing} EXECUTE FUNCTION "forbid_tenant_id_change"()`);
+        return tenantIdImmutabilityViolations(tx);
+      });
+      expect(violations).toEqual([...expected, `${PROBE}: ${PROBE}_tenant_id_immutable differs from the approved definition`]);
+    });
+
+    it("reports a disabled trigger", async () => {
+      const violations = await inRolledBackTransaction(prisma, async (tx) => {
+        await tx.$executeRawUnsafe(createProbe);
+        await tx.$executeRawUnsafe(`CREATE TRIGGER "${PROBE}_tenant_id_immutable" BEFORE UPDATE OF "tenant_id" ON "${PROBE}"
+          FOR EACH ROW WHEN (OLD."tenant_id" IS DISTINCT FROM NEW."tenant_id") EXECUTE FUNCTION "forbid_tenant_id_change"()`);
+        await tx.$executeRawUnsafe(`ALTER TABLE "${PROBE}" DISABLE TRIGGER "${PROBE}_tenant_id_immutable"`);
+        return tenantIdImmutabilityViolations(tx);
+      });
+      expect(violations).toEqual([`${PROBE}: ${PROBE}_tenant_id_immutable must be enabled`]);
+    });
+
+    it("reports a trigger with another name", async () => {
+      const violations = await inRolledBackTransaction(prisma, async (tx) => {
+        await tx.$executeRawUnsafe(createProbe);
+        await tx.$executeRawUnsafe(`CREATE TRIGGER "probe_guard" BEFORE UPDATE OF "tenant_id" ON "${PROBE}"
+          FOR EACH ROW WHEN (OLD."tenant_id" IS DISTINCT FROM NEW."tenant_id") EXECUTE FUNCTION "forbid_tenant_id_change"()`);
+        return tenantIdImmutabilityViolations(tx);
+      });
+      expect(violations).toEqual([
+        `${PROBE}: trigger probe_guard must be named ${PROBE}_tenant_id_immutable`,
+        `${PROBE}: probe_guard differs from the approved definition`,
+      ]);
+    });
+
+    it("verifies the append-only policy of audit_logs instead of exempting it silently", async () => {
+      const violations = await inRolledBackTransaction(prisma, async (tx) => {
+        await tx.$executeRawUnsafe(`ALTER TABLE audit_logs DISABLE TRIGGER audit_logs_append_only`);
+        await tx.$executeRawUnsafe(`CREATE TRIGGER "audit_logs_tenant_id_immutable" BEFORE UPDATE OF "tenant_id" ON "audit_logs"
+          FOR EACH ROW WHEN (OLD."tenant_id" IS DISTINCT FROM NEW."tenant_id") EXECUTE FUNCTION "forbid_tenant_id_change"()`);
+        return tenantIdImmutabilityViolations(tx);
+      });
+      expect(violations).toEqual([
+        "audit_logs: append-only table must not use the generic tenant_id trigger",
+        "audit_logs: audit_logs_append_only must be an enabled BEFORE UPDATE OR DELETE row trigger calling forbid_audit_log_mutation()",
+      ]);
+
+      const missing = await inRolledBackTransaction(prisma, async (tx) => {
+        await tx.$executeRawUnsafe(`DROP TRIGGER audit_logs_append_only ON audit_logs`);
+        return tenantIdImmutabilityViolations(tx);
+      });
+      expect(missing).toEqual(["audit_logs: missing append-only trigger audit_logs_append_only"]);
+    });
+
+    it("reports either trigger function used on the wrong table", async () => {
+      const violations = await inRolledBackTransaction(prisma, async (tx) => {
+        await tx.$executeRawUnsafe(createProbe);
+        await tx.$executeRawUnsafe(`CREATE TRIGGER "${PROBE}_tenant_id_immutable" BEFORE UPDATE OF "tenant_id" ON "${PROBE}"
+          FOR EACH ROW WHEN (OLD."tenant_id" IS DISTINCT FROM NEW."tenant_id") EXECUTE FUNCTION "forbid_tenant_id_change"()`);
+        await tx.$executeRawUnsafe(`CREATE TRIGGER "probe_append_only" BEFORE UPDATE OR DELETE ON "${PROBE}"
+          FOR EACH ROW EXECUTE FUNCTION "forbid_audit_log_mutation"()`);
+        // permissions is global: it has no tenant_id, so the trigger targets a column it does not have (code).
+        await tx.$executeRawUnsafe(`CREATE TRIGGER "probe_misuse" BEFORE UPDATE OF "code" ON "permissions"
+          FOR EACH ROW EXECUTE FUNCTION "forbid_tenant_id_change"()`);
+        return tenantIdImmutabilityViolations(tx);
+      });
+      expect(violations).toEqual([
+        "permissions: non-tenant table must not use forbid_tenant_id_change()",
+        `${PROBE}: forbid_audit_log_mutation() is specific to audit_logs`,
+      ]);
     });
   });
 
