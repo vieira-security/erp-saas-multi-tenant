@@ -31,6 +31,7 @@ describe("migrations on a clean PostgreSQL database", () => {
       { name: "20261002070000_create_role_permissions", finished: true, rolledBack: false },
       { name: "20261002080000_create_user_roles", finished: true, rolledBack: false },
       { name: "20261002090000_create_devices", finished: true, rolledBack: false },
+      { name: "20261002100000_create_sessions", finished: true, rolledBack: false },
     ]);
   });
 
@@ -46,6 +47,7 @@ describe("migrations on a clean PostgreSQL database", () => {
       "permissions",
       "role_permissions",
       "roles",
+      "sessions",
       "tenants",
       "user_branch_access",
       "user_roles",
@@ -577,7 +579,65 @@ describe("migrations on a clean PostgreSQL database", () => {
       "CREATE UNIQUE INDEX devices_pkey (id)",
       "CREATE INDEX devices_tenant_id_branch_id_idx (tenant_id, branch_id)",
       "CREATE UNIQUE INDEX devices_tenant_id_device_key_key (tenant_id, device_key)",
+      "CREATE UNIQUE INDEX devices_tenant_id_id_key (tenant_id, id)",
       "CREATE INDEX devices_tenant_id_status_idx (tenant_id, status)",
+    ]);
+  });
+
+  it("defines the sessions columns (inet ip, no updated_at, no status)", async () => {
+    const columns = await prisma.$queryRaw<{ name: string; type: string; nullable: string; default: string | null }[]>`
+      SELECT column_name AS name, format_type(a.atttypid, a.atttypmod) AS type, c.is_nullable AS nullable,
+             c.column_default AS default
+      FROM information_schema.columns c
+      JOIN pg_attribute a ON a.attrelid = 'public.sessions'::regclass AND a.attname = c.column_name
+      WHERE c.table_schema = 'public' AND c.table_name = 'sessions'
+      ORDER BY c.ordinal_position`;
+    expect(columns).toEqual([
+      { name: "id", type: "uuid", nullable: "NO", default: null },
+      { name: "tenant_id", type: "uuid", nullable: "NO", default: null },
+      { name: "user_id", type: "uuid", nullable: "NO", default: null },
+      { name: "device_id", type: "uuid", nullable: "YES", default: null },
+      { name: "refresh_token_hash", type: "text", nullable: "NO", default: null },
+      { name: "ip_address", type: "inet", nullable: "YES", default: null },
+      { name: "user_agent", type: "text", nullable: "YES", default: null },
+      { name: "expires_at", type: "timestamp(3) with time zone", nullable: "NO", default: null },
+      { name: "revoked_at", type: "timestamp(3) with time zone", nullable: "YES", default: null },
+      { name: "created_at", type: "timestamp(3) with time zone", nullable: "NO", default: "CURRENT_TIMESTAMP" },
+    ]);
+  });
+
+  it("defines the sessions constraints (PK, tenant FK, composite user/device FKs, CHECKs)", async () => {
+    const constraints = await prisma.$queryRaw<{ name: string; definition: string }[]>`
+      SELECT conname AS name, pg_get_constraintdef(oid) AS definition
+      FROM pg_constraint WHERE conrelid = 'public.sessions'::regclass ORDER BY conname`;
+    expect(constraints).toEqual([
+      { name: "sessions_expires_at_check", definition: "CHECK ((expires_at > created_at))" },
+      { name: "sessions_pkey", definition: "PRIMARY KEY (id)" },
+      { name: "sessions_refresh_token_hash_check", definition: "CHECK ((btrim(refresh_token_hash) <> ''::text))" },
+      {
+        name: "sessions_tenant_id_device_id_fkey",
+        definition: "FOREIGN KEY (tenant_id, device_id) REFERENCES devices(tenant_id, id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+      },
+      {
+        name: "sessions_tenant_id_fkey",
+        definition: "FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+      },
+      {
+        name: "sessions_tenant_id_user_id_fkey",
+        definition: "FOREIGN KEY (tenant_id, user_id) REFERENCES users(tenant_id, id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+      },
+    ]);
+  });
+
+  it("defines only the approved sessions indexes (global unique refresh_token_hash)", async () => {
+    const indexes = await prisma.$queryRaw<{ definition: string }[]>`
+      SELECT indexdef AS definition FROM pg_indexes
+      WHERE schemaname = 'public' AND tablename = 'sessions' ORDER BY indexname`;
+    expect(indexes.map((i) => i.definition.replace(/ ON public\.sessions USING btree/, ""))).toEqual([
+      "CREATE UNIQUE INDEX sessions_pkey (id)",
+      "CREATE UNIQUE INDEX sessions_refresh_token_hash_key (refresh_token_hash)",
+      "CREATE INDEX sessions_tenant_id_device_id_idx (tenant_id, device_id)",
+      "CREATE INDEX sessions_tenant_id_user_id_idx (tenant_id, user_id)",
     ]);
   });
 
