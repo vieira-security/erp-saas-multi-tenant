@@ -8,7 +8,7 @@
 1. **Contexto autenticado:** o tenant é derivado da autenticação (usuário/dispositivo), nunca de input livre do frontend. Vale também para clientes offline/Edge: o tenant vem da credencial do dispositivo/sessão.
 2. **Aplicação:** repository/service exigem tenant context; acesso sem contexto deve falhar.
 3. **Banco:** `tenant_id` obrigatório e constraints reforçando o isolamento quando possível. Relações cross-tenant devem ser **impossíveis no banco** sempre que viável (FK composta incluindo `tenant_id`, ver [database.md](database.md)); FKs organizacionais nunca usam cascade.
-   - **`tenant_id` é imutável:** um registro nunca é movido para outro tenant. Hoje o banco bloqueia as trocas que gerariam vínculo cruzado, mas ainda aceita uma mudança consistente (Company sem filiais; Branch com `tenant_id` + `company_id` juntos). O mesmo vale para User sem acessos, para UserBranchAccess movido por inteiro (`tenant_id` + `user_id` + `branch_id`), para Role sem permissões, para RolePermission movido com `tenant_id` + `role_id` juntos, para UserRole movido por inteiro, para Device (de nível do tenant, ou com `tenant_id` + `branch_id` juntos) e para Session movida por inteiro. Proteção no banco prevista para o M1.14; até lá, nenhuma API/serviço pode permitir alterar `tenant_id`.
+   - **`tenant_id` é imutável:** um registro nunca é movido para outro tenant. Hoje o banco bloqueia as trocas que gerariam vínculo cruzado, mas ainda aceita uma mudança consistente (Company sem filiais; Branch com `tenant_id` + `company_id` juntos). O mesmo vale para User sem acessos, para UserBranchAccess movido por inteiro (`tenant_id` + `user_id` + `branch_id`), para Role sem permissões, para RolePermission movido com `tenant_id` + `role_id` juntos, para UserRole movido por inteiro, para Device (de nível do tenant, ou com `tenant_id` + `branch_id` juntos), para Session movida por inteiro e para AuditLog (sem vínculos, ou movido por inteiro). Proteção no banco prevista para o M1.14; até lá, nenhuma API/serviço pode permitir alterar `tenant_id`.
 4. **RLS (fase posterior):** segunda camada de proteção; **não ativa** hoje. Mecanismo de transmissão do tenant à sessão do banco e interação com pool de conexões/Prisma: **TBD**.
 5. **Testes:** testes de isolamento multi-tenant obrigatórios ([testing-strategy.md](testing-strategy.md)).
 
@@ -49,6 +49,12 @@ Módulos `auth`, `roles`, `permissions`, `devices` (ver [architecture.md](archit
 
 ## Auditoria
 Módulo `audit`; registros não apagáveis fisicamente. Escopo dos eventos auditados: **TBD**.
+
+**AuditLog** ([database.md](database.md)) é a estrutura persistente da trilha: por tenant, com usuário, filial e dispositivo opcionais (do mesmo tenant quando presentes, garantido por FKs compostas). Eventos sem usuário (workers, rotinas, sistema, só dispositivo) usam `user_id NULL`; não existe usuário fictício `SYSTEM`. `action` e `resource_type` são identificadores técnicos validados por CHECK de formato, sem enum; `resource_id` é referência lógica sem FK, para que o log sobreviva ao recurso. **Nada grava eventos ainda**: instrumentação de controllers/services/workers e o `AuditService` são etapas futuras.
+
+- **Append-only é, por enquanto, regra da aplicação:** a tabela não tem `updated_at`/`deleted_at`/status, mas o banco ainda aceita `UPDATE`/`DELETE` (sem trigger nem restrição de privilégio). Código da aplicação nunca deve alterar ou apagar logs.
+- **`metadata` (jsonb) nunca guarda credenciais nem segredos:** senha, `password_hash`, refresh/access token, `refresh_token_hash`, API key, segredo, chave privada, PIN, dados completos de cartão. Não há sanitizador automático nem verificação de conteúdo no banco; a auditoria de credenciais do catálogo checa só nomes de colunas. O futuro `AuditService` deve filtrar/mascarar `metadata` antes de gravar (allowlist de campos preferível a blocklist).
+- `ip_address` e `metadata` podem conter dado pessoal: retenção e LGPD pendentes (#9).
 
 ## Automação externa
 n8n e integrações só alteram dados críticos via API autenticada; nunca por acesso direto ao banco.
