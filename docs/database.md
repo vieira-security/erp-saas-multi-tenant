@@ -1,7 +1,7 @@
 # Banco de dados
 
 ## Estado atual
-PostgreSQL via Prisma. Models: `Tenant` (tabela `tenants`, migration `20261002000000_create_tenants`) `Company` (tabela `companies`, migration `20261002010000_create_companies`) e `Branch` (tabela `branches`, migration `20261002020000_create_branches`). A URL de conexão vem de `DATABASE_URL` (lida em `apps/api/prisma.config.ts`), nunca do código.
+PostgreSQL via Prisma. Models: `Tenant` (tabela `tenants`, migration `20261002000000_create_tenants`), `Company` (tabela `companies`, migration `20261002010000_create_companies`), `Branch` (tabela `branches`, migration `20261002020000_create_branches`) e `User` (tabela `users`, migration `20261002030000_create_users`). A URL de conexão vem de `DATABASE_URL` (lida em `apps/api/prisma.config.ts`), nunca do código.
 
 ## Tenant
 Raiz do multi-tenancy; por isso **não** possui `tenant_id`.
@@ -66,6 +66,31 @@ A FK simples `company_id → companies.id` não impede `branches.tenant_id` dife
 
 O banco então rejeita, por Prisma ou SQL direto: criar Branch do Tenant A com Company do Tenant B; trocar só `company_id` ou só `tenant_id` da Branch para outro tenant; trocar `tenant_id` de uma Company que tem Branches (`ON UPDATE RESTRICT`). Os testes de integração verificam esses casos e que a versão com FK simples falharia. Entidades futuras que referenciem Company/Branch devem seguir o mesmo padrão.
 
+## User
+Funcionário individual do tenant (sem usuários compartilhados). Login futuro no PDV por **matrícula + senha**; autenticação **ainda não implementada** (nada de hashing, login, tokens ou lockout nesta etapa). Relação **Tenant 1 → N User**.
+
+| Coluna | Tipo PostgreSQL | Nulo | Observação |
+|---|---|---|---|
+| `id` | `uuid` (PK) | não | UUIDv7 gerado pelo Prisma Client |
+| `tenant_id` | `uuid` | não | FK `tenants.id`, `ON DELETE RESTRICT ON UPDATE RESTRICT` |
+| `name` | `text` | não | CHECK `btrim(name) <> ''` |
+| `employee_number` | `text` | não | matrícula; CHECK `btrim(employee_number) <> ''`; `UNIQUE (tenant_id, employee_number)`; sem formato numérico imposto |
+| `password_hash` | `text` | não | **somente o hash**, gravado sem transformação; CHECK `btrim(password_hash) <> ''` |
+| `status` | enum `user_status` | não | `ACTIVE`, `DISABLED` (desativação administrativa), `LOCKED` (bloqueio de segurança); sem default |
+| `must_change_password` | `boolean` | não | default `false` |
+| `failed_login_attempts` | `integer` | não | default `0`; CHECK `>= 0` |
+| `locked_until` | `timestamptz(3)` | sim | |
+| `last_login_at` | `timestamptz(3)` | sim | |
+| `disabled_at` | `timestamptz(3)` | sim | |
+| `created_at` | `timestamptz(3)` | não | default `CURRENT_TIMESTAMP` |
+| `updated_at` | `timestamptz(3)` | não | mantido pelo Prisma (`@updatedAt`) |
+
+- Índices: unique `(tenant_id, employee_number)` e `(tenant_id, status)`.
+- **Matrícula única por tenant**, não global: a mesma matrícula pode existir em outro tenant. Comparação exata (sem normalização além de impedir vazio/espaços).
+- **Senha nunca é persistida em texto puro.** Não existe coluna `password`, `plain_password`, `temporary_password` nem equivalente; a auditoria do catálogo falha se surgir coluna textual com nome de credencial além de `users.password_hash`. O algoritmo (previsão: Argon2id) pertence ao M2.
+- **Sem exclusão física no fluxo normal:** o usuário é desativado (`status = DISABLED`) e permanece no histórico. Sem soft delete universal e sem cascade; Tenant com User não pode ser apagado.
+- Coerência entre `status` e `disabled_at`/`locked_until` **não** é imposta no banco (ex.: reativação, bloqueio sem prazo); fica para a camada de aplicação (Auth/M2).
+
 ## Integridade organizacional (M1.4)
 Regras: relações cross-tenant devem ser **bloqueadas no banco** sempre que possível, não só na aplicação; nenhuma FK organizacional usa `CASCADE`, `SET NULL` ou `SET DEFAULT` (apenas `RESTRICT`).
 
@@ -80,11 +105,13 @@ Depois de criado, um registro pertencente a um tenant **não** muda de tenant (C
 | Company: `tenant_id` para tenant inexistente | bloqueada | `companies_tenant_id_fkey` |
 | Branch: `tenant_id` **e** `company_id` juntos, consistentes | **aceita** (lacuna) | — |
 | Company **sem** Branches: `tenant_id` para outro tenant existente | **aceita** (lacuna) | — |
+| User: `tenant_id` para outro tenant existente | **aceita** (lacuna) | — |
+| User: `tenant_id` para tenant inexistente | bloqueada | `users_tenant_id_fkey` |
 
-As lacunas não criam relação cruzada, mas violam a imutabilidade. CHECK não enxerga o valor anterior e FK não impede uma mudança consistente; a proteção robusta é um trigger `BEFORE UPDATE OF tenant_id ... WHEN (OLD.tenant_id IS DISTINCT FROM NEW.tenant_id)` que lança erro, com uma função compartilhada por todas as tabelas de tenant. Foi prototipado (bloqueia as duas lacunas e não afeta updates no mesmo tenant), mas por ser um trigger genérico ficou para o **M1.14**. Os testes `GAP (M1.14)` em `org-integrity.int.test.ts` fixam o comportamento atual e devem ser invertidos quando a proteção entrar. Até lá, a camada de aplicação não deve expor alteração de `tenant_id`.
+As lacunas não criam relação cruzada, mas violam a imutabilidade. CHECK não enxerga o valor anterior e FK não impede uma mudança consistente; a proteção robusta é um trigger `BEFORE UPDATE OF tenant_id ... WHEN (OLD.tenant_id IS DISTINCT FROM NEW.tenant_id)` que lança erro, com uma função compartilhada por todas as tabelas de tenant. Foi prototipado em Company/Branch (bloqueia as lacunas e não afeta updates no mesmo tenant), mas por ser um trigger genérico ficou para o **M1.14**. Os testes `GAP (M1.14)` em `org-integrity.int.test.ts` fixam o comportamento atual e devem ser invertidos quando a proteção entrar. Até lá, a camada de aplicação não deve expor alteração de `tenant_id`.
 
 ### Auditoria automatizada do catálogo
-`org-integrity.int.test.ts` inspeciona o PostgreSQL e falha se: alguma tabela além de `tenants` (e `_prisma_migrations`) não tiver `tenant_id uuid NOT NULL`; faltar a FK direta `tenant_id → tenants(id)`; alguma FK usar `CASCADE`/`SET NULL`/`SET DEFAULT`; uma FK entre tabelas de tenant não incluir `tenant_id` dos dois lados; ou o conjunto de FKs organizacionais mudar. Tabelas novas entram na auditoria automaticamente; tabelas globais (sem tenant) precisarão ser declaradas explicitamente no teste.
+`org-integrity.int.test.ts` inspeciona o PostgreSQL e falha se: alguma tabela além de `tenants` (e `_prisma_migrations`) não tiver `tenant_id uuid NOT NULL`; faltar a FK direta `tenant_id → tenants(id)`; alguma FK usar `CASCADE`/`SET NULL`/`SET DEFAULT`; uma FK entre tabelas de tenant não incluir `tenant_id` dos dois lados; o conjunto de FKs mudar; ou existir coluna textual com nome de credencial (`password`, `pwd`, `senha`, `secret`, `pin`, `credential`) além de `users.password_hash`. Tabelas novas entram na auditoria automaticamente; tabelas globais (sem tenant) precisarão ser declaradas explicitamente no teste.
 
 ### Validações que ficam fora do banco
 - **CNPJ completo** (dígitos verificadores; raiz do CNPJ da Branch x Company): responsabilidade futura de `packages/validation`. O banco garante só o formato (14 dígitos) e a unicidade por tenant.
