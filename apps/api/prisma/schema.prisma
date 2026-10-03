@@ -39,6 +39,7 @@ model Tenant {
   branches       Branch[]
   users          User[]
   branchAccesses UserBranchAccess[]
+  roles          Role[]
 
   @@map("tenants")
 }
@@ -157,4 +158,33 @@ model UserBranchAccess {
   @@unique([tenantId, userId, branchId])
   @@index([tenantId, branchId])
   @@map("user_branch_access")
+}
+
+enum RoleStatus {
+  ACTIVE
+  INACTIVE
+  ARCHIVED
+
+  @@map("role_status")
+}
+
+// Papel do RBAC, por tenant. Códigos padrão previstos (templates, criados no provisionamento futuro):
+// OWNER, MANAGER, ATTENDANT, KITCHEN. Roles customizadas usam is_system = false.
+// Sozinha, uma Role não concede permissão alguma (Permission/RolePermission/UserRole ainda não existem).
+// CHECKs (fora do PSL, definidos na migration): code e name não vazios.
+model Role {
+  id          String     @id @default(uuid(7)) @db.Uuid
+  tenantId    String     @map("tenant_id") @db.Uuid
+  code        String
+  name        String
+  description String?
+  isSystem    Boolean    @default(false) @map("is_system")
+  status      RoleStatus
+  createdAt   DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime   @updatedAt @map("updated_at") @db.Timestamptz(3)
+  tenant      Tenant     @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@unique([tenantId, code])
+  @@index([tenantId, status])
+  @@map("roles")
 }
