@@ -36,14 +36,21 @@ Registro único dos pontos em aberto. Resolver antes de implementar o módulo af
 - **CNPJ:** só formato (14 dígitos) é garantido; dígitos verificadores e unicidade global ficam para etapa posterior.
 - **CHECKs fora do schema Prisma:** não aparecem em `migrate diff`; dependem de testes explícitos e de cuidado em migrations futuras ([database.md](database.md)).
 - **Índice `companies(tenant_id)` redundante:** `(tenant_id, status)`, a unique `(tenant_id, cnpj)` e a unique `(tenant_id, id)` (M1.3) já começam por `tenant_id`; mantido por decisão do M1.2, candidato a remoção.
-- **Troca de tenant de Branch/Company:** a FK composta impede vínculo cruzado, mas mover uma Branch alterando `tenant_id` e `company_id` juntos (de forma consistente) é aceito pelo banco. Se `tenant_id` deve ser imutável, isso exige trigger ou regra de aplicação (não decidido).
-- **CNPJ de Branch x Company:** não há relação validada entre o CNPJ da filial e o da empresa (raiz/matriz), nem unicidade entre as duas tabelas.
-- **Branch.timezone e Branch.code:** timezone sem validação IANA no banco; code sem normalização (caixa/espaços), então `MORUMBI` e `morumbi` são códigos distintos até a aplicação normalizar.
+- **Imutabilidade de `tenant_id` (decidida, ainda não imposta por completo):** o banco aceita mover Company sem Branches e mover Branch com `tenant_id` + `company_id` juntos. Ver "Pendências obrigatórias do M1.14".
+- **CNPJ de Branch x Company:** não há relação validada entre o CNPJ da filial e o da empresa (raiz/matriz), nem unicidade entre as duas tabelas. Validação completa (dígitos verificadores, raiz) será de `packages/validation`.
+- **Branch.timezone e Branch.code:** timezone sem validação IANA no banco (validação na aplicação); code sem normalização, então `MORUMBI` e `morumbi` são códigos distintos até a aplicação aplicar trim + uppercase.
 - **Worker x tenant:** jobs assíncronos também precisam de tenant context explícito, inclusive os disparados por n8n via API.
 - **Rollback x migrations destrutivas:** rollback de código só é seguro com migrations retrocompatíveis.
 - **Edge "premium" x dados mínimos:** a definição de "dados mínimos" afeta suporte, segurança do dispositivo local e LGPD.
 - **Escopo do MVP extenso:** 12 prioridades, incluindo fiscal e offline, sem ordem de entrega definida (#19).
 - **Branch base:** esta documentação foi escrita sobre `chore/install-core-frameworks`, ainda não mergeada.
+
+## Pendências obrigatórias do M1.14
+1. **Impor `tenant_id` imutável no banco:** função `forbid_tenant_id_change()` + trigger `BEFORE UPDATE OF tenant_id ... WHEN (OLD.tenant_id IS DISTINCT FROM NEW.tenant_id)` em `companies`, `branches` e toda tabela de tenant futura; inverter os testes `GAP (M1.14)`; acrescentar à auditoria do catálogo a exigência do trigger; confirmar que `prisma migrate diff` ignora funções/triggers (como já ignora CHECKs).
+2. **Proteção contra `new PrismaClient()` além do lint:** avaliar se a regra ESLint basta (não cobre `import()` dinâmico nem indireção).
+3. **Índices candidatos a remoção:** `companies_tenant_id_idx` (coberto por `(tenant_id, status)`, `(tenant_id, cnpj)` e `(tenant_id, id)`). Remover só com migration dedicada e revisão.
+4. **Normalização de `Branch.code`** (trim + uppercase) na aplicação; avaliar unique por `(tenant_id, upper(code))` no banco.
+5. **Validações em `packages/validation`:** CNPJ completo (dígitos verificadores, raiz Branch x Company) e timezone IANA.
 
 ## Antes do Prompt 3
 Mínimo recomendado: #1, #3, #5, #6 e #7 (fundação de IDs, remoção, auth e tenant context), mais #19 para definir qual módulo vem primeiro.

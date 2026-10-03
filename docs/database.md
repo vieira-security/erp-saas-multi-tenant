@@ -55,7 +55,7 @@ Filial/unidade física. Pertence a uma Company **e** ao mesmo Tenant dessa Compa
 | `updated_at` | `timestamptz(3)` | não | mantido pelo Prisma (`@updatedAt`) |
 
 - Índices: `(tenant_id, company_id)` (também atende a FK composta), `(tenant_id, status)` e as uniques `(tenant_id, code)` e `(tenant_id, cnpj)`. Sem índice isolado em `tenant_id`: todos os compostos começam por ele.
-- `code` é único por tenant (não por company): duas companies do mesmo tenant não repetem código.
+- `code` é único por tenant (não por company): duas companies do mesmo tenant não repetem código. A unique compara o texto exato; a camada de aplicação (futura) normalizará o código com **trim + uppercase** antes de gravar, de modo que `morumbi ` e `MORUMBI` não coexistam. Nada disso é imposto no banco hoje.
 - CNPJ nulo: a unique usa o padrão `NULLS DISTINCT` do PostgreSQL, logo várias branches sem CNPJ são aceitas e CNPJ preenchido não se repete no tenant. Não é globalmente único e não é comparado com o CNPJ da Company.
 - Remoção física de Tenant ou Company com Branch falha (`RESTRICT`); sem cascade e sem soft delete.
 
@@ -64,7 +64,32 @@ A FK simples `company_id → companies.id` não impede `branches.tenant_id` dife
 1. `companies` tem `UNIQUE (tenant_id, id)` (redundante para unicidade, já que `id` é PK, mas necessário como alvo de FK);
 2. `branches` referencia `(tenant_id, company_id) → companies(tenant_id, id)`.
 
-O banco então rejeita, por Prisma ou SQL direto: criar Branch do Tenant A com Company do Tenant B; trocar só `company_id` ou só `tenant_id` da Branch para outro tenant; trocar `tenant_id` de uma Company que tem Branches (`ON UPDATE RESTRICT`). Os testes de integração verificam esses casos e que a versão com FK simples falharia. Mover `tenant_id` **e** `company_id` juntos para outro tenant continua consistente e não é bloqueado pelo banco (ver open-questions). Entidades futuras que referenciem Company/Branch devem seguir o mesmo padrão.
+O banco então rejeita, por Prisma ou SQL direto: criar Branch do Tenant A com Company do Tenant B; trocar só `company_id` ou só `tenant_id` da Branch para outro tenant; trocar `tenant_id` de uma Company que tem Branches (`ON UPDATE RESTRICT`). Os testes de integração verificam esses casos e que a versão com FK simples falharia. Entidades futuras que referenciem Company/Branch devem seguir o mesmo padrão.
+
+## Integridade organizacional (M1.4)
+Regras: relações cross-tenant devem ser **bloqueadas no banco** sempre que possível, não só na aplicação; nenhuma FK organizacional usa `CASCADE`, `SET NULL` ou `SET DEFAULT` (apenas `RESTRICT`).
+
+### `tenant_id` imutável (decisão aprovada)
+Depois de criado, um registro pertencente a um tenant **não** muda de tenant (Company, Branch e futuras entidades). O que o banco garante hoje:
+
+| Alteração | Resultado | Mecanismo |
+|---|---|---|
+| Branch: só `tenant_id` | bloqueada | FK composta `branches_tenant_id_company_id_fkey` |
+| Branch: só `company_id` para Company de outro tenant | bloqueada | FK composta |
+| Company com Branches: `tenant_id` | bloqueada | FK composta, `ON UPDATE RESTRICT` |
+| Company: `tenant_id` para tenant inexistente | bloqueada | `companies_tenant_id_fkey` |
+| Branch: `tenant_id` **e** `company_id` juntos, consistentes | **aceita** (lacuna) | — |
+| Company **sem** Branches: `tenant_id` para outro tenant existente | **aceita** (lacuna) | — |
+
+As lacunas não criam relação cruzada, mas violam a imutabilidade. CHECK não enxerga o valor anterior e FK não impede uma mudança consistente; a proteção robusta é um trigger `BEFORE UPDATE OF tenant_id ... WHEN (OLD.tenant_id IS DISTINCT FROM NEW.tenant_id)` que lança erro, com uma função compartilhada por todas as tabelas de tenant. Foi prototipado (bloqueia as duas lacunas e não afeta updates no mesmo tenant), mas por ser um trigger genérico ficou para o **M1.14**. Os testes `GAP (M1.14)` em `org-integrity.int.test.ts` fixam o comportamento atual e devem ser invertidos quando a proteção entrar. Até lá, a camada de aplicação não deve expor alteração de `tenant_id`.
+
+### Auditoria automatizada do catálogo
+`org-integrity.int.test.ts` inspeciona o PostgreSQL e falha se: alguma tabela além de `tenants` (e `_prisma_migrations`) não tiver `tenant_id uuid NOT NULL`; faltar a FK direta `tenant_id → tenants(id)`; alguma FK usar `CASCADE`/`SET NULL`/`SET DEFAULT`; uma FK entre tabelas de tenant não incluir `tenant_id` dos dois lados; ou o conjunto de FKs organizacionais mudar. Tabelas novas entram na auditoria automaticamente; tabelas globais (sem tenant) precisarão ser declaradas explicitamente no teste.
+
+### Validações que ficam fora do banco
+- **CNPJ completo** (dígitos verificadores; raiz do CNPJ da Branch x Company): responsabilidade futura de `packages/validation`. O banco garante só o formato (14 dígitos) e a unicidade por tenant.
+- **Timezone IANA** (Company e Branch): validado na camada de aplicação; o banco guarda texto obrigatório, sem lista própria.
+- **Branch.code**: normalização trim + uppercase na aplicação.
 
 ## CHECK constraints
 O schema Prisma não representa CHECKs: eles são escritos à mão na migration. Consequências:
