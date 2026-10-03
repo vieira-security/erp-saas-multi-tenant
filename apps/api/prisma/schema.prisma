@@ -42,6 +42,7 @@ model Tenant {
   roles           Role[]
   rolePermissions RolePermission[]
   userRoles       UserRole[]
+  devices         Device[]
 
   @@map("tenants")
 }
@@ -98,6 +99,7 @@ model Branch {
   // FK composta (tenant_id, company_id) -> companies(tenant_id, id): impede Company de outro tenant.
   company      Company            @relation(fields: [tenantId, companyId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
   userAccesses UserBranchAccess[]
+  devices      Device[]
 
   @@unique([tenantId, code])
   // NULLS DISTINCT (padrão do PostgreSQL): várias branches sem CNPJ são permitidas.
@@ -256,4 +258,47 @@ model UserRole {
   // Usuários com uma role (consulta inversa) e lookup da FK para roles.
   @@index([tenantId, roleId])
   @@map("user_roles")
+}
+
+enum DeviceType {
+  POS
+  TABLET
+  ADMIN
+  KITCHEN_DISPLAY
+  EDGE
+
+  @@map("device_type")
+}
+
+enum DeviceStatus {
+  ACTIVE
+  INACTIVE
+  REVOKED
+
+  @@map("device_status")
+}
+
+// Terminal/dispositivo conhecido pelo ERP, do tenant; branch_id NULL = dispositivo de nível do tenant.
+// device_key é identificador técnico estável (NÃO é segredo). Sem pairing, autenticação, segredo ou heartbeat.
+// CHECKs (fora do PSL, definidos na migration): name e device_key não vazios.
+model Device {
+  id         String       @id @default(uuid(7)) @db.Uuid
+  tenantId   String       @map("tenant_id") @db.Uuid
+  branchId   String?      @map("branch_id") @db.Uuid
+  name       String
+  deviceType DeviceType   @map("device_type")
+  deviceKey  String       @map("device_key")
+  status     DeviceStatus
+  lastSeenAt DateTime?    @map("last_seen_at") @db.Timestamptz(3)
+  createdAt  DateTime     @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt  DateTime     @updatedAt @map("updated_at") @db.Timestamptz(3)
+  tenant     Tenant       @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  // FK composta MATCH SIMPLE: verificada só quando branch_id não é NULL; filial sempre do mesmo tenant.
+  branch     Branch?      @relation(fields: [tenantId, branchId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@unique([tenantId, deviceKey])
+  @@index([tenantId, status])
+  // Listagem por filial e lookup da FK para branches.
+  @@index([tenantId, branchId])
+  @@map("devices")
 }
