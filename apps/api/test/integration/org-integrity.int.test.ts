@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, inject, it } from "vitest";
 import {
   BranchStatus,
   CompanyStatus,
+  RoleStatus,
   TenantStatus,
   UserStatus,
   type Company,
@@ -9,7 +10,7 @@ import {
 } from "../../src/generated/prisma/client.js";
 import { createPrismaClient } from "../../src/database/create-prisma-client.js";
 
-// Tenant -> Company -> Branch, User and UserBranchAccess structural integrity (M1.4-M1.6).
+// Tenant -> Company -> Branch, User, UserBranchAccess and Role structural integrity (M1.4-M1.7).
 // Per-entity behaviour (creation, uniqueness, CHECKs) lives in tenant/company/branch tests.
 
 const ROOT_TABLE = "tenants";
@@ -36,7 +37,7 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
     }
 
     it("covers every tenant-scoped table (guards against an empty audit)", async () => {
-      expect(await tenantScopedTables()).toEqual(["branches", "companies", "user_branch_access", "users"]);
+      expect(await tenantScopedTables()).toEqual(["branches", "companies", "roles", "user_branch_access", "users"]);
     });
 
     it("keeps tenants as the root, without tenant_id", async () => {
@@ -90,6 +91,10 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
         },
         {
           name: "companies_tenant_id_fkey",
+          definition: "FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+        },
+        {
+          name: "roles_tenant_id_fkey",
           definition: "FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON UPDATE RESTRICT ON DELETE RESTRICT",
         },
         {
@@ -292,6 +297,30 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
       const other = await prisma.tenant.create({ data: { name: "B", status: TenantStatus.ACTIVE } });
 
       const moved = await prisma.user.update({ where: { id: user.id }, data: { tenantId: other.id } });
+
+      expect(moved.tenantId).toBe(other.id);
+    });
+  });
+
+  describe("tenant_id changes (Role)", () => {
+    async function newRole(name: string) {
+      const tenant = await prisma.tenant.create({ data: { name, status: TenantStatus.ACTIVE } });
+      return prisma.role.create({ data: { tenantId: tenant.id, code: "OWNER", name: "Proprietário", status: RoleStatus.ACTIVE } });
+    }
+
+    it("blocks a role tenant_id change to a non-existent tenant", async () => {
+      const role = await newRole("A");
+
+      await expect(
+        prisma.$executeRaw`UPDATE roles SET tenant_id = gen_random_uuid() WHERE id = ${role.id}::uuid`,
+      ).rejects.toThrow(/roles_tenant_id_fkey/);
+    });
+
+    it("GAP (M1.14): accepts moving a role to another existing tenant", async () => {
+      const role = await newRole("A");
+      const other = await prisma.tenant.create({ data: { name: "B", status: TenantStatus.ACTIVE } });
+
+      const moved = await prisma.role.update({ where: { id: role.id }, data: { tenantId: other.id } });
 
       expect(moved.tenantId).toBe(other.id);
     });

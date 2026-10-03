@@ -26,6 +26,7 @@ describe("migrations on a clean PostgreSQL database", () => {
       { name: "20261002020000_create_branches", finished: true, rolledBack: false },
       { name: "20261002030000_create_users", finished: true, rolledBack: false },
       { name: "20261002040000_create_user_branch_access", finished: true, rolledBack: false },
+      { name: "20261002050000_create_roles", finished: true, rolledBack: false },
     ]);
   });
 
@@ -33,7 +34,7 @@ describe("migrations on a clean PostgreSQL database", () => {
     const tables = await prisma.$queryRaw<{ name: string }[]>`
       SELECT table_name AS name FROM information_schema.tables
       WHERE table_schema = 'public' ORDER BY table_name`;
-    expect(tables.map((t) => t.name)).toEqual(["_prisma_migrations", "branches", "companies", "tenants", "user_branch_access", "users"]);
+    expect(tables.map((t) => t.name)).toEqual(["_prisma_migrations", "branches", "companies", "roles", "tenants", "user_branch_access", "users"]);
   });
 
   it("creates the tenant_status enum with exactly the approved values", async () => {
@@ -300,6 +301,60 @@ describe("migrations on a clean PostgreSQL database", () => {
       "CREATE UNIQUE INDEX user_branch_access_pkey (id)",
       "CREATE INDEX user_branch_access_tenant_id_branch_id_idx (tenant_id, branch_id)",
       "CREATE UNIQUE INDEX user_branch_access_tenant_id_user_id_branch_id_key (tenant_id, user_id, branch_id)",
+    ]);
+  });
+
+  it("creates the role_status enum with exactly the approved values", async () => {
+    const labels = await prisma.$queryRaw<{ label: string }[]>`
+      SELECT e.enumlabel AS label FROM pg_enum e JOIN pg_type t ON t.oid = e.enumtypid
+      WHERE t.typname = 'role_status' ORDER BY e.enumsortorder`;
+    expect(labels.map((l) => l.label)).toEqual(["ACTIVE", "INACTIVE", "ARCHIVED"]);
+  });
+
+  it("defines the roles columns with the expected types, nullability and defaults", async () => {
+    const columns = await prisma.$queryRaw<{ name: string; type: string; nullable: string; default: string | null }[]>`
+      SELECT column_name AS name, format_type(a.atttypid, a.atttypmod) AS type, c.is_nullable AS nullable,
+             c.column_default AS default
+      FROM information_schema.columns c
+      JOIN pg_attribute a ON a.attrelid = 'public.roles'::regclass AND a.attname = c.column_name
+      WHERE c.table_schema = 'public' AND c.table_name = 'roles'
+      ORDER BY c.ordinal_position`;
+    expect(columns).toEqual([
+      { name: "id", type: "uuid", nullable: "NO", default: null },
+      { name: "tenant_id", type: "uuid", nullable: "NO", default: null },
+      { name: "code", type: "text", nullable: "NO", default: null },
+      { name: "name", type: "text", nullable: "NO", default: null },
+      { name: "description", type: "text", nullable: "YES", default: null },
+      { name: "is_system", type: "boolean", nullable: "NO", default: "false" },
+      { name: "status", type: "role_status", nullable: "NO", default: null },
+      { name: "created_at", type: "timestamp(3) with time zone", nullable: "NO", default: "CURRENT_TIMESTAMP" },
+      { name: "updated_at", type: "timestamp(3) with time zone", nullable: "NO", default: null },
+    ]);
+  });
+
+  it("defines the roles constraints (PK, tenant FK, CHECKs)", async () => {
+    const constraints = await prisma.$queryRaw<{ name: string; definition: string }[]>`
+      SELECT conname AS name, pg_get_constraintdef(oid) AS definition
+      FROM pg_constraint WHERE conrelid = 'public.roles'::regclass ORDER BY conname`;
+    expect(constraints).toEqual([
+      { name: "roles_code_check", definition: "CHECK ((btrim(code) <> ''::text))" },
+      { name: "roles_name_check", definition: "CHECK ((btrim(name) <> ''::text))" },
+      { name: "roles_pkey", definition: "PRIMARY KEY (id)" },
+      {
+        name: "roles_tenant_id_fkey",
+        definition: "FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+      },
+    ]);
+  });
+
+  it("defines only the approved roles indexes", async () => {
+    const indexes = await prisma.$queryRaw<{ definition: string }[]>`
+      SELECT indexdef AS definition FROM pg_indexes
+      WHERE schemaname = 'public' AND tablename = 'roles' ORDER BY indexname`;
+    expect(indexes.map((i) => i.definition.replace(/ ON public\.roles USING btree/, ""))).toEqual([
+      "CREATE UNIQUE INDEX roles_pkey (id)",
+      "CREATE UNIQUE INDEX roles_tenant_id_code_key (tenant_id, code)",
+      "CREATE INDEX roles_tenant_id_status_idx (tenant_id, status)",
     ]);
   });
 
