@@ -33,6 +33,7 @@ describe("migrations on a clean PostgreSQL database", () => {
       { name: "20261002090000_create_devices", finished: true, rolledBack: false },
       { name: "20261002100000_create_sessions", finished: true, rolledBack: false },
       { name: "20261002110000_create_audit_logs", finished: true, rolledBack: false },
+      { name: "20261002111000_make_audit_logs_append_only", finished: true, rolledBack: false },
     ]);
   });
 
@@ -705,6 +706,19 @@ describe("migrations on a clean PostgreSQL database", () => {
       "CREATE INDEX audit_logs_tenant_id_resource_type_resource_id_created_at_idx (tenant_id, resource_type, resource_id, created_at)",
       "CREATE INDEX audit_logs_tenant_id_user_id_created_at_idx (tenant_id, user_id, created_at)",
     ]);
+  });
+
+  // Functions and triggers are invisible to schema.prisma and to `prisma migrate diff`: only this inventory guards them.
+  it("creates only the approved functions and user triggers", async () => {
+    const functions = await prisma.$queryRaw<{ name: string }[]>`
+      SELECT p.proname::text AS name FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+      WHERE n.nspname = 'public' ORDER BY p.proname`;
+    const triggers = await prisma.$queryRaw<{ table: string; name: string }[]>`
+      SELECT c.relname::text AS "table", t.tgname::text AS name
+      FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'public' AND NOT t.tgisinternal ORDER BY c.relname, t.tgname`;
+    expect(functions.map((f) => f.name)).toEqual(["forbid_audit_log_mutation"]);
+    expect(triggers).toEqual([{ table: "audit_logs", name: "audit_logs_append_only" }]);
   });
 
   it("matches schema.prisma (no drift)", async () => {
