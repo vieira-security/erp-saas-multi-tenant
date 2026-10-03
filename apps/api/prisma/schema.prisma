@@ -188,3 +188,18 @@ model Role {
   @@index([tenantId, status])
   @@map("roles")
 }
+
+// Catálogo técnico GLOBAL de permissões (sem tenant_id): controlado pelo sistema via seed.
+// `code` (<module>.<action>) é identificador técnico estável usado pelo código da aplicação.
+// Sem tenant, usuário, role ou escopo de filial: associações entram em módulos posteriores.
+// CHECKs (fora do PSL, definidos na migration): formato de code; module e description não vazios.
+model Permission {
+  id          String   @id @default(uuid(7)) @db.Uuid
+  code        String   @unique
+  module      String
+  description String
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@index([module])
+  @@map("permissions")
+}
