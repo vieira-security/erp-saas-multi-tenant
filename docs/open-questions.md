@@ -6,7 +6,7 @@ Registro único dos pontos em aberto. Resolver antes de implementar o módulo af
 |---|---|---|---|
 | 1 | ~~Geração de UUIDv7~~ **Resolvido:** Prisma `@default(uuid(7))`, coluna `uuid` (M1.1) | database | — |
 | 2 | Precisão/escala de `numeric` monetário | database | products/payments |
-| 3 | Estratégia de remoção por entidade (sem soft delete universal). Já definido: Company sem soft delete, desativação via `status = INACTIVE`, FK Tenant→Company `RESTRICT`. Em aberto: demais entidades e se Tenant pode ser apagado fisicamente | database | primeiros models |
+| 3 | Estratégia de remoção por entidade (sem soft delete universal). Já definido: Company sem soft delete, desativação via `status = INACTIVE`, FK Tenant→Company `RESTRICT`; Branch igual (sem soft delete, `INACTIVE`, FKs `RESTRICT`). Em aberto: demais entidades e se Tenant pode ser apagado fisicamente | database | primeiros models |
 | 4 | Desenho de idempotency keys (escopo, retenção) | database/offline-edge | offline-sync/orders |
 | 5 | Autenticação, sessões, expiração offline | security | auth |
 | 6 | Modelo de roles/permissions e fronteiras entre módulos | architecture/security | users |
@@ -35,7 +35,10 @@ Registro único dos pontos em aberto. Resolver antes de implementar o módulo af
 - **Company.timezone sem validação:** o banco aceita qualquer texto (sem lista própria de fusos, por decisão). Um valor inválido só falhará quando usado (ex.: `AT TIME ZONE`); a validação IANA deve entrar na camada de aplicação junto com o primeiro endpoint/serviço de Company.
 - **CNPJ:** só formato (14 dígitos) é garantido; dígitos verificadores e unicidade global ficam para etapa posterior.
 - **CHECKs fora do schema Prisma:** não aparecem em `migrate diff`; dependem de testes explícitos e de cuidado em migrations futuras ([database.md](database.md)).
-- **Índice `companies(tenant_id)` redundante:** `(tenant_id, status)` e a unique `(tenant_id, cnpj)` já começam por `tenant_id`; mantido por decisão desta etapa, candidato a remoção.
+- **Índice `companies(tenant_id)` redundante:** `(tenant_id, status)`, a unique `(tenant_id, cnpj)` e a unique `(tenant_id, id)` (M1.3) já começam por `tenant_id`; mantido por decisão do M1.2, candidato a remoção.
+- **Troca de tenant de Branch/Company:** a FK composta impede vínculo cruzado, mas mover uma Branch alterando `tenant_id` e `company_id` juntos (de forma consistente) é aceito pelo banco. Se `tenant_id` deve ser imutável, isso exige trigger ou regra de aplicação (não decidido).
+- **CNPJ de Branch x Company:** não há relação validada entre o CNPJ da filial e o da empresa (raiz/matriz), nem unicidade entre as duas tabelas.
+- **Branch.timezone e Branch.code:** timezone sem validação IANA no banco; code sem normalização (caixa/espaços), então `MORUMBI` e `morumbi` são códigos distintos até a aplicação normalizar.
 - **Worker x tenant:** jobs assíncronos também precisam de tenant context explícito, inclusive os disparados por n8n via API.
 - **Rollback x migrations destrutivas:** rollback de código só é seguro com migrations retrocompatíveis.
 - **Edge "premium" x dados mínimos:** a definição de "dados mínimos" afeta suporte, segurança do dispositivo local e LGPD.

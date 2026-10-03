@@ -1,7 +1,7 @@
 # Banco de dados
 
 ## Estado atual
-PostgreSQL via Prisma. Models: `Tenant` (tabela `tenants`, migration `20261002000000_create_tenants`) e `Company` (tabela `companies`, migration `20261002010000_create_companies`). A URL de conexão vem de `DATABASE_URL` (lida em `apps/api/prisma.config.ts`), nunca do código.
+PostgreSQL via Prisma. Models: `Tenant` (tabela `tenants`, migration `20261002000000_create_tenants`) `Company` (tabela `companies`, migration `20261002010000_create_companies`) e `Branch` (tabela `branches`, migration `20261002020000_create_branches`). A URL de conexão vem de `DATABASE_URL` (lida em `apps/api/prisma.config.ts`), nunca do código.
 
 ## Tenant
 Raiz do multi-tenancy; por isso **não** possui `tenant_id`.
@@ -33,10 +33,38 @@ Empresa de um tenant. Relação **Tenant 1 → N Company**; o MVP começa com um
 | `created_at` | `timestamptz(3)` | não | default `CURRENT_TIMESTAMP` |
 | `updated_at` | `timestamptz(3)` | não | mantido pelo Prisma (`@updatedAt`) |
 
-- Índices: `(tenant_id)`, `(tenant_id, status)` e a unique `(tenant_id, cnpj)`.
+- Índices: `(tenant_id)`, `(tenant_id, status)`, a unique `(tenant_id, cnpj)` e a unique `(tenant_id, id)` (alvo da FK composta de Branch, criada na migration de Branch).
 - CNPJ não é globalmente único nesta etapa; dígitos verificadores **não** são validados (nem no banco nem na aplicação).
 - Os CHECKs de nome rejeitam vazio e somente espaços (`btrim` remove apenas o caractere espaço).
 - Remoção física de um Tenant com Company falha (FK `RESTRICT`); sem cascade e sem soft delete.
+
+## Branch
+Filial/unidade física. Pertence a uma Company **e** ao mesmo Tenant dessa Company. Relações **Tenant 1 → N Branch** e **Company 1 → N Branch**; `tenant_id` é explícito (isolamento e performance), mesmo sendo derivável via Company.
+
+| Coluna | Tipo PostgreSQL | Nulo | Observação |
+|---|---|---|---|
+| `id` | `uuid` (PK) | não | UUIDv7 gerado pelo Prisma Client |
+| `tenant_id` | `uuid` | não | FK `tenants.id` (`RESTRICT`) |
+| `company_id` | `uuid` | não | FK composta `(tenant_id, company_id)` → `companies(tenant_id, id)` (`RESTRICT`) |
+| `name` | `text` | não | CHECK `btrim(name) <> ''` |
+| `code` | `text` | não | código operacional (ex.: `MORUMBI`); CHECK `btrim(code) <> ''`; `UNIQUE (tenant_id, code)`; sem regra de formato/caixa no banco |
+| `cnpj` | `text` | sim | CHECK `cnpj IS NULL OR cnpj ~ '^[0-9]{14}$'`; `UNIQUE (tenant_id, cnpj)` |
+| `status` | enum `branch_status` | não | `ACTIVE`, `INACTIVE`; sem default |
+| `timezone` | `text` | não | nome IANA; **não validado no banco** |
+| `created_at` | `timestamptz(3)` | não | default `CURRENT_TIMESTAMP` |
+| `updated_at` | `timestamptz(3)` | não | mantido pelo Prisma (`@updatedAt`) |
+
+- Índices: `(tenant_id, company_id)` (também atende a FK composta), `(tenant_id, status)` e as uniques `(tenant_id, code)` e `(tenant_id, cnpj)`. Sem índice isolado em `tenant_id`: todos os compostos começam por ele.
+- `code` é único por tenant (não por company): duas companies do mesmo tenant não repetem código.
+- CNPJ nulo: a unique usa o padrão `NULLS DISTINCT` do PostgreSQL, logo várias branches sem CNPJ são aceitas e CNPJ preenchido não se repete no tenant. Não é globalmente único e não é comparado com o CNPJ da Company.
+- Remoção física de Tenant ou Company com Branch falha (`RESTRICT`); sem cascade e sem soft delete.
+
+### Integridade Tenant/Company (padrão para entidades filhas)
+A FK simples `company_id → companies.id` não impede `branches.tenant_id` diferente de `companies.tenant_id`. Por isso:
+1. `companies` tem `UNIQUE (tenant_id, id)` (redundante para unicidade, já que `id` é PK, mas necessário como alvo de FK);
+2. `branches` referencia `(tenant_id, company_id) → companies(tenant_id, id)`.
+
+O banco então rejeita, por Prisma ou SQL direto: criar Branch do Tenant A com Company do Tenant B; trocar só `company_id` ou só `tenant_id` da Branch para outro tenant; trocar `tenant_id` de uma Company que tem Branches (`ON UPDATE RESTRICT`). Os testes de integração verificam esses casos e que a versão com FK simples falharia. Mover `tenant_id` **e** `company_id` juntos para outro tenant continua consistente e não é bloqueado pelo banco (ver open-questions). Entidades futuras que referenciem Company/Branch devem seguir o mesmo padrão.
 
 ## CHECK constraints
 O schema Prisma não representa CHECKs: eles são escritos à mão na migration. Consequências:
