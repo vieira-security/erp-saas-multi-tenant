@@ -42,6 +42,13 @@ Registro único dos pontos em aberto. Resolver antes de implementar o módulo af
 - **Roles por filial:** `UserBranchAccess` não carrega papel; roles/permissions (globais ou por filial) e sua relação com o acesso à filial ainda serão modeladas (#6).
 - **Roles padrão:** `OWNER`, `MANAGER`, `ATTENDANT`, `KITCHEN` não são reservados no banco (uma role customizada pode usar o código se ele estiver livre no tenant) e não há provisionamento ainda. Definir no provisionamento do Tenant: criação das quatro roles, se os códigos são reservados e quais regras protegem roles `is_system` (edição, arquivamento).
 - **Constantes de códigos de role:** não foram criadas em `packages/contracts` porque os packages ainda não têm estratégia de build/consumo pela api; decidir junto com o primeiro uso compartilhado.
+- **Catálogo de permissões:** o seed não remove permissões que saírem do catálogo (remoção/renomeação exigirá migração dedicada considerando RolePermission). Execução do seed no pipeline de deploy ainda não definida (#18). Nomes do catálogo inicial são provisórios até os módulos correspondentes existirem.
+
+## Pendências do RolePermission (M1.9+) originadas no M1.8
+1. RolePermission referencia Role (por tenant) e Permission (global): FK composta `(tenant_id, role_id) → roles(tenant_id, id)` (exige unique `(tenant_id, id)` em `roles`) e FK simples para `permissions.id`; incluir a tabela na auditoria (FK para tabela global não precisa carregar `tenant_id`).
+2. Quais permissões cada role padrão recebe no provisionamento (OWNER, MANAGER, ATTENDANT, KITCHEN).
+3. Política para permissão removida/renomeada do catálogo com vínculos existentes (`RESTRICT`).
+4. Escopo por filial das permissões/roles (#6).
 - **Worker x tenant:** jobs assíncronos também precisam de tenant context explícito, inclusive os disparados por n8n via API.
 - **Rollback x migrations destrutivas:** rollback de código só é seguro com migrations retrocompatíveis.
 - **Edge "premium" x dados mínimos:** a definição de "dados mínimos" afeta suporte, segurança do dispositivo local e LGPD.

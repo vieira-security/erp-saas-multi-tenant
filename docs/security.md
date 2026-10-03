@@ -37,7 +37,9 @@ Módulos `auth`, `roles`, `permissions`, `devices` (ver [architecture.md](archit
 
 **Acesso a filiais (`UserBranchAccess`) é separado de papel/permissão.** O vínculo só diz quais filiais (0..N) o usuário pode acessar; o que ele pode fazer será definido por roles/permissions (inclusive por filial), ainda não modelados. O vínculo só existe dentro do mesmo tenant, garantido no banco por FKs compostas com `tenant_id`. Nenhuma verificação de acesso (guard/autorização) está implementada.
 
-**Roles (RBAC) pertencem ao Tenant** ([database.md](database.md)). Códigos padrão previstos: `OWNER`, `MANAGER`, `ATTENDANT`, `KITCHEN`, criados futuramente no provisionamento do Tenant; roles customizadas são suportadas. Hoje uma Role **não concede nenhuma permissão**: Permission, RolePermission e a atribuição de roles a usuários (UserRole) ainda não existem.
+**Roles (RBAC) pertencem ao Tenant** ([database.md](database.md)). Códigos padrão previstos: `OWNER`, `MANAGER`, `ATTENDANT`, `KITCHEN`, criados futuramente no provisionamento do Tenant; roles customizadas são suportadas. Hoje uma Role **não concede nenhuma permissão**: RolePermission e a atribuição de roles a usuários (UserRole) ainda não existem.
+
+**Permission é um catálogo global**, controlado pelo sistema (seed), sem `tenant_id`: define apenas capacidades técnicas (`branch.manage`, `order.cancel`...). O `code` é identificador estável usado pelo código. Clientes não criam nem editam permissões; o que varia por tenant é quais permissões cada Role terá (RolePermission, próximo módulo). Toda tabela sem `tenant_id` precisa estar declarada explicitamente como global na auditoria estrutural.
 
 ## Auditoria
 Módulo `audit`; registros não apagáveis fisicamente. Escopo dos eventos auditados: **TBD**.
