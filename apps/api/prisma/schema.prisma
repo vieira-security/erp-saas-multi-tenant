@@ -43,6 +43,7 @@ model Tenant {
   rolePermissions RolePermission[]
   userRoles       UserRole[]
   devices         Device[]
+  sessions        Session[]
 
   @@map("tenants")
 }
@@ -139,6 +140,7 @@ model User {
   tenant              Tenant             @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
   branchAccesses      UserBranchAccess[]
   roles               UserRole[]
+  sessions            Session[]
 
   @@unique([tenantId, employeeNumber])
   // Alvo da FK composta de UserBranchAccess.
@@ -295,10 +297,40 @@ model Device {
   tenant     Tenant       @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
   // FK composta MATCH SIMPLE: verificada só quando branch_id não é NULL; filial sempre do mesmo tenant.
   branch     Branch?      @relation(fields: [tenantId, branchId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  sessions   Session[]
 
   @@unique([tenantId, deviceKey])
+  // Alvo da FK composta de Session (id já é PK; não cria regra funcional nova).
+  @@unique([tenantId, id])
   @@index([tenantId, status])
   // Listagem por filial e lookup da FK para branches.
   @@index([tenantId, branchId])
   @@map("devices")
+}
+
+// Sessão persistente (base para Auth no M2): só o HASH do refresh token atual; access token nunca é persistido.
+// Estado derivado: ativa = revoked_at IS NULL AND expires_at > now(); revogada = revoked_at IS NOT NULL;
+// expirada = expires_at <= now(). Sem status nem updated_at: eventos de segurança usam datas próprias.
+// CHECKs (fora do PSL, definidos na migration): refresh_token_hash não vazio; expires_at > created_at.
+model Session {
+  id               String    @id @default(uuid(7)) @db.Uuid
+  tenantId         String    @map("tenant_id") @db.Uuid
+  userId           String    @map("user_id") @db.Uuid
+  deviceId         String?   @map("device_id") @db.Uuid
+  refreshTokenHash String    @unique @map("refresh_token_hash")
+  ipAddress        String?   @map("ip_address") @db.Inet
+  userAgent        String?   @map("user_agent")
+  expiresAt        DateTime  @map("expires_at") @db.Timestamptz(3)
+  revokedAt        DateTime? @map("revoked_at") @db.Timestamptz(3)
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  tenant           Tenant    @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  user             User      @relation(fields: [tenantId, userId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  // FK composta MATCH SIMPLE: verificada só quando device_id não é NULL; dispositivo sempre do mesmo tenant.
+  device           Device?   @relation(fields: [tenantId, deviceId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+
+  // Sessões de um usuário e lookup da FK para users.
+  @@index([tenantId, userId])
+  // Sessões de um dispositivo e lookup da FK para devices.
+  @@index([tenantId, deviceId])
+  @@map("sessions")
 }
