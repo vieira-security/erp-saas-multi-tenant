@@ -8,7 +8,7 @@
 1. **Contexto autenticado:** o tenant é derivado da autenticação (usuário/dispositivo), nunca de input livre do frontend. Vale também para clientes offline/Edge: o tenant vem da credencial do dispositivo/sessão.
 2. **Aplicação:** repository/service exigem tenant context; acesso sem contexto deve falhar.
 3. **Banco:** `tenant_id` obrigatório e constraints reforçando o isolamento quando possível. Relações cross-tenant devem ser **impossíveis no banco** sempre que viável (FK composta incluindo `tenant_id`, ver [database.md](database.md)); FKs organizacionais nunca usam cascade.
-   - **`tenant_id` é imutável:** um registro nunca é movido para outro tenant. Hoje o banco bloqueia as trocas que gerariam vínculo cruzado, mas ainda aceita uma mudança consistente (Company sem filiais; Branch com `tenant_id` + `company_id` juntos). O mesmo vale para User sem acessos e para UserBranchAccess movido por inteiro (`tenant_id` + `user_id` + `branch_id`). Proteção no banco prevista para o M1.14; até lá, nenhuma API/serviço pode permitir alterar `tenant_id`.
+   - **`tenant_id` é imutável:** um registro nunca é movido para outro tenant. Hoje o banco bloqueia as trocas que gerariam vínculo cruzado, mas ainda aceita uma mudança consistente (Company sem filiais; Branch com `tenant_id` + `company_id` juntos). O mesmo vale para User sem acessos, para UserBranchAccess movido por inteiro (`tenant_id` + `user_id` + `branch_id`) e para Role. Proteção no banco prevista para o M1.14; até lá, nenhuma API/serviço pode permitir alterar `tenant_id`.
 4. **RLS (fase posterior):** segunda camada de proteção; **não ativa** hoje. Mecanismo de transmissão do tenant à sessão do banco e interação com pool de conexões/Prisma: **TBD**.
 5. **Testes:** testes de isolamento multi-tenant obrigatórios ([testing-strategy.md](testing-strategy.md)).
 
@@ -36,6 +36,8 @@ Módulos `auth`, `roles`, `permissions`, `devices` (ver [architecture.md](archit
 - usuário desativado (`DISABLED`) permanece no histórico; não há exclusão física no fluxo normal.
 
 **Acesso a filiais (`UserBranchAccess`) é separado de papel/permissão.** O vínculo só diz quais filiais (0..N) o usuário pode acessar; o que ele pode fazer será definido por roles/permissions (inclusive por filial), ainda não modelados. O vínculo só existe dentro do mesmo tenant, garantido no banco por FKs compostas com `tenant_id`. Nenhuma verificação de acesso (guard/autorização) está implementada.
+
+**Roles (RBAC) pertencem ao Tenant** ([database.md](database.md)). Códigos padrão previstos: `OWNER`, `MANAGER`, `ATTENDANT`, `KITCHEN`, criados futuramente no provisionamento do Tenant; roles customizadas são suportadas. Hoje uma Role **não concede nenhuma permissão**: Permission, RolePermission e a atribuição de roles a usuários (UserRole) ainda não existem.
 
 ## Auditoria
 Módulo `audit`; registros não apagáveis fisicamente. Escopo dos eventos auditados: **TBD**.

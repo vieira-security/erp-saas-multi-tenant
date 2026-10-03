@@ -1,7 +1,7 @@
 # Banco de dados
 
 ## Estado atual
-PostgreSQL via Prisma. Models: `Tenant` (tabela `tenants`, migration `20261002000000_create_tenants`), `Company` (tabela `companies`, migration `20261002010000_create_companies`), `Branch` (tabela `branches`, migration `20261002020000_create_branches`), `User` (tabela `users`, migration `20261002030000_create_users`) e `UserBranchAccess` (tabela `user_branch_access`, migration `20261002040000_create_user_branch_access`). A URL de conexão vem de `DATABASE_URL` (lida em `apps/api/prisma.config.ts`), nunca do código.
+PostgreSQL via Prisma. Models: `Tenant` (tabela `tenants`, migration `20261002000000_create_tenants`), `Company` (tabela `companies`, migration `20261002010000_create_companies`), `Branch` (tabela `branches`, migration `20261002020000_create_branches`), `User` (tabela `users`, migration `20261002030000_create_users`), `UserBranchAccess` (tabela `user_branch_access`, migration `20261002040000_create_user_branch_access`) e `Role` (tabela `roles`, migration `20261002050000_create_roles`). A URL de conexão vem de `DATABASE_URL` (lida em `apps/api/prisma.config.ts`), nunca do código.
 
 ## Tenant
 Raiz do multi-tenancy; por isso **não** possui `tenant_id`.
@@ -108,6 +108,27 @@ Define quais filiais um usuário pode acessar: **User 0..N Branches, sempre no m
 - User ou Branch com acesso não pode ser apagado (`RESTRICT`), coerente com a política de desativação; também não pode mudar de tenant (`ON UPDATE RESTRICT` nas FKs compostas).
 - Sem regra de "filial padrão", convite ou expiração.
 
+## Role
+Catálogo de papéis do RBAC, **pertencente ao Tenant**. Sozinha, uma Role **não concede permissão alguma**: Permission, RolePermission e UserRole ainda não existem. Relação **Tenant 1 → N Role**.
+
+| Coluna | Tipo PostgreSQL | Nulo | Observação |
+|---|---|---|---|
+| `id` | `uuid` (PK) | não | UUIDv7 gerado pelo Prisma Client |
+| `tenant_id` | `uuid` | não | FK `tenants.id`, `ON DELETE RESTRICT ON UPDATE RESTRICT` |
+| `code` | `text` | não | identificador técnico; CHECK `btrim(code) <> ''`; `UNIQUE (tenant_id, code)`; sem uppercase imposto no banco |
+| `name` | `text` | não | nome exibido; CHECK `btrim(name) <> ''` |
+| `description` | `text` | sim | |
+| `is_system` | `boolean` | não | default `false`; `true` = template provisionado pelo sistema, `false` = role customizada do cliente |
+| `status` | enum `role_status` | não | `ACTIVE` (utilizável), `INACTIVE` (temporariamente indisponível), `ARCHIVED` (retirada de uso, mantém histórico); sem default |
+| `created_at` | `timestamptz(3)` | não | default `CURRENT_TIMESTAMP` |
+| `updated_at` | `timestamptz(3)` | não | mantido pelo Prisma (`@updatedAt`) |
+
+- Índices: unique `(tenant_id, code)` e `(tenant_id, status)`.
+- **Códigos padrão previstos** (templates, `is_system = true`): `OWNER` (Proprietário), `MANAGER` (Gerente), `ATTENDANT` (Atendente), `KITCHEN` (Cozinha). Serão criados **no provisionamento do Tenant** (futuro); **não há seed global**. O banco não reserva esses códigos: hoje uma role customizada poderia usar `OWNER` se o código ainda não existir no tenant.
+- **Roles customizadas** são suportadas (`is_system = false`, código livre e único por tenant). A aplicação poderá normalizar `code` (trim + uppercase) no futuro.
+- Sem regras de edição/exclusão de role de sistema ainda. Sem exclusão física como operação normal: roles são desativadas ou arquivadas; Tenant com Role não pode ser apagado (`RESTRICT`).
+- Sem escopo por filial nesta etapa.
+
 ## Integridade organizacional (M1.4)
 Regras: relações cross-tenant devem ser **bloqueadas no banco** sempre que possível, não só na aplicação; nenhuma FK organizacional usa `CASCADE`, `SET NULL` ou `SET DEFAULT` (apenas `RESTRICT`).
 
@@ -126,6 +147,8 @@ Depois de criado, um registro pertencente a um tenant **não** muda de tenant (C
 | User ou Branch **com** acessos: `tenant_id` | bloqueada | FKs compostas de `user_branch_access`, `ON UPDATE RESTRICT` |
 | UserBranchAccess: só `tenant_id`, só `user_id` ou só `branch_id` para outro tenant | bloqueada | FKs compostas |
 | UserBranchAccess: `tenant_id` + `user_id` + `branch_id` juntos, consistentes | **aceita** (lacuna) | — |
+| Role: `tenant_id` para outro tenant existente | **aceita** (lacuna) | — |
+| Role: `tenant_id` para tenant inexistente | bloqueada | `roles_tenant_id_fkey` |
 | User: `tenant_id` para tenant inexistente | bloqueada | `users_tenant_id_fkey` |
 
 As lacunas não criam relação cruzada, mas violam a imutabilidade. CHECK não enxerga o valor anterior e FK não impede uma mudança consistente; a proteção robusta é um trigger `BEFORE UPDATE OF tenant_id ... WHEN (OLD.tenant_id IS DISTINCT FROM NEW.tenant_id)` que lança erro, com uma função compartilhada por todas as tabelas de tenant. Foi prototipado em Company/Branch (bloqueia as lacunas e não afeta updates no mesmo tenant), mas por ser um trigger genérico ficou para o **M1.14**. Os testes `GAP (M1.14)` em `org-integrity.int.test.ts` fixam o comportamento atual e devem ser invertidos quando a proteção entrar. Até lá, a camada de aplicação não deve expor alteração de `tenant_id`.
