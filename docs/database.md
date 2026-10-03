@@ -1,7 +1,7 @@
 # Banco de dados
 
 ## Estado atual
-PostgreSQL via Prisma. Models: `Tenant` (tabela `tenants`, migration `20261002000000_create_tenants`), `Company` (tabela `companies`, migration `20261002010000_create_companies`), `Branch` (tabela `branches`, migration `20261002020000_create_branches`), `User` (tabela `users`, migration `20261002030000_create_users`), `UserBranchAccess` (tabela `user_branch_access`, migration `20261002040000_create_user_branch_access`), `Role` (tabela `roles`, migration `20261002050000_create_roles`), `Permission` (tabela global `permissions`, migration `20261002060000_create_permissions`), `RolePermission` (tabela `role_permissions`, migration `20261002070000_create_role_permissions`), `UserRole` (tabela `user_roles`, migration `20261002080000_create_user_roles`), `Device` (tabela `devices`, migration `20261002090000_create_devices`), `Session` (tabela `sessions`, migration `20261002100000_create_sessions`) e `AuditLog` (tabela `audit_logs`, migrations `20261002110000_create_audit_logs` e `20261002111000_make_audit_logs_append_only`). A URL de conexão vem de `DATABASE_URL` (lida em `apps/api/prisma.config.ts`), nunca do código.
+PostgreSQL via Prisma. Models: `Tenant` (tabela `tenants`, migration `20261002000000_create_tenants`), `Company` (tabela `companies`, migration `20261002010000_create_companies`), `Branch` (tabela `branches`, migration `20261002020000_create_branches`), `User` (tabela `users`, migration `20261002030000_create_users`), `UserBranchAccess` (tabela `user_branch_access`, migration `20261002040000_create_user_branch_access`), `Role` (tabela `roles`, migration `20261002050000_create_roles`), `Permission` (tabela global `permissions`, migration `20261002060000_create_permissions`), `RolePermission` (tabela `role_permissions`, migration `20261002070000_create_role_permissions`), `UserRole` (tabela `user_roles`, migration `20261002080000_create_user_roles`), `Device` (tabela `devices`, migration `20261002090000_create_devices`), `Session` (tabela `sessions`, migration `20261002100000_create_sessions`) e `AuditLog` (tabela `audit_logs`, migrations `20261002110000_create_audit_logs` e `20261002111000_make_audit_logs_append_only`). A imutabilidade de `tenant_id` é imposta pela migration `20261002120000_make_tenant_id_immutable` (M1.14.1). A URL de conexão vem de `DATABASE_URL` (lida em `apps/api/prisma.config.ts`), nunca do código.
 
 ## Tenant
 Raiz do multi-tenancy; por isso **não** possui `tenant_id`.
@@ -257,7 +257,7 @@ Trilha histórica **append-only** de eventos relevantes do tenant: segurança, a
 - **Append-only, imposto pelo PostgreSQL** (migration `20261002111000_make_audit_logs_append_only`): sem `updated_at`, `deleted_at`, status ou soft delete, e **`UPDATE` e `DELETE` são bloqueados fisicamente**. `INSERT` continua livre.
   - Função `forbid_audit_log_mutation()` (`plpgsql`, `RETURNS trigger`): lança `AuditLog is append-only: <UPDATE|DELETE> on audit_logs is not allowed` (SQLSTATE `P0001`, com `HINT`).
   - Trigger `audit_logs_append_only`: `BEFORE UPDATE OR DELETE ON audit_logs FOR EACH ROW`. Rejeita qualquer UPDATE (inclusive no-op `SET x = x` e em massa) e qualquer DELETE, via Prisma ou SQL; a transação que tenta falha e a linha fica intacta.
-  - **Específicos de `audit_logs`:** a função não deve ser reutilizada em outra tabela (o teste de catálogo exige que ela seja usada por um único trigger). **Não é** o trigger genérico de imutabilidade de `tenant_id` do M1.14: aquele bloqueará só a troca de `tenant_id` em tabelas que continuam editáveis; este bloqueia toda mutação de uma tabela que não é editável.
+  - **Específicos de `audit_logs`:** a função não deve ser reutilizada em outra tabela (o teste de catálogo exige que ela seja usada por um único trigger). **Não é** o trigger genérico de imutabilidade de `tenant_id` (M1.14.1): aquele bloqueia só a troca de `tenant_id` em tabelas que continuam editáveis; este bloqueia toda mutação de uma tabela que não é editável, e por isso `audit_logs` não recebe o genérico.
   - Como o BEFORE trigger dispara antes das FKs, um UPDATE em `audit_logs` falha pelo append-only, nunca pela FK. As FKs compostas continuam sendo a segunda barreira: testes desabilitam o trigger dentro de uma transação desfeita e provam que vínculos cross-tenant ainda são rejeitados.
   - **Não cobre `TRUNCATE`** (row triggers não disparam nele) nem um superusuário/dono da tabela que desabilite o trigger (`ALTER TABLE ... DISABLE TRIGGER`) ou use `session_replication_role = replica`. Ver "Pendências do AuditService" em [open-questions.md](open-questions.md).
 - **Ator e contexto opcionais, sem sentinela:** `user_id NULL` = evento sem usuário (worker, rotina automática, evento sistêmico, evento só de dispositivo); não existe usuário fictício `SYSTEM`. `branch_id`/`device_id` `NULL` = sem filial/dispositivo. As três FKs compostas são `MATCH SIMPLE` (padrão do PostgreSQL): verificadas quando a coluna está preenchida e ignoradas quando é `NULL`; preenchidas, garantem existência e mesmo tenant. Não há regra entre elas (ex.: o banco não exige que o dispositivo seja da filial informada).
@@ -276,43 +276,41 @@ Trilha histórica **append-only** de eventos relevantes do tenant: segurança, a
 ## Integridade organizacional (M1.4)
 Regras: relações cross-tenant devem ser **bloqueadas no banco** sempre que possível, não só na aplicação; nenhuma FK organizacional usa `CASCADE`, `SET NULL` ou `SET DEFAULT` (apenas `RESTRICT`).
 
-### `tenant_id` imutável (decisão aprovada)
-Depois de criado, um registro pertencente a um tenant **não** muda de tenant (Company, Branch e futuras entidades). O que o banco garante hoje:
+### `tenant_id` imutável (decisão fechada, imposta no banco — M1.14.1)
+**`tenant_id` é imutável no banco para toda entidade editável pertencente a tenant.** Depois de criada, uma linha nunca muda de tenant: nem via Prisma, nem via SQL direto, nem quando todas as FKs são alteradas juntas de forma consistente. A regra não depende da aplicação.
+
+**Mecanismo** (migration `20261002120000_make_tenant_id_immutable`):
+- Função compartilhada `forbid_tenant_id_change()` (`plpgsql`, `RETURNS trigger`, sem argumentos). Não conhece nomes de tabela: usa `TG_TABLE_SCHEMA`/`TG_TABLE_NAME` na mensagem. Lança SQLSTATE **`23000`** (`integrity_constraint_violation`) com `COLUMN = 'tenant_id'`, `TABLE`, `SCHEMA` e `HINT`; mensagem `tenant_id is immutable: UPDATE on public.<tabela> cannot change tenant_id`. Rechecagem defensiva interna (`NEW.tenant_id IS DISTINCT FROM OLD.tenant_id`): continua correta mesmo se um trigger for criado sem o `WHEN`.
+- Um trigger por tabela, `<tabela>_tenant_id_immutable`: `BEFORE UPDATE OF tenant_id ... FOR EACH ROW WHEN (OLD.tenant_id IS DISTINCT FROM NEW.tenant_id) EXECUTE FUNCTION forbid_tenant_id_change()`.
+- Tabelas protegidas: `companies`, `branches`, `users`, `user_branch_access`, `roles`, `role_permissions`, `user_roles`, `devices`, `sessions`.
+- **Fora do trigger genérico:** `audit_logs` (política própria: append-only, nenhum UPDATE é aceito); `tenants` (raiz, sem `tenant_id`); `permissions` (global, sem `tenant_id`); `_prisma_migrations`.
+
+**O que continua permitido:** qualquer UPDATE que não mude o valor de `tenant_id` (`trade_name`, `name`, `revoked_at`...); `SET tenant_id = tenant_id` ou o mesmo UUID (o `WHEN` só dispara com mudança real); Prisma `update` repetindo o `tenantId` atual ou `connect` no mesmo tenant.
+
+**O que é bloqueado** (testado): UPDATE direto, em massa, com `UPDATE ... FROM`, subconsulta, CTE `WITH ... UPDATE ... RETURNING`, junto de outras colunas, `INSERT ... ON CONFLICT DO UPDATE`, `MERGE`; no Prisma, `update`, `updateMany`, `upsert`, `connect` de outro tenant e `$transaction` (a transação inteira é desfeita). Bloqueia também `tenant_id` para tenant inexistente (o trigger dispara antes da FK).
+
+**Ordem das barreiras:** o trigger BEFORE dispara antes das checagens de FK. Um UPDATE de `tenant_id` falha sempre pela imutabilidade (`23000`), nunca pela FK. As FKs compostas continuam existindo e sendo verificadas pelo catálogo, e seguem bloqueando trocas de `company_id`/`user_id`/`branch_id`/`role_id`/`device_id` para outro tenant (essas não mexem em `tenant_id`, então não passam pelo trigger).
 
 | Alteração | Resultado | Mecanismo |
 |---|---|---|
-| Branch: só `tenant_id` | bloqueada | FK composta `branches_tenant_id_company_id_fkey` |
-| Branch: só `company_id` para Company de outro tenant | bloqueada | FK composta |
-| Company com Branches: `tenant_id` | bloqueada | FK composta, `ON UPDATE RESTRICT` |
-| Company: `tenant_id` para tenant inexistente | bloqueada | `companies_tenant_id_fkey` |
-| Branch: `tenant_id` **e** `company_id` juntos, consistentes | **aceita** (lacuna) | — |
-| Company **sem** Branches: `tenant_id` para outro tenant existente | **aceita** (lacuna) | — |
-| User **sem** acessos: `tenant_id` para outro tenant existente | **aceita** (lacuna) | — |
-| User ou Branch **com** acessos: `tenant_id` | bloqueada | FKs compostas de `user_branch_access`, `ON UPDATE RESTRICT` |
-| UserBranchAccess: só `tenant_id`, só `user_id` ou só `branch_id` para outro tenant | bloqueada | FKs compostas |
-| UserBranchAccess: `tenant_id` + `user_id` + `branch_id` juntos, consistentes | **aceita** (lacuna) | — |
-| Role **sem** permissões: `tenant_id` para outro tenant existente | **aceita** (lacuna) | — |
-| Role **com** permissões: `tenant_id` | bloqueada | FK composta de `role_permissions`, `ON UPDATE RESTRICT` |
-| RolePermission: só `tenant_id` ou só `role_id` para outro tenant | bloqueada | FK composta |
-| RolePermission: `tenant_id` + `role_id` juntos, consistentes | **aceita** (lacuna) | — |
-| UserRole: só `tenant_id`, `user_id`, `role_id` ou `branch_id` para outro tenant (ou filial sem acesso) | bloqueada | FKs compostas |
-| User ou Role **com** UserRole: `tenant_id` | bloqueada | FKs compostas de `user_roles`, `ON UPDATE RESTRICT` |
-| UserRole: `tenant_id` + `user_id` + `role_id` (+ `branch_id`) juntos, consistentes | **aceita** (lacuna) | — |
-| Device com filial: só `tenant_id`, ou `branch_id` para filial de outro tenant | bloqueada | FK composta `devices_tenant_id_branch_id_fkey` |
-| Device de nível do tenant (`branch_id NULL`): `tenant_id` | **aceita** (lacuna) | — |
-| Device: `tenant_id` + `branch_id` juntos, consistentes | **aceita** (lacuna) | — |
-| Session: só `tenant_id`, ou `user_id`/`device_id` de outro tenant | bloqueada | FKs compostas de `sessions` |
-| User ou Device **com** sessão: `tenant_id` | bloqueada | FKs compostas de `sessions`, `ON UPDATE RESTRICT` |
-| Session: `tenant_id` + `user_id` (+ `device_id`) juntos, consistentes | **aceita** (lacuna) | — |
-| AuditLog: qualquer alteração (`tenant_id`, vínculos ou outra coluna), com ou sem vínculos | bloqueada | trigger append-only `audit_logs_append_only` (as FKs compostas seguem como segunda barreira) |
-| User, Branch ou Device referenciado por AuditLog: `tenant_id` | bloqueada | FKs compostas de `audit_logs`, `ON UPDATE RESTRICT` |
-| Role: `tenant_id` para tenant inexistente | bloqueada | `roles_tenant_id_fkey` |
-| User: `tenant_id` para tenant inexistente | bloqueada | `users_tenant_id_fkey` |
+| `tenant_id` de qualquer linha de tabela editável de tenant (sozinho ou com FKs, consistente ou não, tenant existente ou não) | bloqueada | trigger `<tabela>_tenant_id_immutable` |
+| `tenant_id` para o mesmo valor | aceita | `WHEN` não dispara |
+| Branch: só `company_id` para Company de outro tenant | bloqueada | FK composta `branches_tenant_id_company_id_fkey` |
+| UserBranchAccess: `user_id` ou `branch_id` de outro tenant | bloqueada | FKs compostas |
+| RolePermission: `role_id` de outro tenant | bloqueada | FK composta |
+| UserRole: `user_id`, `role_id` ou `branch_id` de outro tenant (ou filial sem acesso) | bloqueada | FKs compostas |
+| Device: `branch_id` para filial de outro tenant | bloqueada | FK composta `devices_tenant_id_branch_id_fkey` |
+| Session: `user_id`/`device_id` de outro tenant | bloqueada | FKs compostas de `sessions` |
+| AuditLog: qualquer alteração, inclusive `tenant_id` | bloqueada | trigger append-only `audit_logs_append_only` |
 
-As lacunas não criam relação cruzada, mas violam a imutabilidade. CHECK não enxerga o valor anterior e FK não impede uma mudança consistente; a proteção robusta é um trigger `BEFORE UPDATE OF tenant_id ... WHEN (OLD.tenant_id IS DISTINCT FROM NEW.tenant_id)` que lança erro, com uma função compartilhada por todas as tabelas de tenant. Foi prototipado em Company/Branch (bloqueia as lacunas e não afeta updates no mesmo tenant), mas por ser um trigger genérico ficou para o **M1.14**. Os testes `GAP (M1.14)` em `org-integrity.int.test.ts` fixam o comportamento atual e devem ser invertidos quando a proteção entrar. Até lá, a camada de aplicação não deve expor alteração de `tenant_id`. **`audit_logs` não precisa desse trigger genérico:** o trigger append-only já proíbe qualquer UPDATE, inclusive de `tenant_id`, e não há lacuna; a tabela continua sujeita a toda a auditoria multi-tenant do catálogo (classificação, `tenant_id NOT NULL`, FKs).
+**Novas tabelas de tenant** precisam do trigger `<tabela>_tenant_id_immutable` na própria migration de criação; a auditoria do catálogo falha sem ele (abaixo). Uma tabela de tenant só fica sem o trigger genérico se for declarada em `SPECIAL_TENANT_ID_POLICIES` com política verificável (hoje só `audit_logs`, append-only).
+
+**Limites:** o trigger é `UPDATE OF tenant_id`, ou seja, só dispara quando `tenant_id` está no `SET` (ou no `UPDATE SET` de `ON CONFLICT`/`MERGE`). Um futuro trigger BEFORE que altere `NEW.tenant_id` sem que a coluna esteja no `SET` não seria pego; não existe nenhum hoje, e o inventário fail-closed de triggers exige revisão para qualquer trigger novo. Superusuário/dono da tabela pode desabilitar triggers (`ALTER TABLE ... DISABLE TRIGGER`, `session_replication_role = replica`); estratégia de papéis do banco pendente (#7).
 
 ### Auditoria automatizada do catálogo
 `org-integrity.int.test.ts` (com `test/integration/table-audit.ts`) classifica **toda** tabela de `public` em: raiz (`tenants`), ferramenta do Prisma (`_prisma_migrations`), **global explicitamente declarada** (`GLOBAL_TABLES`, hoje só `permissions`) ou tabela de tenant (todo o resto). É fail-closed: uma tabela nova sem `tenant_id` só passa se for adicionada à lista de globais, decisão explícita e revisada; tabelas globais não podem ter `tenant_id` nem FK para `tenants`. Testes-sonda criam tabelas inválidas numa transação desfeita e provam que a auditoria as reporta. Falha também se: alguma tabela de tenant não tiver `tenant_id uuid NOT NULL`; faltar a FK direta `tenant_id → tenants(id)`; alguma FK usar `CASCADE`/`SET NULL`/`SET DEFAULT`; uma FK violar a regra por classificação do alvo (abaixo); o conjunto de FKs mudar; ou existir coluna textual com nome de credencial (`password`, `pwd`, `senha`, `secret`, `pin`, `credential`, `token`, `api_key`, `private_key`) fora da allowlist explícita de hashes `HASHED_CREDENTIAL_COLUMNS` (`users.password_hash`, `sessions.refresh_token_hash`). A verificação é por nome de coluna (inclusive `json`/`jsonb`); o conteúdo de `audit_logs.metadata` não é inspecionado. A allowlist é por `tabela.coluna`: `refresh_token_hash` em outra tabela também é reportado; flags como `must_change_password` não contam (só colunas textuais). Tabelas novas entram na auditoria automaticamente.
+
+**Imutabilidade de `tenant_id` na auditoria** (`tenantIdImmutabilityViolations`, M1.14.1): a lista de tabelas protegidas **é derivada da classificação** (toda tabela de tenant), não de uma lista manual. Para cada uma, exige exatamente um trigger que chame `forbid_tenant_id_change()`, chamado `<tabela>_tenant_id_immutable`, `BEFORE`, `FOR EACH ROW`, só `UPDATE`, `UPDATE OF tenant_id`, habilitado (`tgenabled = 'O'`) e com definição idêntica à aprovada (`pg_get_triggerdef`, inclusive o `WHEN`). Exceção **explícita e verificada**: `SPECIAL_TENANT_ID_POLICIES` (hoje só `audit_logs` → append-only), cujo trigger `audit_logs_append_only` precisa existir, estar habilitado, ser `BEFORE UPDATE OR DELETE` por linha e chamar `forbid_audit_log_mutation()`; tabela append-only não pode usar o trigger genérico. Também falha se `forbid_tenant_id_change()` for usada em tabela não-tenant ou `forbid_audit_log_mutation()` fora de `audit_logs`. Sondas (transação desfeita) provam a detecção de: tabela sem trigger, trigger `AFTER`, por statement, sem `OF tenant_id`, sem `WHEN`, também em `DELETE`, desabilitado, com outro nome, política append-only desabilitada/ausente e uso das funções na tabela errada.
 
 **FKs são julgadas pela classificação das tabelas, não pelas colunas atuais** (`foreignKeyViolations`):
 - tenant → `tenants`: exatamente `(tenant_id) → tenants(id)`;
@@ -330,7 +328,7 @@ Não há exceção genérica: uma FK simples só é aceita se o alvo estiver em 
 ## CHECK constraints, índices parciais, funções e triggers
 O schema Prisma não representa CHECKs nem índices únicos parciais (`user_roles`): eles são escritos à mão na migration. Consequências:
 - `prisma migrate diff`/`migrate dev` **não** os geram nem os removem, e o teste de drift **não** os detecta; por isso o teste de migration verifica cada CHECK explicitamente.
-- O mesmo vale para **funções e triggers** (hoje só `forbid_audit_log_mutation()` / `audit_logs_append_only`): confirmado na checagem negativa do M1.13.1 que o teste de drift passa mesmo sem o trigger. Por isso há testes de catálogo obrigatórios: inventário fail-closed de funções de `public` e de triggers não internos (`migration.int.test.ts`) e, em `audit-log.int.test.ts`, existência, tabela, eventos (`UPDATE`, `DELETE`; não `INSERT`/`TRUNCATE`), `BEFORE`, `FOR EACH ROW`, habilitação (`tgenabled = 'O'`) e definição exata. Trigger ou função nova exige atualizar o inventário.
+- O mesmo vale para **funções e triggers** (hoje `forbid_audit_log_mutation()` + `audit_logs_append_only` e `forbid_tenant_id_change()` + os 9 `<tabela>_tenant_id_immutable`): confirmado nas checagens negativas do M1.13.1 e do M1.14.1 que o teste de drift passa mesmo sem o trigger. Por isso há testes de catálogo obrigatórios: inventário fail-closed explícito de funções de `public` e de triggers não internos (`migration.int.test.ts`), a auditoria de imutabilidade de `tenant_id` (`org-integrity.int.test.ts`) e, em `audit-log.int.test.ts`, existência, tabela, eventos (`UPDATE`, `DELETE`; não `INSERT`/`TRUNCATE`), `BEFORE`, `FOR EACH ROW`, habilitação (`tgenabled = 'O'`) e definição exata. Trigger ou função nova exige atualizar o inventário.
 - Ao recriar ou alterar a tabela em migration futura, os CHECKs precisam ser mantidos manualmente.
 - O schema registra em comentário quais CHECKs existem em cada model.
 
