@@ -28,16 +28,17 @@ enum TenantStatus {
 
 // Raiz do multi-tenancy: por isso NÃO possui `tenant_id`.
 model Tenant {
-  id             String       @id @default(uuid(7)) @db.Uuid
+  id             String             @id @default(uuid(7)) @db.Uuid
   name           String
   status         TenantStatus
-  trialStartedAt DateTime?    @map("trial_started_at") @db.Timestamptz(3)
-  trialEndsAt    DateTime?    @map("trial_ends_at") @db.Timestamptz(3)
-  createdAt      DateTime     @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt      DateTime     @updatedAt @map("updated_at") @db.Timestamptz(3)
+  trialStartedAt DateTime?          @map("trial_started_at") @db.Timestamptz(3)
+  trialEndsAt    DateTime?          @map("trial_ends_at") @db.Timestamptz(3)
+  createdAt      DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime           @updatedAt @map("updated_at") @db.Timestamptz(3)
   companies      Company[]
   branches       Branch[]
   users          User[]
+  branchAccesses UserBranchAccess[]
 
   @@map("tenants")
 }
@@ -80,23 +81,26 @@ enum BranchStatus {
 
 // CHECKs (fora do PSL, definidos na migration): name e code não vazios; cnpj nulo ou 14 dígitos.
 model Branch {
-  id        String       @id @default(uuid(7)) @db.Uuid
-  tenantId  String       @map("tenant_id") @db.Uuid
-  companyId String       @map("company_id") @db.Uuid
-  name      String
-  code      String
-  cnpj      String?
-  status    BranchStatus
-  timezone  String
-  createdAt DateTime     @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt DateTime     @updatedAt @map("updated_at") @db.Timestamptz(3)
-  tenant    Tenant       @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  id           String             @id @default(uuid(7)) @db.Uuid
+  tenantId     String             @map("tenant_id") @db.Uuid
+  companyId    String             @map("company_id") @db.Uuid
+  name         String
+  code         String
+  cnpj         String?
+  status       BranchStatus
+  timezone     String
+  createdAt    DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt    DateTime           @updatedAt @map("updated_at") @db.Timestamptz(3)
+  tenant       Tenant             @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
   // FK composta (tenant_id, company_id) -> companies(tenant_id, id): impede Company de outro tenant.
-  company   Company      @relation(fields: [tenantId, companyId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  company      Company            @relation(fields: [tenantId, companyId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  userAccesses UserBranchAccess[]
 
   @@unique([tenantId, code])
   // NULLS DISTINCT (padrão do PostgreSQL): várias branches sem CNPJ são permitidas.
   @@unique([tenantId, cnpj])
+  // Alvo da FK composta de UserBranchAccess.
+  @@unique([tenantId, id])
   @@index([tenantId, companyId])
   @@index([tenantId, status])
   @@map("branches")
@@ -114,22 +118,43 @@ enum UserStatus {
 // CHECKs (fora do PSL, definidos na migration): name, employee_number e password_hash não vazios;
 // failed_login_attempts >= 0.
 model User {
-  id                  String     @id @default(uuid(7)) @db.Uuid
-  tenantId            String     @map("tenant_id") @db.Uuid
+  id                  String             @id @default(uuid(7)) @db.Uuid
+  tenantId            String             @map("tenant_id") @db.Uuid
   name                String
-  employeeNumber      String     @map("employee_number")
-  passwordHash        String     @map("password_hash")
+  employeeNumber      String             @map("employee_number")
+  passwordHash        String             @map("password_hash")
   status              UserStatus
-  mustChangePassword  Boolean    @default(false) @map("must_change_password")
-  failedLoginAttempts Int        @default(0) @map("failed_login_attempts")
-  lockedUntil         DateTime?  @map("locked_until") @db.Timestamptz(3)
-  lastLoginAt         DateTime?  @map("last_login_at") @db.Timestamptz(3)
-  disabledAt          DateTime?  @map("disabled_at") @db.Timestamptz(3)
-  createdAt           DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt           DateTime   @updatedAt @map("updated_at") @db.Timestamptz(3)
-  tenant              Tenant     @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  mustChangePassword  Boolean            @default(false) @map("must_change_password")
+  failedLoginAttempts Int                @default(0) @map("failed_login_attempts")
+  lockedUntil         DateTime?          @map("locked_until") @db.Timestamptz(3)
+  lastLoginAt         DateTime?          @map("last_login_at") @db.Timestamptz(3)
+  disabledAt          DateTime?          @map("disabled_at") @db.Timestamptz(3)
+  createdAt           DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt           DateTime           @updatedAt @map("updated_at") @db.Timestamptz(3)
+  tenant              Tenant             @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  branchAccesses      UserBranchAccess[]
 
   @@unique([tenantId, employeeNumber])
+  // Alvo da FK composta de UserBranchAccess.
+  @@unique([tenantId, id])
   @@index([tenantId, status])
   @@map("users")
+}
+
+// Filiais que um usuário pode acessar (0..N, mesmo tenant). Não é papel/permissão.
+// Sem updated_at: o vínculo não tem dados mutáveis; existe ou não existe.
+model UserBranchAccess {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  tenantId  String   @map("tenant_id") @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  branchId  String   @map("branch_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  // FKs compostas: User e Branch precisam pertencer ao mesmo tenant do vínculo.
+  user      User     @relation(fields: [tenantId, userId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  branch    Branch   @relation(fields: [tenantId, branchId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@unique([tenantId, userId, branchId])
+  @@index([tenantId, branchId])
+  @@map("user_branch_access")
 }
