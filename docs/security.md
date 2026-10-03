@@ -8,7 +8,7 @@
 1. **Contexto autenticado:** o tenant é derivado da autenticação (usuário/dispositivo), nunca de input livre do frontend. Vale também para clientes offline/Edge: o tenant vem da credencial do dispositivo/sessão.
 2. **Aplicação:** repository/service exigem tenant context; acesso sem contexto deve falhar.
 3. **Banco:** `tenant_id` obrigatório e constraints reforçando o isolamento quando possível. Relações cross-tenant devem ser **impossíveis no banco** sempre que viável (FK composta incluindo `tenant_id`, ver [database.md](database.md)); FKs organizacionais nunca usam cascade.
-   - **`tenant_id` é imutável:** um registro nunca é movido para outro tenant. Hoje o banco bloqueia as trocas que gerariam vínculo cruzado, mas ainda aceita uma mudança consistente (Company sem filiais; Branch com `tenant_id` + `company_id` juntos). O mesmo vale para User sem acessos, para UserBranchAccess movido por inteiro (`tenant_id` + `user_id` + `branch_id`), para Role sem permissões, para RolePermission movido com `tenant_id` + `role_id` juntos e para UserRole movido por inteiro. Proteção no banco prevista para o M1.14; até lá, nenhuma API/serviço pode permitir alterar `tenant_id`.
+   - **`tenant_id` é imutável:** um registro nunca é movido para outro tenant. Hoje o banco bloqueia as trocas que gerariam vínculo cruzado, mas ainda aceita uma mudança consistente (Company sem filiais; Branch com `tenant_id` + `company_id` juntos). O mesmo vale para User sem acessos, para UserBranchAccess movido por inteiro (`tenant_id` + `user_id` + `branch_id`), para Role sem permissões, para RolePermission movido com `tenant_id` + `role_id` juntos, para UserRole movido por inteiro e para Device (de nível do tenant, ou com `tenant_id` + `branch_id` juntos). Proteção no banco prevista para o M1.14; até lá, nenhuma API/serviço pode permitir alterar `tenant_id`.
 4. **RLS (fase posterior):** segunda camada de proteção; **não ativa** hoje. Mecanismo de transmissão do tenant à sessão do banco e interação com pool de conexões/Prisma: **TBD**.
 5. **Testes:** testes de isolamento multi-tenant obrigatórios ([testing-strategy.md](testing-strategy.md)).
 
@@ -28,6 +28,8 @@ sequenceDiagram
 
 ## Autenticação, autorização e dispositivos
 Módulos `auth`, `roles`, `permissions`, `devices` (ver [architecture.md](architecture.md)). Mecanismo de autenticação, política de sessão, expiração offline e modelo de permissões: **TBD**.
+
+**Devices** ([database.md](database.md)): pertencem ao tenant, com filial opcional (quando houver, do mesmo tenant, garantido por FK composta). `device_key` é identificador técnico, **não é segredo**. Autenticação de dispositivo, pairing, certificados e segredos **não estão implementados**; quando existirem, ficarão em módulo próprio e nunca em texto puro. `EDGE` é apenas um tipo estrutural. O status `REVOKED` ainda não bloqueia nada automaticamente.
 
 **Autenticação ainda não está implementada.** Existe apenas o model persistente `User` ([database.md](database.md)):
 - login previsto no PDV por matrícula (única por tenant) + senha; usuários são individuais;

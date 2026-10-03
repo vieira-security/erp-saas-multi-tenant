@@ -1,7 +1,7 @@
 # Banco de dados
 
 ## Estado atual
-PostgreSQL via Prisma. Models: `Tenant` (tabela `tenants`, migration `20261002000000_create_tenants`), `Company` (tabela `companies`, migration `20261002010000_create_companies`), `Branch` (tabela `branches`, migration `20261002020000_create_branches`), `User` (tabela `users`, migration `20261002030000_create_users`), `UserBranchAccess` (tabela `user_branch_access`, migration `20261002040000_create_user_branch_access`), `Role` (tabela `roles`, migration `20261002050000_create_roles`), `Permission` (tabela global `permissions`, migration `20261002060000_create_permissions`), `RolePermission` (tabela `role_permissions`, migration `20261002070000_create_role_permissions`) e `UserRole` (tabela `user_roles`, migration `20261002080000_create_user_roles`). A URL de conexão vem de `DATABASE_URL` (lida em `apps/api/prisma.config.ts`), nunca do código.
+PostgreSQL via Prisma. Models: `Tenant` (tabela `tenants`, migration `20261002000000_create_tenants`), `Company` (tabela `companies`, migration `20261002010000_create_companies`), `Branch` (tabela `branches`, migration `20261002020000_create_branches`), `User` (tabela `users`, migration `20261002030000_create_users`), `UserBranchAccess` (tabela `user_branch_access`, migration `20261002040000_create_user_branch_access`), `Role` (tabela `roles`, migration `20261002050000_create_roles`), `Permission` (tabela global `permissions`, migration `20261002060000_create_permissions`), `RolePermission` (tabela `role_permissions`, migration `20261002070000_create_role_permissions`), `UserRole` (tabela `user_roles`, migration `20261002080000_create_user_roles`) e `Device` (tabela `devices`, migration `20261002090000_create_devices`). A URL de conexão vem de `DATABASE_URL` (lida em `apps/api/prisma.config.ts`), nunca do código.
 
 ## Tenant
 Raiz do multi-tenancy; por isso **não** possui `tenant_id`.
@@ -191,6 +191,28 @@ Role atribuída a um User, **global ou por filial**. Relações Tenant/User/Role
 - **Remoção com `RESTRICT`:** User com UserRole, Role atribuída e Tenant com UserRole não podem ser apagados; o UserBranchAccess usado por uma role escopada só pode ser removido depois dela. Role global não prende nenhum acesso.
 - **Para alterar uma atribuição, a aplicação deve apagar o vínculo e criar outro**, em vez de transformar o existente (trocar `role_id`/`branch_id` dentro do tenant é aceito pelo banco, mas não é o fluxo previsto).
 
+## Device
+Terminal/dispositivo conhecido pelo ERP (PDV, tablet, terminal administrativo, display de cozinha, Edge futuro). **Pertence ao Tenant**; a filial é opcional. Relações Tenant **1 → N** Device e Branch **1 → N** Device. Apenas estrutura: **sem pairing, autenticação de dispositivo, certificado, segredo ou heartbeat**.
+
+| Coluna | Tipo PostgreSQL | Nulo | Observação |
+|---|---|---|---|
+| `id` | `uuid` (PK) | não | UUIDv7 gerado pelo Prisma Client |
+| `tenant_id` | `uuid` | não | FK `tenants.id` (`RESTRICT`) |
+| `branch_id` | `uuid` | **sim** | `NULL` = dispositivo de nível do tenant; preenchido = da filial. FK composta `(tenant_id, branch_id)` → `branches(tenant_id, id)` (`RESTRICT`) |
+| `name` | `text` | não | CHECK `btrim(name) <> ''` |
+| `device_type` | enum `device_type` | não | `POS`, `TABLET`, `ADMIN`, `KITCHEN_DISPLAY`, `EDGE` |
+| `device_key` | `text` | não | identificador técnico estável no tenant; CHECK `btrim(device_key) <> ''`; `UNIQUE (tenant_id, device_key)` |
+| `status` | enum `device_status` | não | `ACTIVE` (habilitado), `INACTIVE` (fora de uso temporário), `REVOKED` (confiança/acesso revogado); sem default |
+| `last_seen_at` | `timestamptz(3)` | sim | atualização futura por heartbeat/atividade; nada o atualiza hoje |
+| `created_at` | `timestamptz(3)` | não | default `CURRENT_TIMESTAMP` |
+| `updated_at` | `timestamptz(3)` | não | mantido pelo Prisma (`@updatedAt`) |
+
+- **Filial opcional:** a FK composta é `MATCH SIMPLE`, verificada quando `branch_id` está preenchido (filial existe e é do mesmo tenant) e ignorada quando é `NULL`. Sem filial sentinela.
+- **`device_key` não é segredo:** é só um identificador técnico, sem geração automática. Não guarda token, senha, API key ou certificado. Segredos de dispositivo, se necessários, virão em módulo próprio e nunca em texto puro; a tabela não tem nenhuma coluna desse tipo (teste de catálogo específico + auditoria global de credenciais).
+- **`EDGE` é só um tipo estrutural** nesta etapa; o Edge Server não está implementado ([offline-edge.md](offline-edge.md)).
+- Índices: unique `(tenant_id, device_key)`, `(tenant_id, status)` e `(tenant_id, branch_id)` (listagem por filial e lookup da FK para `branches`; não coberto pelos outros dois).
+- Sem soft delete: o fluxo normal usa `INACTIVE`/`REVOKED`. Branch ou Tenant com Device não podem ser apagados; Branch com Device também não pode mudar de tenant (`ON UPDATE RESTRICT`).
+
 ## Integridade organizacional (M1.4)
 Regras: relações cross-tenant devem ser **bloqueadas no banco** sempre que possível, não só na aplicação; nenhuma FK organizacional usa `CASCADE`, `SET NULL` ou `SET DEFAULT` (apenas `RESTRICT`).
 
@@ -216,6 +238,9 @@ Depois de criado, um registro pertencente a um tenant **não** muda de tenant (C
 | UserRole: só `tenant_id`, `user_id`, `role_id` ou `branch_id` para outro tenant (ou filial sem acesso) | bloqueada | FKs compostas |
 | User ou Role **com** UserRole: `tenant_id` | bloqueada | FKs compostas de `user_roles`, `ON UPDATE RESTRICT` |
 | UserRole: `tenant_id` + `user_id` + `role_id` (+ `branch_id`) juntos, consistentes | **aceita** (lacuna) | — |
+| Device com filial: só `tenant_id`, ou `branch_id` para filial de outro tenant | bloqueada | FK composta `devices_tenant_id_branch_id_fkey` |
+| Device de nível do tenant (`branch_id NULL`): `tenant_id` | **aceita** (lacuna) | — |
+| Device: `tenant_id` + `branch_id` juntos, consistentes | **aceita** (lacuna) | — |
 | Role: `tenant_id` para tenant inexistente | bloqueada | `roles_tenant_id_fkey` |
 | User: `tenant_id` para tenant inexistente | bloqueada | `users_tenant_id_fkey` |
 
@@ -230,7 +255,7 @@ As lacunas não criam relação cruzada, mas violam a imutabilidade. CHECK não 
 - tenant → **global declarada**: FK simples permitida (ex.: `role_permissions.permission_id → permissions.id`);
 - global/raiz/ferramenta → tenant ou raiz: proibido; qualquer FK → `_prisma_migrations`: proibido.
 
-Não há exceção genérica: uma FK simples só é aceita se o alvo estiver em `GLOBAL_TABLES`. Sondas provam que FK simples tenant → tenant é rejeitada, tenant → global declarada é aceita, a mesma FK para uma tabela não declarada é rejeitada e uma tabela global não pode apontar para dado de tenant. Toda FK composta precisa ter `tenant_id` `NOT NULL` (com `MATCH SIMPLE`, um `tenant_id` nulo desligaria a verificação); a única FK composta com coluna anulável é o escopo opcional de filial de `user_roles` (`branch_id`).
+Não há exceção genérica: uma FK simples só é aceita se o alvo estiver em `GLOBAL_TABLES`. Sondas provam que FK simples tenant → tenant é rejeitada, tenant → global declarada é aceita, a mesma FK para uma tabela não declarada é rejeitada e uma tabela global não pode apontar para dado de tenant. Toda FK composta precisa ter `tenant_id` `NOT NULL` (com `MATCH SIMPLE`, um `tenant_id` nulo desligaria a verificação); as únicas FKs compostas com coluna anulável são os escopos opcionais de filial (`branch_id`) de `user_roles` e `devices`, declarados explicitamente no teste.
 
 ### Validações que ficam fora do banco
 - **CNPJ completo** (dígitos verificadores; raiz do CNPJ da Branch x Company): responsabilidade futura de `packages/validation`. O banco garante só o formato (14 dígitos) e a unicidade por tenant.
