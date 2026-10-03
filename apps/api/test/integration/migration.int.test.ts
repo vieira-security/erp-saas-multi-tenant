@@ -28,6 +28,7 @@ describe("migrations on a clean PostgreSQL database", () => {
       { name: "20261002040000_create_user_branch_access", finished: true, rolledBack: false },
       { name: "20261002050000_create_roles", finished: true, rolledBack: false },
       { name: "20261002060000_create_permissions", finished: true, rolledBack: false },
+      { name: "20261002070000_create_role_permissions", finished: true, rolledBack: false },
     ]);
   });
 
@@ -35,7 +36,17 @@ describe("migrations on a clean PostgreSQL database", () => {
     const tables = await prisma.$queryRaw<{ name: string }[]>`
       SELECT table_name AS name FROM information_schema.tables
       WHERE table_schema = 'public' ORDER BY table_name`;
-    expect(tables.map((t) => t.name)).toEqual(["_prisma_migrations", "branches", "companies", "permissions", "roles", "tenants", "user_branch_access", "users"]);
+    expect(tables.map((t) => t.name)).toEqual([
+      "_prisma_migrations",
+      "branches",
+      "companies",
+      "permissions",
+      "role_permissions",
+      "roles",
+      "tenants",
+      "user_branch_access",
+      "users",
+    ]);
   });
 
   it("creates the tenant_status enum with exactly the approved values", async () => {
@@ -355,6 +366,7 @@ describe("migrations on a clean PostgreSQL database", () => {
     expect(indexes.map((i) => i.definition.replace(/ ON public\.roles USING btree/, ""))).toEqual([
       "CREATE UNIQUE INDEX roles_pkey (id)",
       "CREATE UNIQUE INDEX roles_tenant_id_code_key (tenant_id, code)",
+      "CREATE UNIQUE INDEX roles_tenant_id_id_key (tenant_id, id)",
       "CREATE INDEX roles_tenant_id_status_idx (tenant_id, status)",
     ]);
   });
@@ -395,6 +407,54 @@ describe("migrations on a clean PostgreSQL database", () => {
       "CREATE UNIQUE INDEX permissions_code_key (code)",
       "CREATE INDEX permissions_module_idx (module)",
       "CREATE UNIQUE INDEX permissions_pkey (id)",
+    ]);
+  });
+
+  it("defines the role_permissions columns (no updated_at)", async () => {
+    const columns = await prisma.$queryRaw<{ name: string; type: string; nullable: string }[]>`
+      SELECT column_name AS name, format_type(a.atttypid, a.atttypmod) AS type, c.is_nullable AS nullable
+      FROM information_schema.columns c
+      JOIN pg_attribute a ON a.attrelid = 'public.role_permissions'::regclass AND a.attname = c.column_name
+      WHERE c.table_schema = 'public' AND c.table_name = 'role_permissions'
+      ORDER BY c.ordinal_position`;
+    expect(columns).toEqual([
+      { name: "id", type: "uuid", nullable: "NO" },
+      { name: "tenant_id", type: "uuid", nullable: "NO" },
+      { name: "role_id", type: "uuid", nullable: "NO" },
+      { name: "permission_id", type: "uuid", nullable: "NO" },
+      { name: "created_at", type: "timestamp(3) with time zone", nullable: "NO" },
+    ]);
+  });
+
+  it("defines the role_permissions constraints (PK, tenant FK, composite role FK, global permission FK)", async () => {
+    const constraints = await prisma.$queryRaw<{ name: string; definition: string }[]>`
+      SELECT conname AS name, pg_get_constraintdef(oid) AS definition
+      FROM pg_constraint WHERE conrelid = 'public.role_permissions'::regclass ORDER BY conname`;
+    expect(constraints).toEqual([
+      {
+        name: "role_permissions_permission_id_fkey",
+        definition: "FOREIGN KEY (permission_id) REFERENCES permissions(id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+      },
+      { name: "role_permissions_pkey", definition: "PRIMARY KEY (id)" },
+      {
+        name: "role_permissions_tenant_id_fkey",
+        definition: "FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+      },
+      {
+        name: "role_permissions_tenant_id_role_id_fkey",
+        definition: "FOREIGN KEY (tenant_id, role_id) REFERENCES roles(tenant_id, id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+      },
+    ]);
+  });
+
+  it("defines only the approved role_permissions indexes", async () => {
+    const indexes = await prisma.$queryRaw<{ definition: string }[]>`
+      SELECT indexdef AS definition FROM pg_indexes
+      WHERE schemaname = 'public' AND tablename = 'role_permissions' ORDER BY indexname`;
+    expect(indexes.map((i) => i.definition.replace(/ ON public\.role_permissions USING btree/, ""))).toEqual([
+      "CREATE INDEX role_permissions_permission_id_idx (permission_id)",
+      "CREATE UNIQUE INDEX role_permissions_pkey (id)",
+      "CREATE UNIQUE INDEX role_permissions_tenant_id_role_id_permission_id_key (tenant_id, role_id, permission_id)",
     ]);
   });
 
