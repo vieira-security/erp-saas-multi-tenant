@@ -12,7 +12,8 @@
     "test:integration": "prisma generate && vitest run --config vitest.integration.config.ts",
     "prisma:validate": "prisma validate",
     "prisma:generate": "prisma generate",
-    "prisma:migrate:deploy": "prisma migrate deploy"
+    "prisma:migrate:deploy": "prisma migrate deploy",
+    "db:seed": "nest build && node dist/database/seed.js"
   },
   "dependencies": {
     "@nestjs/common": "^12.1.2",
