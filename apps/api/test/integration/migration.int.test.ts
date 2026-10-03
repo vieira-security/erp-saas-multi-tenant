@@ -29,6 +29,7 @@ describe("migrations on a clean PostgreSQL database", () => {
       { name: "20261002050000_create_roles", finished: true, rolledBack: false },
       { name: "20261002060000_create_permissions", finished: true, rolledBack: false },
       { name: "20261002070000_create_role_permissions", finished: true, rolledBack: false },
+      { name: "20261002080000_create_user_roles", finished: true, rolledBack: false },
     ]);
   });
 
@@ -45,6 +46,7 @@ describe("migrations on a clean PostgreSQL database", () => {
       "roles",
       "tenants",
       "user_branch_access",
+      "user_roles",
       "users",
     ]);
   });
@@ -455,6 +457,62 @@ describe("migrations on a clean PostgreSQL database", () => {
       "CREATE INDEX role_permissions_permission_id_idx (permission_id)",
       "CREATE UNIQUE INDEX role_permissions_pkey (id)",
       "CREATE UNIQUE INDEX role_permissions_tenant_id_role_id_permission_id_key (tenant_id, role_id, permission_id)",
+    ]);
+  });
+
+  it("defines the user_roles columns (nullable branch_id, no updated_at)", async () => {
+    const columns = await prisma.$queryRaw<{ name: string; type: string; nullable: string }[]>`
+      SELECT column_name AS name, format_type(a.atttypid, a.atttypmod) AS type, c.is_nullable AS nullable
+      FROM information_schema.columns c
+      JOIN pg_attribute a ON a.attrelid = 'public.user_roles'::regclass AND a.attname = c.column_name
+      WHERE c.table_schema = 'public' AND c.table_name = 'user_roles'
+      ORDER BY c.ordinal_position`;
+    expect(columns).toEqual([
+      { name: "id", type: "uuid", nullable: "NO" },
+      { name: "tenant_id", type: "uuid", nullable: "NO" },
+      { name: "user_id", type: "uuid", nullable: "NO" },
+      { name: "role_id", type: "uuid", nullable: "NO" },
+      { name: "branch_id", type: "uuid", nullable: "YES" },
+      { name: "created_at", type: "timestamp(3) with time zone", nullable: "NO" },
+    ]);
+  });
+
+  it("defines the user_roles constraints (PK, tenant FK, composite user/role/branch-access FKs)", async () => {
+    const constraints = await prisma.$queryRaw<{ name: string; definition: string }[]>`
+      SELECT conname AS name, pg_get_constraintdef(oid) AS definition
+      FROM pg_constraint WHERE conrelid = 'public.user_roles'::regclass ORDER BY conname`;
+    expect(constraints).toEqual([
+      { name: "user_roles_pkey", definition: "PRIMARY KEY (id)" },
+      {
+        name: "user_roles_tenant_id_fkey",
+        definition: "FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+      },
+      {
+        name: "user_roles_tenant_id_role_id_fkey",
+        definition: "FOREIGN KEY (tenant_id, role_id) REFERENCES roles(tenant_id, id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+      },
+      {
+        name: "user_roles_tenant_id_user_id_branch_id_fkey",
+        definition:
+          "FOREIGN KEY (tenant_id, user_id, branch_id) REFERENCES user_branch_access(tenant_id, user_id, branch_id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+      },
+      {
+        name: "user_roles_tenant_id_user_id_fkey",
+        definition: "FOREIGN KEY (tenant_id, user_id) REFERENCES users(tenant_id, id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+      },
+    ]);
+  });
+
+  it("defines the user_roles indexes, including both partial unique indexes", async () => {
+    const indexes = await prisma.$queryRaw<{ definition: string }[]>`
+      SELECT indexdef AS definition FROM pg_indexes
+      WHERE schemaname = 'public' AND tablename = 'user_roles' ORDER BY indexname`;
+    expect(indexes.map((i) => i.definition.replace(/ ON public\.user_roles USING btree/, ""))).toEqual([
+      "CREATE UNIQUE INDEX user_roles_branch_scope_key (tenant_id, user_id, role_id, branch_id) WHERE (branch_id IS NOT NULL)",
+      "CREATE UNIQUE INDEX user_roles_pkey (id)",
+      "CREATE INDEX user_roles_tenant_id_role_id_idx (tenant_id, role_id)",
+      "CREATE INDEX user_roles_tenant_id_user_id_branch_id_idx (tenant_id, user_id, branch_id)",
+      "CREATE UNIQUE INDEX user_roles_tenant_scope_key (tenant_id, user_id, role_id) WHERE (branch_id IS NULL)",
     ]);
   });
 
