@@ -5,7 +5,7 @@ Testes em camadas. Toda feature relevante possui testes; toda correção relevan
 ## Camadas
 | Camada | Ferramenta | Estado |
 |---|---|---|
-| Unitários | **Vitest** (padrão; não usar Jest) | Ativo (smoke de bootstrap) |
+| Unitários | **Vitest** (padrão; não usar Jest) | Ativo (smoke de bootstrap, health, catálogo de permissões) |
 | Módulos NestJS | `@nestjs/testing` quando apropriado | Instalado, ainda não usado |
 | Integração com PostgreSQL | Vitest + PostgreSQL real via `TEST_DATABASE_URL` | Ativo (models do M1, migrations, catálogo, privilégios) |
 | E2E / PDV | Playwright | Futuro; instalar ao iniciar frontend funcional |
@@ -13,7 +13,7 @@ Testes em camadas. Toda feature relevante possui testes; toda correção relevan
 | Impressoras físicas | Manual/hardware | Futuro |
 | Falha de internet / offline | Playwright + simulação de rede | Futuro |
 | Idempotência | Integração | Futuro |
-| **Isolamento multi-tenant** | Integração (obrigatório) | Futuro |
+| **Isolamento multi-tenant** | Integração (obrigatório) | Ativo no banco (FKs compostas, imutabilidade de `tenant_id`, gate do M1); camada de serviço (leitura/enumeração, tenant context) a partir do M2 |
 | Performance/load | Quando necessário; ferramenta **TBD** | Futuro |
 
 ## Integração com PostgreSQL
@@ -25,10 +25,10 @@ Parte das garantias do banco não existe no `schema.prisma` e o `prisma migrate 
 - Cada auditoria tem **sondas**: criam o desvio numa transação sempre desfeita (`inRolledBackTransaction`) e provam que a auditoria o detecta. Preferir tabelas-sonda `audit_probe_*` a alterar tabelas reais, para não travar os outros arquivos que rodam em paralelo.
 - Verificar SQLSTATE, nome de constraint/índice, catálogo e estado final; evitar depender do texto completo de mensagens de erro.
 - Toda mudança de schema físico passa por uma checagem negativa manual antes do PR (remover/alterar o objeto temporariamente e ver os testes falharem), registrada na entrega.
-- Arquivos: `migration.int.test.ts` (definições exatas por tabela e inventário de funções/triggers), `org-integrity.int.test.ts` (classificação de tabelas, FKs, credenciais, imutabilidade de `tenant_id`), `schema-hardening.int.test.ts` (índices, cobertura de FKs, redundância, uniques auxiliares, índices parciais, CHECKs), `runtime-privileges.int.test.ts` (ownership, ACL, roles), `app-role.int.test.ts` (operações reais como `erp_app`). Helpers em `table-audit.ts`.
+- Arquivos: `migration.int.test.ts` (definições exatas por tabela e inventário de funções/triggers), `org-integrity.int.test.ts` (classificação de tabelas, FKs, credenciais, imutabilidade de `tenant_id`), `schema-hardening.int.test.ts` (índices, cobertura de FKs, redundância, uniques auxiliares, índices parciais, CHECKs), `runtime-privileges.int.test.ts` (ownership, ACL, roles), `app-role.int.test.ts` (operações reais como `erp_app`), `m1-gate.int.test.ts` (gate final do M1: inventário de models/tabelas, todas as auditorias juntas, isolamento entre dois tenants e fluxo de runtime como `erp_app`). Helpers em `table-audit.ts`.
 
 ## Isolamento multi-tenant
-Para cada módulo com dado de cliente: provar que o tenant A não lê, altera nem enumera dados do tenant B; que a ausência de tenant context falha; e, quando a RLS for ativada, que ela barra acessos mesmo com falha na camada de aplicação.
+No banco (M1): `m1-gate.int.test.ts` prova, como `erp_app`, que nenhum vínculo cross-tenant é aceito e que nenhuma linha muda de tenant; leitura não é barrada pelo banco enquanto a RLS estiver inativa. Para cada módulo com dado de cliente (a partir do M2): provar que o tenant A não lê, altera nem enumera dados do tenant B; que a ausência de tenant context falha; e, quando a RLS for ativada, que ela barra acessos mesmo com falha na camada de aplicação.
 
 ## Comandos
 `npm run lint` · `npm run typecheck` · `npm run test` · `npm run build`

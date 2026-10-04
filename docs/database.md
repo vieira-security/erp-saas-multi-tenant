@@ -92,7 +92,7 @@ Funcionário individual do tenant (sem usuários compartilhados). Login futuro n
 - Coerência entre `status` e `disabled_at`/`locked_until` **não** é imposta no banco (ex.: reativação, bloqueio sem prazo); fica para a camada de aplicação (Auth/M2).
 
 ## UserBranchAccess
-Define quais filiais um usuário pode acessar: **User 0..N Branches, sempre no mesmo Tenant**. É **separado de papel/permissão**: dizer que o usuário acessa a filial não diz o que ele pode fazer nela. Roles (inclusive por filial) serão modeladas depois. Relações Tenant/User/Branch **1 → N** UserBranchAccess.
+Define quais filiais um usuário pode acessar: **User 0..N Branches, sempre no mesmo Tenant**. É **separado de papel/permissão**: dizer que o usuário acessa a filial não diz o que ele pode fazer nela. Roles por filial são atribuídas em `UserRole` (M1.10), que exige este vínculo. Relações Tenant/User/Branch **1 → N** UserBranchAccess.
 
 | Coluna | Tipo PostgreSQL | Nulo | Observação |
 |---|---|---|---|
@@ -110,7 +110,7 @@ Define quais filiais um usuário pode acessar: **User 0..N Branches, sempre no m
 - Sem regra de "filial padrão", convite ou expiração.
 
 ## Role
-Catálogo de papéis do RBAC, **pertencente ao Tenant**. Sozinha, uma Role **não concede permissão alguma**: Permission, RolePermission e UserRole ainda não existem. Relação **Tenant 1 → N Role**.
+Catálogo de papéis do RBAC, **pertencente ao Tenant**. Sozinha, uma Role **não concede permissão alguma**: as permissões vêm de `RolePermission` e a atribuição a usuários de `UserRole`; nenhuma verificação de autorização existe ainda (M2). Relação **Tenant 1 → N Role**.
 
 | Coluna | Tipo PostgreSQL | Nulo | Observação |
 |---|---|---|---|
@@ -128,7 +128,7 @@ Catálogo de papéis do RBAC, **pertencente ao Tenant**. Sozinha, uma Role **nã
 - **Códigos padrão previstos** (templates, `is_system = true`): `OWNER` (Proprietário), `MANAGER` (Gerente), `ATTENDANT` (Atendente), `KITCHEN` (Cozinha). Serão criados **no provisionamento do Tenant** (futuro); **não há seed global**. O banco não reserva esses códigos: hoje uma role customizada poderia usar `OWNER` se o código ainda não existir no tenant.
 - **Roles customizadas** são suportadas (`is_system = false`, código livre e único por tenant). A aplicação poderá normalizar `code` (trim + uppercase) no futuro.
 - Sem regras de edição/exclusão de role de sistema ainda. Sem exclusão física como operação normal: roles são desativadas ou arquivadas; Tenant com Role não pode ser apagado (`RESTRICT`).
-- Sem escopo por filial nesta etapa.
+- A Role não tem filial; o escopo por filial fica na atribuição (`user_roles.branch_id`).
 
 ## Permission (global)
 Catálogo técnico **global** de capacidades do sistema; **não pertence a um Tenant** (Role é por Tenant). Controlado pelo sistema: sem CRUD por cliente, sem permissões customizadas. A ligação Role ↔ Permission é feita por `RolePermission` (abaixo).
@@ -359,7 +359,7 @@ Não há exceção genérica: uma FK simples só é aceita se o alvo estiver em 
 - **Branch.code**: normalização trim + uppercase na aplicação.
 
 ## Índices e constraints físicos (M1.14.3)
-O **catálogo do PostgreSQL é a fonte de verdade** do schema físico; o schema Prisma não representa tudo. Inventário do M1 (51 índices antes do M1.14.3, 50 depois; todos B-tree; 24 FKs; 21 CHECKs; 2 índices parciais; 2 funções; 11 triggers; nenhum event trigger):
+O **catálogo do PostgreSQL é a fonte de verdade** do schema físico; o schema Prisma não representa tudo. Inventário do M1 (50 índices antes do M1.14.3, 49 depois, contando `_prisma_migrations_pkey`; todos B-tree; 24 FKs; 21 CHECKs; 2 índices parciais; 2 funções; 11 triggers; nenhum event trigger):
 
 - **Índice removido:** `companies_tenant_id_idx (tenant_id)` — nenhuma FK ou constraint o usava (`pg_depend`/`conindid` vazios), e `companies_tenant_id_status_idx`, `companies_tenant_id_cnpj_key` e `companies_tenant_id_id_key` têm `tenant_id` como primeira coluna. Era o único índice comum cujo conjunto de colunas é prefixo de outro índice da mesma tabela. Nenhum outro índice redundante foi encontrado.
 - **Uniques auxiliares que continuam:** `UNIQUE (tenant_id, id)` em `companies`, `branches`, `users`, `roles` e `devices` parecem redundantes com a PK, mas são o alvo das FKs compostas multi-tenant (Branch→Company; UserBranchAccess/AuditLog/Device→Branch; UserBranchAccess/UserRole/Session/AuditLog→User; RolePermission/UserRole→Role; Session/AuditLog→Device). `user_branch_access (tenant_id, user_id, branch_id)` é também alvo da FK de UserRole. A auditoria exige que toda `UNIQUE (tenant_id, id)` seja usada por ao menos uma FK.

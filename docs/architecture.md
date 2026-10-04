@@ -23,7 +23,7 @@ Rust **não** faz parte do planejamento atual; só poderá ser reconsiderado por
 | Workspace | Estado | Papel |
 |---|---|---|
 | `apps/web` | Next.js 16, React 19, Tailwind, Vitest, ESLint `core-web-vitals` | PWA-first (PDV e backoffice) |
-| `apps/api` | NestJS 12, Prisma ORM 7.10 (CLI + client + `adapter-pg`), model `Tenant`, health endpoint, teste de boot isolado, testes de integração com PostgreSQL | Backend modular monolith |
+| `apps/api` | NestJS 12, Prisma ORM 7.10 (CLI + client + `adapter-pg`), os 12 models do Core M1 ([database.md](database.md)), health endpoint, teste de boot isolado, testes de integração com PostgreSQL | Backend modular monolith |
 | `apps/worker` | Node/TS mínimo, sem filas | Tarefas assíncronas |
 | `packages/contracts` | vazio | Contratos compartilhados (DTOs/eventos) |
 | `packages/validation` | vazio | Validação compartilhada |

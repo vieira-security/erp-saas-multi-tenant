@@ -182,7 +182,7 @@ enum RoleStatus {
 
 // Papel do RBAC, por tenant. Códigos padrão previstos (templates, criados no provisionamento futuro):
 // OWNER, MANAGER, ATTENDANT, KITCHEN. Roles customizadas usam is_system = false.
-// Sozinha, uma Role não concede permissão alguma (Permission/RolePermission/UserRole ainda não existem).
+// Sozinha, uma Role não concede permissão alguma: permissões via RolePermission, atribuição via UserRole.
 // CHECKs (fora do PSL, definidos na migration): code e name não vazios.
 model Role {
   id          String           @id @default(uuid(7)) @db.Uuid
