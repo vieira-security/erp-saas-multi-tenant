@@ -299,6 +299,185 @@ export async function tenantIdImmutabilityViolations(
   return violations;
 }
 
+/** PostgreSQL privileges of a table (all of them: the audit compares the full set, never a subset). */
+export type TablePrivilege = "SELECT" | "INSERT" | "UPDATE" | "DELETE" | "TRUNCATE" | "REFERENCES" | "TRIGGER";
+export const TABLE_PRIVILEGES: readonly TablePrivilege[] = ["SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER"];
+
+/**
+ * Exact runtime privileges of erp_app per table (mirror of infrastructure/postgres/03-runtime-grants.sql).
+ * Fail-closed: every table in public needs an entry (an empty list means "no runtime access"); a table without an
+ * entry, an extra privilege or a missing one is a violation. Never inferred by convention.
+ */
+export const RUNTIME_TABLE_PRIVILEGES: Readonly<Record<string, readonly TablePrivilege[]>> = {
+  _prisma_migrations: [],
+  audit_logs: ["SELECT", "INSERT"],
+  branches: ["SELECT", "INSERT", "UPDATE"],
+  companies: ["SELECT", "INSERT", "UPDATE"],
+  devices: ["SELECT", "INSERT", "UPDATE"],
+  permissions: ["SELECT"],
+  role_permissions: ["SELECT", "INSERT", "DELETE"],
+  roles: ["SELECT", "INSERT", "UPDATE"],
+  sessions: ["SELECT", "INSERT", "UPDATE"],
+  tenants: ["SELECT", "INSERT", "UPDATE"],
+  user_branch_access: ["SELECT", "INSERT", "DELETE"],
+  user_roles: ["SELECT", "INSERT", "DELETE"],
+  users: ["SELECT", "INSERT", "UPDATE"],
+};
+
+export interface DatabaseRoles {
+  migrator: string;
+  app: string;
+}
+
+/**
+ * Effective privileges of `appRole` (table-level OR any column-level grant, PUBLIC and memberships included) compared
+ * with the declared policy, as "<table>: <problem>".
+ */
+export async function runtimePrivilegeViolations(
+  db: Queryable,
+  appRole: string,
+  policy: Readonly<Record<string, readonly TablePrivilege[]>> = RUNTIME_TABLE_PRIVILEGES,
+): Promise<string[]> {
+  const rows = await db.$queryRaw<{ table: string; privilege: TablePrivilege; granted: boolean }[]>`
+    SELECT t.table_name::text AS "table", p.privilege,
+           has_table_privilege(${appRole}, format('public.%I', t.table_name), p.privilege)
+             OR (p.privilege IN ('SELECT', 'INSERT', 'UPDATE', 'REFERENCES')
+                 AND has_any_column_privilege(${appRole}, format('public.%I', t.table_name), p.privilege)) AS granted
+    FROM information_schema.tables t
+    CROSS JOIN unnest(${[...TABLE_PRIVILEGES]}::text[]) WITH ORDINALITY AS p(privilege, position)
+    WHERE t.table_schema = 'public' AND t.table_type = 'BASE TABLE'
+    ORDER BY 1, p.position`;
+
+  const violations: string[] = [];
+  const tables = [...new Set(rows.map((r) => r.table))];
+  for (const table of tables) {
+    const expected = policy[table];
+    if (!expected) {
+      violations.push(`${table}: no runtime privilege policy declared`);
+      continue;
+    }
+    for (const row of rows.filter((r) => r.table === table)) {
+      const allowed = expected.includes(row.privilege);
+      if (row.granted && !allowed) violations.push(`${table}: runtime role has ${row.privilege}, not allowed by the policy`);
+      if (!row.granted && allowed) violations.push(`${table}: runtime role lacks ${row.privilege} required by the policy`);
+    }
+  }
+  for (const table of Object.keys(policy).filter((t) => !tables.includes(t))) {
+    violations.push(`${table}: runtime policy declared for a table that does not exist`);
+  }
+
+  const sequences = await db.$queryRaw<{ name: string }[]>`
+    SELECT c.relname::text AS name FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public' AND c.relkind = 'S'
+      AND (has_sequence_privilege(${appRole}, c.oid, 'USAGE') OR has_sequence_privilege(${appRole}, c.oid, 'SELECT')
+           OR has_sequence_privilege(${appRole}, c.oid, 'UPDATE'))`;
+  for (const s of sequences) violations.push(`${s.name}: runtime role has privileges on a sequence without a declared policy`);
+  return violations;
+}
+
+/**
+ * Ownership: every application object belongs to the migrator; the runtime role owns nothing in the database.
+ * Indexes, TOAST tables, row types and array types always follow their table/type and are not listed separately.
+ */
+export async function ownershipViolations(db: Queryable, roles: DatabaseRoles): Promise<string[]> {
+  const rows = await db.$queryRaw<{ kind: string; name: string; owner: string }[]>`
+    SELECT 'relation' AS kind, c.relname::text AS name, pg_get_userbyid(c.relowner)::text AS owner
+    FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'v', 'm', 'S', 'f')
+    UNION ALL
+    SELECT 'function', p.proname::text, pg_get_userbyid(p.proowner)::text
+    FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public'
+    UNION ALL
+    SELECT 'type', t.typname::text, pg_get_userbyid(t.typowner)::text
+    FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace
+    WHERE n.nspname = 'public' AND t.typtype IN ('e', 'd', 'r', 'm')
+    ORDER BY 1, 2`;
+  const violations = rows
+    .filter((r) => r.owner !== roles.migrator)
+    .map((r) => `${r.kind} ${r.name}: owned by ${r.owner}, expected ${roles.migrator}`);
+
+  const appOwned = await db.$queryRaw<{ object: string }[]>`
+    SELECT 'relation ' || c.oid::regclass::text AS object FROM pg_class c
+    WHERE c.relowner = ${roles.app}::regrole AND c.relkind NOT IN ('i', 'I', 't')
+    UNION ALL SELECT 'function ' || p.oid::regprocedure::text FROM pg_proc p WHERE p.proowner = ${roles.app}::regrole
+    UNION ALL SELECT 'type ' || t.oid::regtype::text FROM pg_type t
+    WHERE t.typowner = ${roles.app}::regrole AND t.typrelid = 0 AND t.typcategory <> 'A'
+    UNION ALL SELECT 'schema ' || n.nspname::text FROM pg_namespace n WHERE n.nspowner = ${roles.app}::regrole
+    UNION ALL SELECT 'database ' || d.datname::text FROM pg_database d WHERE d.datdba = ${roles.app}::regrole
+    ORDER BY 1`;
+  violations.push(...appOwned.map((o) => `${o.object}: owned by the runtime role`));
+  return violations;
+}
+
+/** Role attributes and memberships of both identities, plus schema, database and function privileges. */
+export async function privilegeModelViolations(db: Queryable, roles: DatabaseRoles): Promise<string[]> {
+  const violations: string[] = [];
+
+  const attributes = await db.$queryRaw<{ role: string; login: boolean; elevated: boolean; memberOf: number }[]>`
+    SELECT r.rolname::text AS role, r.rolcanlogin AS login,
+           (r.rolsuper OR r.rolcreatedb OR r.rolcreaterole OR r.rolreplication OR r.rolbypassrls) AS elevated,
+           (SELECT count(*)::int FROM pg_auth_members m WHERE m.member = r.oid) AS "memberOf"
+    FROM pg_roles r WHERE r.rolname IN (${roles.migrator}, ${roles.app}) ORDER BY 1`;
+  for (const role of [roles.migrator, roles.app]) {
+    const a = attributes.find((x) => x.role === role);
+    if (!a) violations.push(`${role}: role does not exist`);
+    else {
+      if (!a.login) violations.push(`${role}: must be LOGIN`);
+      if (a.elevated) violations.push(`${role}: must be NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS`);
+      if (a.memberOf > 0) violations.push(`${role}: must not be a member of any role`);
+    }
+  }
+
+  const [access] = await db.$queryRaw<
+    {
+      appReachesMigrator: boolean;
+      appSchemaCreate: boolean;
+      appSchemaUsage: boolean;
+      publicSchemaCreate: boolean;
+      migratorSchemaCreate: boolean;
+      appDatabaseCreate: boolean;
+    }[]
+  >`
+    SELECT pg_has_role(${roles.app}, ${roles.migrator}, 'MEMBER') OR pg_has_role(${roles.app}, ${roles.migrator}, 'USAGE')
+             OR pg_has_role(${roles.app}, ${roles.migrator}, 'SET') AS "appReachesMigrator",
+           has_schema_privilege(${roles.app}, 'public', 'CREATE') AS "appSchemaCreate",
+           has_schema_privilege(${roles.app}, 'public', 'USAGE') AS "appSchemaUsage",
+           EXISTS (SELECT 1 FROM pg_namespace n, aclexplode(n.nspacl) a
+                   WHERE n.nspname = 'public' AND a.grantee = 0 AND a.privilege_type = 'CREATE') AS "publicSchemaCreate",
+           has_schema_privilege(${roles.migrator}, 'public', 'CREATE') AS "migratorSchemaCreate",
+           has_database_privilege(${roles.app}, current_database(), 'CREATE') AS "appDatabaseCreate"`;
+  if (access?.appReachesMigrator) violations.push(`${roles.app}: must not be able to use or SET ROLE to ${roles.migrator}`);
+  if (access?.appSchemaCreate) violations.push(`${roles.app}: must not have CREATE on schema public`);
+  if (!access?.appSchemaUsage) violations.push(`${roles.app}: needs USAGE on schema public`);
+  if (access?.publicSchemaCreate) violations.push("PUBLIC: must not have CREATE on schema public");
+  if (!access?.migratorSchemaCreate) violations.push(`${roles.migrator}: needs CREATE on schema public`);
+  if (access?.appDatabaseCreate) violations.push(`${roles.app}: must not have CREATE on the database`);
+
+  // Functions: no implicit EXECUTE (a NULL acl means EXECUTE for PUBLIC) and none for the runtime role.
+  const functions = await db.$queryRaw<{ name: string; publicExecute: boolean; appExecute: boolean }[]>`
+    SELECT p.oid::regprocedure::text AS name,
+           (p.proacl IS NULL OR EXISTS (SELECT 1 FROM aclexplode(p.proacl) a
+                                        WHERE a.grantee = 0 AND a.privilege_type = 'EXECUTE')) AS "publicExecute",
+           has_function_privilege(${roles.app}, p.oid, 'EXECUTE') AS "appExecute"
+    FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public' ORDER BY 1`;
+  for (const f of functions) {
+    if (f.publicExecute) violations.push(`${f.name}: PUBLIC must not have EXECUTE`);
+    if (f.appExecute) violations.push(`${f.name}: runtime role must not have EXECUTE`);
+  }
+
+  // Default privileges: future functions of the migrator get no EXECUTE for PUBLIC; nothing is granted by default
+  // to the runtime role (tables, sequences, functions, types or schemas).
+  const [defaults] = await db.$queryRaw<{ functionsLockedDown: boolean; appDefaults: number }[]>`
+    SELECT EXISTS (SELECT 1 FROM pg_default_acl d
+                   WHERE d.defaclrole = ${roles.migrator}::regrole AND d.defaclnamespace = 0 AND d.defaclobjtype = 'f'
+                     AND NOT EXISTS (SELECT 1 FROM aclexplode(d.defaclacl) a WHERE a.grantee = 0)) AS "functionsLockedDown",
+           (SELECT count(*)::int FROM pg_default_acl d, aclexplode(d.defaclacl) a
+            WHERE a.grantee = ${roles.app}::regrole) AS "appDefaults"`;
+  if (!defaults?.functionsLockedDown) violations.push(`${roles.migrator}: default privileges must revoke EXECUTE on functions from PUBLIC`);
+  if ((defaults?.appDefaults ?? 0) > 0) violations.push(`${roles.app}: must not receive default privileges`);
+  return violations;
+}
+
 const ROLLBACK = Symbol("rollback");
 
 /** Runs `fn` inside a transaction that is always rolled back (DDL included). */
