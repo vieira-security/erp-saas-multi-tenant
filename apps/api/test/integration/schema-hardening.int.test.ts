@@ -4,7 +4,9 @@ import { createPrismaClient } from "../../src/database/create-prisma-client.js";
 import {
   FK_COVERAGE_EXCEPTIONS,
   KNOWN_REDUNDANT_INDEXES,
+  MANUAL_CHECK_CONSTRAINTS,
   MANUAL_PARTIAL_INDEXES,
+  checkConstraintViolations,
   compositeFkTargetViolations,
   foreignKeyCoverageViolations,
   inRolledBackTransaction,
@@ -210,6 +212,33 @@ describe("schema hardening (PostgreSQL catalog)", () => {
         "user_roles_branch_scope_key: manual partial index is missing",
         "user_roles_tenant_scope_key: differs from the approved definition",
         `${PROBE}_partial_idx: unexpected partial index`,
+      ]);
+    });
+  });
+
+  describe("manual CHECK constraints", () => {
+    it("pins every CHECK of the schema with its exact definition", async () => {
+      expect(Object.keys(MANUAL_CHECK_CONSTRAINTS)).toHaveLength(21);
+      expect(await checkConstraintViolations(prisma)).toEqual([]);
+    });
+
+    it("probe: a missing, a changed, a NOT VALID and an unexpected CHECK are reported", async () => {
+      const violations = await inRolledBackTransaction(prisma, async (tx) => {
+        await tx.$executeRawUnsafe(`ALTER TABLE permissions DROP CONSTRAINT permissions_module_check`);
+        await tx.$executeRawUnsafe(`ALTER TABLE permissions DROP CONSTRAINT permissions_description_check`);
+        await tx.$executeRawUnsafe(`ALTER TABLE permissions ADD CONSTRAINT permissions_description_check CHECK (description <> '')`);
+        await tx.$executeRawUnsafe(`ALTER TABLE permissions DROP CONSTRAINT permissions_code_check`);
+        await tx.$executeRawUnsafe(`ALTER TABLE permissions ADD CONSTRAINT permissions_code_check
+          CHECK (code ~ '^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$') NOT VALID`);
+        await tx.$executeRawUnsafe(createProbe);
+        await tx.$executeRawUnsafe(`ALTER TABLE "${PROBE}" ADD CONSTRAINT "${PROBE}_check" CHECK (id IS NOT NULL)`);
+        return checkConstraintViolations(tx);
+      });
+      expect(violations).toEqual([
+        "permissions.permissions_code_check: differs from the approved definition", // NOT VALID
+        "permissions.permissions_description_check: differs from the approved definition",
+        "permissions.permissions_module_check: manual CHECK is missing",
+        `${PROBE}.${PROBE}_check: unexpected CHECK`,
       ]);
     });
   });

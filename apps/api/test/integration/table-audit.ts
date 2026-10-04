@@ -631,6 +631,53 @@ export async function partialIndexViolations(db: Queryable): Promise<string[]> {
   return violations;
 }
 
+/**
+ * Every CHECK constraint of schema public (all written by hand: Prisma cannot represent them and `migrate diff` does
+ * not see them), as "<table>.<constraint>" → pg_get_constraintdef. Missing, changed or unexpected ones are reported.
+ */
+export const MANUAL_CHECK_CONSTRAINTS: Readonly<Record<string, string>> = {
+  "audit_logs.audit_logs_action_check": "CHECK ((action ~ '^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$'::text))",
+  "audit_logs.audit_logs_resource_type_check": "CHECK ((resource_type ~ '^[a-z][a-z0-9_]*$'::text))",
+  "branches.branches_cnpj_check": "CHECK (((cnpj IS NULL) OR (cnpj ~ '^[0-9]{14}$'::text)))",
+  "branches.branches_code_check": "CHECK ((btrim(code) <> ''::text))",
+  "branches.branches_name_check": "CHECK ((btrim(name) <> ''::text))",
+  "companies.companies_cnpj_check": "CHECK ((cnpj ~ '^[0-9]{14}$'::text))",
+  "companies.companies_legal_name_check": "CHECK ((btrim(legal_name) <> ''::text))",
+  "companies.companies_trade_name_check": "CHECK ((btrim(trade_name) <> ''::text))",
+  "devices.devices_device_key_check": "CHECK ((btrim(device_key) <> ''::text))",
+  "devices.devices_name_check": "CHECK ((btrim(name) <> ''::text))",
+  "permissions.permissions_code_check": "CHECK ((code ~ '^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$'::text))",
+  "permissions.permissions_description_check": "CHECK ((btrim(description) <> ''::text))",
+  "permissions.permissions_module_check": "CHECK ((btrim(module) <> ''::text))",
+  "roles.roles_code_check": "CHECK ((btrim(code) <> ''::text))",
+  "roles.roles_name_check": "CHECK ((btrim(name) <> ''::text))",
+  "sessions.sessions_expires_at_check": "CHECK ((expires_at > created_at))",
+  "sessions.sessions_refresh_token_hash_check": "CHECK ((btrim(refresh_token_hash) <> ''::text))",
+  "users.users_employee_number_check": "CHECK ((btrim(employee_number) <> ''::text))",
+  "users.users_failed_login_attempts_check": "CHECK ((failed_login_attempts >= 0))",
+  "users.users_name_check": "CHECK ((btrim(name) <> ''::text))",
+  "users.users_password_hash_check": "CHECK ((btrim(password_hash) <> ''::text))",
+};
+
+export async function checkConstraintViolations(db: Queryable): Promise<string[]> {
+  const rows = await db.$queryRaw<{ key: string; definition: string }[]>`
+    SELECT cl.relname || '.' || con.conname AS key, pg_get_constraintdef(con.oid) AS definition
+    FROM pg_constraint con
+    JOIN pg_class cl ON cl.oid = con.conrelid
+    JOIN pg_namespace n ON n.oid = cl.relnamespace
+    WHERE n.nspname = 'public' AND con.contype = 'c'
+    ORDER BY 1`;
+  const violations: string[] = [];
+  for (const [key, definition] of Object.entries(MANUAL_CHECK_CONSTRAINTS)) {
+    const actual = rows.find((r) => r.key === key);
+    if (!actual) violations.push(`${key}: manual CHECK is missing`);
+    // pg_get_constraintdef appends " NOT VALID" to an unvalidated CHECK, so that is reported as a difference too.
+    else if (actual.definition !== definition) violations.push(`${key}: differs from the approved definition`);
+  }
+  for (const r of rows.filter((row) => !(row.key in MANUAL_CHECK_CONSTRAINTS))) violations.push(`${r.key}: unexpected CHECK`);
+  return violations;
+}
+
 const ROLLBACK = Symbol("rollback");
 
 /** Runs `fn` inside a transaction that is always rolled back (DDL included). */
