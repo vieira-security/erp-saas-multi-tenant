@@ -22,3 +22,6 @@ Instruções para agentes de IA. As regras de workflow estão em `CLAUDE.md` e v
 
 ## Multi-tenancy
 Banco compartilhado com `tenant_id` e isolamento na aplicação; compatível com RLS (inativa). Sem database/schema-per-tenant. Detalhes em `docs/architecture.md`.
+
+## Documentação
+Ponto de entrada: `docs/architecture.md`. Pendências em `docs/open-questions.md`; não decidir TBDs sem aprovação.
