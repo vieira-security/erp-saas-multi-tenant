@@ -73,7 +73,7 @@ model Company {
   @@unique([tenantId, cnpj])
   // Alvo da FK composta de Branch: garante que a Company pertence ao mesmo tenant da Branch.
   @@unique([tenantId, id])
-  @@index([tenantId])
+  // Sem índice isolado em tenant_id: (tenant_id, status), (tenant_id, cnpj) e (tenant_id, id) já começam por ele (M1.14.3).
   @@index([tenantId, status])
   @@map("companies")
 }

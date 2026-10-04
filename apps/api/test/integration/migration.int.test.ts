@@ -36,6 +36,7 @@ describe("migrations on a clean PostgreSQL database", () => {
       { name: "20261002111000_make_audit_logs_append_only", finished: true, rolledBack: false },
       { name: "20261002120000_make_tenant_id_immutable", finished: true, rolledBack: false },
       { name: "20261002121000_forbid_audit_logs_truncate", finished: true, rolledBack: false },
+      { name: "20261002130000_drop_redundant_company_tenant_index", finished: true, rolledBack: false },
     ]);
   });
 
@@ -140,7 +141,7 @@ describe("migrations on a clean PostgreSQL database", () => {
     ]);
   });
 
-  it("defines only the approved companies indexes", async () => {
+  it("defines only the approved companies indexes (no standalone tenant_id index since M1.14.3)", async () => {
     const indexes = await prisma.$queryRaw<{ name: string; definition: string }[]>`
       SELECT indexname AS name, indexdef AS definition FROM pg_indexes
       WHERE schemaname = 'public' AND tablename = 'companies' ORDER BY indexname`;
@@ -148,7 +149,6 @@ describe("migrations on a clean PostgreSQL database", () => {
       ["companies_pkey", "(id)"],
       ["companies_tenant_id_cnpj_key", "(tenant_id, cnpj)"],
       ["companies_tenant_id_id_key", "(tenant_id, id)"],
-      ["companies_tenant_id_idx", "(tenant_id)"],
       ["companies_tenant_id_status_idx", "(tenant_id, status)"],
     ]);
     expect(indexes.find((i) => i.name === "companies_tenant_id_cnpj_key")?.definition).toMatch(/^CREATE UNIQUE INDEX/);
