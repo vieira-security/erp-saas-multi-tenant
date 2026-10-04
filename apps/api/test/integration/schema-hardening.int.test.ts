@@ -202,7 +202,10 @@ describe("schema hardening (PostgreSQL catalog)", () => {
     it("probe: a changed predicate, a missing index and an unexpected partial index are reported", async () => {
       const violations = await inRolledBackTransaction(prisma, async (tx) => {
         await tx.$executeRawUnsafe(`DROP INDEX user_roles_tenant_scope_key`);
-        await tx.$executeRawUnsafe(`CREATE UNIQUE INDEX user_roles_tenant_scope_key ON user_roles (tenant_id, user_id, role_id) WHERE branch_id IS NOT NULL`);
+        // Narrower than the original predicate, so the rows other test files wrote can never violate it.
+        await tx.$executeRawUnsafe(
+          `CREATE UNIQUE INDEX user_roles_tenant_scope_key ON user_roles (tenant_id, user_id, role_id) WHERE branch_id IS NULL AND tenant_id IS NOT NULL`,
+        );
         await tx.$executeRawUnsafe(`DROP INDEX user_roles_branch_scope_key`);
         await tx.$executeRawUnsafe(createProbe);
         await tx.$executeRawUnsafe(`CREATE INDEX "${PROBE}_partial_idx" ON "${PROBE}" ("tenant_id") WHERE "role_id" IS NOT NULL`);
