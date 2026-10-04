@@ -20,6 +20,10 @@ ERP SaaS multi-tenant para pequenas e médias lojas/restaurantes de alimentaçã
 
 A lista acima é o conjunto fornecido. Se ela representa também a ordem de entrega: **TBD**.
 
+## Marcos de implementação
+- **M1 — Core multi-tenant ✅** Tenant, Company, Branch, User, UserBranchAccess, Role, Permission, RolePermission, UserRole, Device, Session e AuditLog no PostgreSQL, com isolamento por `tenant_id` garantido no banco, `tenant_id` imutável, `audit_logs` append-only e identidades `erp_migrator`/`erp_app` ([database.md](database.md)). Encerrado pelo gate M1.14.4 ([open-questions.md](open-questions.md)).
+- **M2 — Auth e autorização runtime:** próximo. Pendências a tratar em [open-questions.md](open-questions.md) ("Gate do M1").
+
 ## Fora do MVP
 Compras, recebimento e estoque ficam para versões futuras.
 

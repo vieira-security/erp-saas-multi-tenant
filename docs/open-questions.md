@@ -40,7 +40,7 @@ Registro único dos pontos em aberto. Resolver antes de implementar o módulo af
 - ~~Imutabilidade de `tenant_id` não imposta por completo~~ **Resolvido no M1.14.1:** `tenant_id` é imutável no banco para toda entidade editável de tenant (trigger por tabela + `forbid_tenant_id_change()`); `audit_logs` é coberta pelo append-only. Risco residual: o trigger é `UPDATE OF tenant_id` (não pega um eventual trigger futuro que altere `NEW.tenant_id` sem a coluna no `SET`) e o dono dos objetos/identidade admin podem desabilitar triggers (a aplicação, como `erp_app`, não pode desde o M1.14.2b).
 - **CNPJ de Branch x Company:** não há relação validada entre o CNPJ da filial e o da empresa (raiz/matriz), nem unicidade entre as duas tabelas. Validação completa (dígitos verificadores, raiz) será de `packages/validation`.
 - **Branch.timezone e Branch.code:** timezone sem validação IANA no banco (validação na aplicação); code sem normalização, então `MORUMBI` e `morumbi` são códigos distintos até a aplicação aplicar trim + uppercase.
-- **Roles por filial:** `UserBranchAccess` não carrega papel; roles/permissions (globais ou por filial) e sua relação com o acesso à filial ainda serão modeladas (#6).
+- ~~**Roles por filial:** roles/permissions por filial e sua relação com o acesso à filial ainda serão modeladas~~ **Resolvido estruturalmente no M1.10:** `user_roles.branch_id` (NULL = tenant inteiro) exige `UserBranchAccess` por FK composta. A semântica de resolução fica para o M2 (ver "Pendências da autorização").
 - **Roles padrão:** `OWNER`, `MANAGER`, `ATTENDANT`, `KITCHEN` não são reservados no banco (uma role customizada pode usar o código se ele estiver livre no tenant) e não há provisionamento ainda. Definir no provisionamento do Tenant: criação das quatro roles, se os códigos são reservados e quais regras protegem roles `is_system` (edição, arquivamento).
 - **Constantes de códigos de role:** não foram criadas em `packages/contracts` porque os packages ainda não têm estratégia de build/consumo pela api; decidir junto com o primeiro uso compartilhado.
 - **Catálogo de permissões:** o seed não remove permissões que saírem do catálogo (remoção/renomeação exigirá migração dedicada considerando RolePermission). Execução do seed no pipeline de deploy ainda não definida (#18). Nomes do catálogo inicial são provisórios até os módulos correspondentes existirem.
@@ -49,17 +49,17 @@ Registro único dos pontos em aberto. Resolver antes de implementar o módulo af
 - **Rollback x migrations destrutivas:** rollback de código só é seguro com migrations retrocompatíveis.
 - **Edge "premium" x dados mínimos:** a definição de "dados mínimos" afeta suporte, segurança do dispositivo local e LGPD.
 - **Escopo do MVP extenso:** 12 prioridades, incluindo fiscal e offline, sem ordem de entrega definida (#19).
-- **Branch base:** esta documentação foi escrita sobre `chore/install-core-frameworks`, ainda não mergeada.
+- **Branch base:** o M1 foi desenvolvido em branches empilhadas a partir de `chore/install-core-frameworks` (até `chore/m1-final-gate`); nenhuma delas está mergeada na `main`, que ainda contém só o bootstrap. A entrada na `main` segue por Pull Request.
 
 ## Pendências do RolePermission originadas no M1.8
 1. ~~Modelo de RolePermission e auditoria de FK para tabela global~~ **Resolvido no M1.9.**
 2. Quais permissões cada role padrão recebe no provisionamento (OWNER, MANAGER, ATTENDANT, KITCHEN).
 3. Política para permissão removida/renomeada do catálogo com vínculos existentes (`RESTRICT`).
-4. Escopo por filial das permissões/roles (#6).
+4. ~~Escopo por filial das permissões/roles (#6)~~ **Resolvido estruturalmente no M1.10** (`user_roles.branch_id`); semântica no M2.
 
 ## Pendências do hardening M1.14 (M1.14.2+)
 1. ~~Impor `tenant_id` imutável no banco~~ **Resolvido no M1.14.1** (migration `20261002120000_make_tenant_id_immutable`): função `forbid_tenant_id_change()` e triggers `<tabela>_tenant_id_immutable` nas 9 tabelas editáveis; os 10 testes `GAP (M1.14)` foram invertidos; auditoria do catálogo exige o trigger (derivado da classificação, com `audit_logs` como política append-only explícita); inventário de funções/triggers atualizado.
-2. **Proteção contra `new PrismaClient()` além do lint:** avaliar se a regra ESLint basta (não cobre `import()` dinâmico nem indireção).
+2. ~~**Proteção contra `new PrismaClient()` além do lint**~~ **Avaliado no M1.14.4, não bloqueante:** o ESLint rejeita `new PrismaClient()`, import de valor com ou sem alias e import de namespace (`import * as`); escapam só `import()` dinâmico e `require`, que exigem intenção explícita e aparecem em review. O impacto de um bypass é a sessão sem `TimeZone=UTC` (instantes deslocados), não isolamento nem privilégio: a identidade e os grants vêm da `DATABASE_URL` (`erp_app`), não da factory. Melhoria opcional, sem dependência nova: acrescentar a `no-restricted-syntax` o seletor `ImportExpression[source.value=/generated.prisma/]` fora de `create-prisma-client.ts` (verificado: pega o `import()` do client gerado e não afeta outros imports dinâmicos; não cobre `require`).
 3. ~~Índices candidatos a remoção~~ **Resolvido no M1.14.3:** `companies_tenant_id_idx` removido; nenhum outro índice estruturalmente redundante; todas as FKs cobertas por índice; auditoria de índices/CHECKs/índices parciais em `schema-hardening.int.test.ts`. Revisão de índices por workload (ex.: `audit_logs`, `sessions.expires_at`) só com uso real.
 4. **Normalização de `Branch.code`** (trim + uppercase) na aplicação; avaliar unique por `(tenant_id, upper(code))` no banco.
 5. **Validações em `packages/validation`:** CNPJ completo (dígitos verificadores, raiz Branch x Company) e timezone IANA.
@@ -100,5 +100,29 @@ Registro único dos pontos em aberto. Resolver antes de implementar o módulo af
 5. Normalização da matrícula (trim/caixa) antes de gravar e no login.
 6. LGPD: `users.name` é dado pessoal e o usuário não é apagado fisicamente (#9).
 
-## Antes do Prompt 3
-Mínimo recomendado: #1, #3, #5, #6 e #7 (fundação de IDs, remoção, auth e tenant context), mais #19 para definir qual módulo vem primeiro.
+## Gate do M1 (M1.14.4): classificação das pendências
+**M1 — Core multi-tenant ✅** concluído. A classificação abaixo responde se é seguro começar Auth e autorização runtime; os detalhes continuam nas seções acima.
+
+### Bloqueantes para o M2
+Nenhuma. Banco limpo e caminho incremental produzem o mesmo catálogo; isolamento cross-tenant de escrita, imutabilidade de `tenant_id`, append-only de `audit_logs`, matriz runtime de `erp_app` e auditorias fail-closed estão verdes e provados por checagens negativas.
+
+### Tratar durante o M2 (Auth e autorização)
+1. **Tenant context na camada de aplicação (obrigatório antes do primeiro endpoint com dado de cliente):** sem RLS, o banco não impede `erp_app` de ler ou enumerar linhas de outro tenant; repository/service precisam exigir o tenant do contexto autenticado e falhar sem ele, com testes de isolamento de leitura ([testing-strategy.md](testing-strategy.md)).
+2. Autenticação, sessões e expiração offline (#5): hashing de senha e formato de `password_hash`, refresh token (geração, hash, rotação, replay), revogação, lockout, normalização da matrícula (seções "Pendências do M2 (Auth)").
+3. Semântica da autorização (#6): resolução global x filial, status de role/usuário, fluxo de troca/remoção de UserRole e UserBranchAccess ("Pendências da autorização").
+4. Provisionamento do tenant: criação das roles padrão `OWNER`/`MANAGER`/`ATTENDANT`/`KITCHEN`, reserva dos códigos, proteção de `is_system` e matriz de permissões por role (pendência 2 do M1.8). **Depende de regras de negócio a fornecer.**
+5. Autenticação de dispositivo e efeito de `REVOKED`/`INACTIVE` ("Pendências de dispositivos"), na medida em que o login no PDV usar o dispositivo.
+6. Se o M2 gravar eventos em `audit_logs` (ex.: login), o filtro de `metadata` do futuro `AuditService` precisa existir antes da primeira gravação com `metadata`.
+
+### Futuro (não bloqueia o M2)
+- RLS (#7) e transmissão do tenant à sessão do banco.
+- Login das identidades do banco em produção: Secrets Manager ou IAM database authentication; RDS Proxy/pooler (e a garantia de `TimeZone=UTC` sem parâmetro de startup).
+- Auditoria das ações do dono/admin (`pgaudit`, logs do RDS); revogar `TEMPORARY`/`CONNECT` padrão de `PUBLIC` no database.
+- Compatibilidade com PostgreSQL 18.
+- LGPD x imutabilidade física (#9), retenção de sessões e de `audit_logs`.
+- Normalização de codes (`Branch.code`, `Role.code`), CNPJ completo (dígitos verificadores, raiz Branch x Company) e timezone IANA, em `packages/validation`/aplicação.
+- Sanitização automática de `audit_logs.metadata`, catálogo de ações, instrumentação, retenção/particionamento ("Pendências do AuditService"; ver também o item 6 do M2).
+- Índices baseados em workload real (`audit_logs`, `sessions.expires_at`).
+- Regra opcional de lint para `import()` dinâmico do client gerado (pendência 2 do M1.14).
+- Política para permissão removida/renomeada do catálogo e execução do seed no pipeline (#18).
+- Demais TBDs de produto/negócio (#2, #3, #4, #8, #10–#20) seguem bloqueando apenas os módulos indicados na tabela.
