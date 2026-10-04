@@ -7,6 +7,22 @@ export const TOOLING_TABLES: readonly string[] = ["_prisma_migrations"];
 /** Legitimate global tables (no tenant_id). Adding one here is an explicit, reviewed decision. */
 export const GLOBAL_TABLES: readonly string[] = ["permissions"];
 
+/** Every Prisma model and its table. A new model must be reviewed here, in the audits and in MODEL_SCOPE (src/tenancy). */
+export const MODEL_TABLES: Readonly<Record<string, string>> = {
+  Tenant: "tenants",
+  Company: "companies",
+  Branch: "branches",
+  User: "users",
+  UserBranchAccess: "user_branch_access",
+  Role: "roles",
+  Permission: "permissions",
+  RolePermission: "role_permissions",
+  UserRole: "user_roles",
+  Device: "devices",
+  Session: "sessions",
+  AuditLog: "audit_logs",
+};
+
 export type TableKind = "root" | "tooling" | "global" | "tenant";
 
 type Queryable = Pick<PrismaClient, "$queryRaw">;
