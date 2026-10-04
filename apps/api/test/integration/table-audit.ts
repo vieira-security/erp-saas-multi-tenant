@@ -478,6 +478,159 @@ export async function privilegeModelViolations(db: Queryable, roles: DatabaseRol
   return violations;
 }
 
+export interface IndexRow {
+  table: string;
+  name: string;
+  method: string;
+  unique: boolean;
+  primary: boolean;
+  valid: boolean;
+  expression: boolean;
+  predicate: string;
+  /** Key columns in index order (INCLUDE columns and expressions left out). */
+  columns: string[];
+}
+
+/** Every index of schema public, from the catalog (the source of truth: Prisma does not see partial indexes). */
+export async function listIndexes(db: Queryable): Promise<IndexRow[]> {
+  return db.$queryRaw<IndexRow[]>`
+    SELECT t.relname::text AS "table", i.relname::text AS name, am.amname::text AS method, x.indisunique AS unique,
+           x.indisprimary AS primary, x.indisvalid AS valid, x.indexprs IS NOT NULL AS expression,
+           COALESCE(pg_get_expr(x.indpred, x.indrelid), '') AS predicate,
+           ARRAY(SELECT a.attname::text FROM unnest(x.indkey::int2[]) WITH ORDINALITY AS k(att, n)
+                 JOIN pg_attribute a ON a.attrelid = x.indrelid AND a.attnum = k.att
+                 WHERE k.n <= x.indnkeyatts ORDER BY k.n) AS columns
+    FROM pg_index x
+    JOIN pg_class i ON i.oid = x.indexrelid
+    JOIN pg_class t ON t.oid = x.indrelid
+    JOIN pg_am am ON am.oid = i.relam
+    JOIN pg_namespace n ON n.oid = t.relnamespace
+    WHERE n.nspname = 'public'
+    ORDER BY 1, 2`;
+}
+
+/** A plain B-tree index usable for any equality lookup on its leading columns (not partial, no expression). */
+function isPlainBtree(index: IndexRow): boolean {
+  return index.method === "btree" && index.valid && !index.expression && index.predicate === "";
+}
+
+function startsWith(columns: readonly string[], prefix: readonly string[]): boolean {
+  return prefix.length <= columns.length && prefix.every((c, i) => columns[i] === c);
+}
+
+/**
+ * FKs whose child columns are not covered, in the same order, by the leftmost prefix of a plain B-tree index of the
+ * child table. Without it, every DELETE/UPDATE of a parent key (RESTRICT check) scans the whole child table.
+ * Deliberate exceptions must be declared here with a reason; there are none.
+ */
+export const FK_COVERAGE_EXCEPTIONS: Readonly<Record<string, string>> = {};
+
+export async function foreignKeyCoverageViolations(db: Queryable): Promise<string[]> {
+  const fks = await db.$queryRaw<{ name: string; child: string; columns: string[] }[]>`
+    SELECT con.conname::text AS name, cl.relname::text AS child,
+           ARRAY(SELECT a.attname::text FROM unnest(con.conkey) WITH ORDINALITY AS k(att, n)
+                 JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = k.att ORDER BY k.n) AS columns
+    FROM pg_constraint con
+    JOIN pg_class cl ON cl.oid = con.conrelid
+    JOIN pg_namespace n ON n.oid = cl.relnamespace
+    WHERE n.nspname = 'public' AND con.contype = 'f'
+    ORDER BY 1`;
+  const indexes = (await listIndexes(db)).filter(isPlainBtree);
+
+  return fks
+    .filter((fk) => !(fk.name in FK_COVERAGE_EXCEPTIONS))
+    .filter((fk) => !indexes.some((i) => i.table === fk.child && startsWith(i.columns, fk.columns)))
+    .map((fk) => `${fk.name}: no B-tree index on ${fk.child} starting with (${fk.columns.join(", ")})`);
+}
+
+/** Indexes removed as redundant; recreating one of them is a regression. */
+export const KNOWN_REDUNDANT_INDEXES: readonly string[] = ["companies_tenant_id_idx"];
+
+/**
+ * Structural redundancy only (no workload heuristics): a plain non-unique B-tree index whose key columns are a
+ * leftmost prefix of another plain B-tree index of the same table adds nothing for lookups. Unique and partial
+ * indexes are never reported here (they carry a rule, not just access paths).
+ */
+export async function redundantIndexViolations(db: Queryable): Promise<string[]> {
+  const indexes = await listIndexes(db);
+  const violations = indexes
+    .filter((i) => KNOWN_REDUNDANT_INDEXES.includes(i.name))
+    .map((i) => `${i.name}: known redundant index was recreated`);
+
+  const plain = indexes.filter(isPlainBtree);
+  for (const index of plain.filter((i) => !i.unique && !KNOWN_REDUNDANT_INDEXES.includes(i.name))) {
+    const wider = plain.find(
+      (other) =>
+        other.name !== index.name &&
+        other.table === index.table &&
+        startsWith(other.columns, index.columns) &&
+        (other.columns.length > index.columns.length || other.unique || other.name < index.name),
+    );
+    if (wider) violations.push(`${index.name}: (${index.columns.join(", ")}) is a leftmost prefix of ${wider.name}`);
+  }
+  return violations;
+}
+
+/**
+ * UNIQUE (tenant_id, id) looks redundant next to the primary key, but it is the target of the composite
+ * tenant-carrying FKs. Each one must be referenced by at least one FK; an unreferenced one is reported (it would
+ * then be truly redundant and should be dropped by a reviewed migration).
+ */
+export async function compositeFkTargetViolations(db: Queryable): Promise<string[]> {
+  const rows = await db.$queryRaw<{ name: string; referencedBy: number }[]>`
+    SELECT i.relname::text AS name,
+           (SELECT count(*)::int FROM pg_constraint con WHERE con.contype = 'f' AND con.conindid = x.indexrelid) AS "referencedBy"
+    FROM pg_index x
+    JOIN pg_class i ON i.oid = x.indexrelid
+    JOIN pg_class t ON t.oid = x.indrelid
+    JOIN pg_namespace n ON n.oid = t.relnamespace
+    WHERE n.nspname = 'public' AND x.indisunique AND NOT x.indisprimary AND x.indnkeyatts = 2
+      AND ARRAY(SELECT a.attname::text FROM unnest(x.indkey::int2[]) WITH ORDINALITY AS k(att, n)
+                JOIN pg_attribute a ON a.attrelid = x.indrelid AND a.attnum = k.att ORDER BY k.n) = ARRAY['tenant_id', 'id']
+    ORDER BY 1`;
+  return rows.filter((r) => r.referencedBy === 0).map((r) => `${r.name}: UNIQUE (tenant_id, id) not used by any composite FK`);
+}
+
+/**
+ * Partial indexes written by hand in migrations (Prisma 7.10 cannot represent them and `migrate diff` ignores them).
+ * They carry business rules, so the exact set, columns, order, uniqueness, method and predicate are pinned.
+ */
+export const MANUAL_PARTIAL_INDEXES: Readonly<
+  Record<string, { table: string; columns: readonly string[]; unique: boolean; method: string; predicate: string }>
+> = {
+  user_roles_branch_scope_key: {
+    table: "user_roles",
+    columns: ["tenant_id", "user_id", "role_id", "branch_id"],
+    unique: true,
+    method: "btree",
+    predicate: "(branch_id IS NOT NULL)",
+  },
+  user_roles_tenant_scope_key: {
+    table: "user_roles",
+    columns: ["tenant_id", "user_id", "role_id"],
+    unique: true,
+    method: "btree",
+    predicate: "(branch_id IS NULL)",
+  },
+};
+
+export async function partialIndexViolations(db: Queryable): Promise<string[]> {
+  const partial = (await listIndexes(db)).filter((i) => i.predicate !== "");
+  const violations: string[] = [];
+  for (const [name, expected] of Object.entries(MANUAL_PARTIAL_INDEXES)) {
+    const actual = partial.find((i) => i.name === name);
+    if (!actual) violations.push(`${name}: manual partial index is missing`);
+    else {
+      const { table, columns, unique, method, predicate } = actual;
+      if (JSON.stringify({ table, columns, unique, method, predicate }) !== JSON.stringify(expected)) {
+        violations.push(`${name}: differs from the approved definition`);
+      }
+    }
+  }
+  for (const i of partial.filter((p) => !(p.name in MANUAL_PARTIAL_INDEXES))) violations.push(`${i.name}: unexpected partial index`);
+  return violations;
+}
+
 const ROLLBACK = Symbol("rollback");
 
 /** Runs `fn` inside a transaction that is always rolled back (DDL included). */
