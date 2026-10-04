@@ -24,7 +24,7 @@ export type CompanyDb = Pick<PrismaClient, "company">;
 /**
  * Primeiro repository tenant-scoped e prova do padrão de data access (docs/architecture.md): toda query passa por
  * TenantScope, então só enxerga e altera Companies do tenant atual. Sem DELETE: `erp_app` não tem esse privilégio
- * (Company é desativada por status).
+ * (Company é desativada por status). Métodos `async`: falta de contexto sempre vira Promise rejeitada.
  */
 export class CompanyRepository {
   constructor(
@@ -33,18 +33,18 @@ export class CompanyRepository {
   ) {}
 
   /** Cria no tenant do contexto. Só os campos de NewCompany são lidos: um `tenantId` contrabandeado é ignorado. */
-  create(input: NewCompany): Promise<Company> {
+  async create(input: NewCompany): Promise<Company> {
     const { legalName, tradeName, cnpj, status, timezone } = input;
     return this.db.company.create({ data: this.scope.data({ legalName, tradeName, cnpj, status, timezone }) });
   }
 
   /** Company do tenant atual com este id; `null` se não existir ou for de outro tenant. */
-  findById(id: string): Promise<Company | null> {
+  async findById(id: string): Promise<Company | null> {
     return this.db.company.findUnique({ where: this.scope.where({ id }) });
   }
 
   /** Companies do tenant atual, em ordem de criação. */
-  list(): Promise<Company[]> {
+  async list(): Promise<Company[]> {
     return this.db.company.findMany({ where: this.scope.where({}), orderBy: [{ createdAt: "asc" }, { id: "asc" }] });
   }
 
