@@ -64,6 +64,7 @@ Linhas tracejadas = previsto, não implementado.
 - Constraints de banco devem reforçar o isolamento quando possível (unicidade composta com `tenant_id`, FKs compostas).
 - A camada de repository/service **exige tenant context**; não deve existir acesso a dado de cliente sem ele.
 - RLS será segunda camada de proteção, ativada em fase posterior.
+- **Identidades do banco separadas:** a API e os workers usam `erp_app` (sem ownership, matriz explícita de privilégios); migrations e seed usam `erp_migrator` (dono dos objetos, só no deploy); a identidade admin só provisiona. Roles e grants são infraestrutura (`infrastructure/postgres/`), não Prisma migrations ([database.md](database.md)).
 
 ## Módulos do backend
 Cada módulo vive em `apps/api/src/<modulo>` e expõe apenas uma API pública. **Nenhum módulo acessa a implementação interna de outro.** Comunicação por serviços públicos, contratos (`packages/contracts`) e eventos internos quando apropriado.
@@ -127,7 +128,7 @@ Provedor **TBD**. A arquitetura deve prever uma abstração conceitual semelhant
 - Prioridades P1–P4; causa inicial e causa raiz; P1/P2 geram alerta ativo; incidentes globais podem agrupar vários clientes.
 
 ## Infraestrutura futura
-AWS ECS/Fargate, RDS PostgreSQL, Redis, SQS, S3, Secrets Manager, CloudWatch. Nada implementado.
+AWS ECS/Fargate, RDS PostgreSQL, Redis, SQS, S3, Secrets Manager, CloudWatch. Nada implementado. Os scripts de `infrastructure/postgres/` são compatíveis com RDS (sem superusuário real, sem `rds_superuser` para a aplicação, sem extensão nem acesso ao sistema operacional).
 
 ## Documentos relacionados
 [database](database.md) · [security](security.md) · [offline-edge](offline-edge.md) · [printing](printing.md) · [fiscal](fiscal.md) · [testing-strategy](testing-strategy.md) · [deployment](deployment.md) · [open-questions](open-questions.md)

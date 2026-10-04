@@ -11,6 +11,16 @@
 - Migrations compatíveis sempre que possível (expand/contract); destrutivas exigem revisão explícita.
 - Rollback ou desativação da feature (feature flag) quando aplicável.
 
+## Banco de dados: identidades e ordem (M1.14.2b)
+Scripts e detalhes em [`infrastructure/postgres/README.md`](../infrastructure/postgres/README.md); matriz de privilégios em [database.md](database.md).
+
+1. **Provisionamento (uma vez):** a identidade admin (superusuário self-hosted ou master do RDS) executa `01-bootstrap-roles.sql` no cluster e `02-bootstrap-database.sql` no banco do ERP.
+2. **Credenciais:** login de `erp_migrator` e `erp_app` provisionado fora do git (mecanismo de produção **TBD**: Secrets Manager ou IAM database authentication).
+3. **Cada deploy, como `erp_migrator`:** `prisma migrate deploy`, `npm run db:seed` quando aplicável e `03-runtime-grants.sql`, nessa ordem e antes de a nova versão receber tráfego.
+4. **Runtime:** API e workers com `DATABASE_URL` de `erp_app`. Nunca usar a identidade admin nem `erp_migrator` na aplicação.
+
+Uma migration que cria tabela exige atualizar `03-runtime-grants.sql` no mesmo PR; sem isso, a tabela fica inacessível para a aplicação e a auditoria de testes falha.
+
 ## Alvo futuro (não implementado)
 AWS ECS/Fargate, RDS PostgreSQL, Redis, SQS, S3, Secrets Manager, CloudWatch. O backend stateless facilita a escala horizontal.
 
