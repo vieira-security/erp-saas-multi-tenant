@@ -1,7 +1,7 @@
 # Banco de dados
 
 ## Estado atual
-PostgreSQL via Prisma. Models: `Tenant` (tabela `tenants`, migration `20261002000000_create_tenants`), `Company` (tabela `companies`, migration `20261002010000_create_companies`), `Branch` (tabela `branches`, migration `20261002020000_create_branches`), `User` (tabela `users`, migration `20261002030000_create_users`), `UserBranchAccess` (tabela `user_branch_access`, migration `20261002040000_create_user_branch_access`), `Role` (tabela `roles`, migration `20261002050000_create_roles`), `Permission` (tabela global `permissions`, migration `20261002060000_create_permissions`), `RolePermission` (tabela `role_permissions`, migration `20261002070000_create_role_permissions`), `UserRole` (tabela `user_roles`, migration `20261002080000_create_user_roles`), `Device` (tabela `devices`, migration `20261002090000_create_devices`), `Session` (tabela `sessions`, migration `20261002100000_create_sessions`) e `AuditLog` (tabela `audit_logs`, migrations `20261002110000_create_audit_logs` e `20261002111000_make_audit_logs_append_only`). A imutabilidade de `tenant_id` é imposta pela migration `20261002120000_make_tenant_id_immutable` (M1.14.1); o bloqueio de `TRUNCATE` em `audit_logs`, pela `20261002121000_forbid_audit_logs_truncate` (M1.14.2a). A URL de conexão vem de `DATABASE_URL` (lida em `apps/api/prisma.config.ts`), nunca do código. Identidades e privilégios do PostgreSQL (`erp_migrator`/`erp_app`, M1.14.2b): seção "Identidades e privilégios do PostgreSQL" abaixo.
+PostgreSQL via Prisma. Models: `Tenant` (tabela `tenants`, migration `20261002000000_create_tenants`), `Company` (tabela `companies`, migration `20261002010000_create_companies`), `Branch` (tabela `branches`, migration `20261002020000_create_branches`), `User` (tabela `users`, migration `20261002030000_create_users`), `UserBranchAccess` (tabela `user_branch_access`, migration `20261002040000_create_user_branch_access`), `Role` (tabela `roles`, migration `20261002050000_create_roles`), `Permission` (tabela global `permissions`, migration `20261002060000_create_permissions`), `RolePermission` (tabela `role_permissions`, migration `20261002070000_create_role_permissions`), `UserRole` (tabela `user_roles`, migration `20261002080000_create_user_roles`), `Device` (tabela `devices`, migration `20261002090000_create_devices`), `Session` (tabela `sessions`, migration `20261002100000_create_sessions`) e `AuditLog` (tabela `audit_logs`, migrations `20261002110000_create_audit_logs` e `20261002111000_make_audit_logs_append_only`). A imutabilidade de `tenant_id` é imposta pela migration `20261002120000_make_tenant_id_immutable` (M1.14.1); o bloqueio de `TRUNCATE` em `audit_logs`, pela `20261002121000_forbid_audit_logs_truncate` (M1.14.2a); a remoção do índice redundante `companies_tenant_id_idx`, pela `20261002130000_drop_redundant_company_tenant_index` (M1.14.3). A URL de conexão vem de `DATABASE_URL` (lida em `apps/api/prisma.config.ts`), nunca do código. Identidades e privilégios do PostgreSQL (`erp_migrator`/`erp_app`, M1.14.2b): seção "Identidades e privilégios do PostgreSQL" abaixo.
 
 ## Tenant
 Raiz do multi-tenancy; por isso **não** possui `tenant_id`.
@@ -33,7 +33,7 @@ Empresa de um tenant. Relação **Tenant 1 → N Company**; o MVP começa com um
 | `created_at` | `timestamptz(3)` | não | default `CURRENT_TIMESTAMP` |
 | `updated_at` | `timestamptz(3)` | não | mantido pelo Prisma (`@updatedAt`) |
 
-- Índices: `(tenant_id)`, `(tenant_id, status)`, a unique `(tenant_id, cnpj)` e a unique `(tenant_id, id)` (alvo da FK composta de Branch, criada na migration de Branch).
+- Índices: `(tenant_id, status)`, a unique `(tenant_id, cnpj)` e a unique `(tenant_id, id)` (alvo da FK composta de Branch, criada na migration de Branch). O índice isolado `(tenant_id)` (`companies_tenant_id_idx`) foi **removido no M1.14.3**: era redundante, pois os três índices acima começam por `tenant_id` e cobrem a FK para `tenants` e as consultas por tenant.
 - CNPJ não é globalmente único nesta etapa; dígitos verificadores **não** são validados (nem no banco nem na aplicação).
 - Os CHECKs de nome rejeitam vazio e somente espaços (`btrim` remove apenas o caractere espaço).
 - Remoção física de um Tenant com Company falha (FK `RESTRICT`); sem cascade e sem soft delete.
@@ -357,6 +357,29 @@ Não há exceção genérica: uma FK simples só é aceita se o alvo estiver em 
 - **CNPJ completo** (dígitos verificadores; raiz do CNPJ da Branch x Company): responsabilidade futura de `packages/validation`. O banco garante só o formato (14 dígitos) e a unicidade por tenant.
 - **Timezone IANA** (Company e Branch): validado na camada de aplicação; o banco guarda texto obrigatório, sem lista própria.
 - **Branch.code**: normalização trim + uppercase na aplicação.
+
+## Índices e constraints físicos (M1.14.3)
+O **catálogo do PostgreSQL é a fonte de verdade** do schema físico; o schema Prisma não representa tudo. Inventário do M1 (51 índices antes do M1.14.3, 50 depois; todos B-tree; 24 FKs; 21 CHECKs; 2 índices parciais; 2 funções; 11 triggers; nenhum event trigger):
+
+- **Índice removido:** `companies_tenant_id_idx (tenant_id)` — nenhuma FK ou constraint o usava (`pg_depend`/`conindid` vazios), e `companies_tenant_id_status_idx`, `companies_tenant_id_cnpj_key` e `companies_tenant_id_id_key` têm `tenant_id` como primeira coluna. Era o único índice comum cujo conjunto de colunas é prefixo de outro índice da mesma tabela. Nenhum outro índice redundante foi encontrado.
+- **Uniques auxiliares que continuam:** `UNIQUE (tenant_id, id)` em `companies`, `branches`, `users`, `roles` e `devices` parecem redundantes com a PK, mas são o alvo das FKs compostas multi-tenant (Branch→Company; UserBranchAccess/AuditLog/Device→Branch; UserBranchAccess/UserRole/Session/AuditLog→User; RolePermission/UserRole→Role; Session/AuditLog→Device). `user_branch_access (tenant_id, user_id, branch_id)` é também alvo da FK de UserRole. A auditoria exige que toda `UNIQUE (tenant_id, id)` seja usada por ao menos uma FK.
+- **Cobertura de FKs:** todas as 24 FKs têm, na tabela filha, um índice B-tree comum (não parcial, sem expressão) cujo prefixo esquerdo são as colunas da FK na mesma ordem; assim o `RESTRICT` ao apagar/alterar o pai não varre a filha. Nenhuma exceção (`FK_COVERAGE_EXCEPTIONS` vazio).
+- **Índices globais aprovados** (não começam por `tenant_id`): `permissions_code_key`, `permissions_module_idx` (catálogo global), `role_permissions_permission_id_idx` (FK para o catálogo global) e `sessions_refresh_token_hash_key` (unicidade global). Todo o resto começa por `tenant_id` (exceto PKs).
+- **AuditLog:** os cinco índices começam por `tenant_id` e cobrem as FKs para users/branches/devices; mantidos. Sem GIN em `metadata` nem índice em `action`.
+- **Regra para índices futuros:** não adicionar índice sem necessidade estrutural (cobrir FK, impor unicidade, regra de negócio) ou workload real medido em ambiente representativo. `pg_stat_user_indexes` e `EXPLAIN` com fixtures de teste não justificam criar nem remover índice. Toda FK nova precisa de índice cobrindo suas colunas na tabela filha (a auditoria falha sem ele) e tabela de tenant mantém `tenant_id` como primeira coluna.
+
+**Pontos cegos do Prisma** (não representados no `schema.prisma` e/ou ignorados por `prisma migrate diff`; protegidos só pelos testes de catálogo):
+
+| Garantia | Onde é protegida |
+|---|---|
+| 21 CHECKs manuais | `MANUAL_CHECK_CONSTRAINTS` (schema-hardening) + listas exatas por tabela (migration) |
+| Índices parciais `user_roles_tenant_scope_key` / `user_roles_branch_scope_key` | `MANUAL_PARTIAL_INDEXES` (colunas, ordem, unicidade, B-tree, predicado) + migration |
+| Funções `forbid_audit_log_mutation()`, `forbid_tenant_id_change()` e 11 triggers | inventário de funções/triggers (migration), auditoria de imutabilidade e append-only (org-integrity, audit-log) |
+| Event triggers | nenhum existe; o inventário de funções/triggers falharia com função nova |
+| Privilégios/ACL de tabelas, funções e schema; default privileges | `runtimePrivilegeViolations`, `privilegeModelViolations` (runtime-privileges) |
+| Ownership | `ownershipViolations` (runtime-privileges) |
+
+Índices comuns, uniques e FKs **são** representados no Prisma e o teste de drift os acusa; ainda assim o inventário de índices e a auditoria de cobertura/redundância verificam o catálogo. Comprovado nas checagens negativas do M1.14.3: alterar o predicado de um índice parcial ou remover um CHECK passa pelo teste de drift e só os testes de catálogo falham.
 
 ## CHECK constraints, índices parciais, funções e triggers
 O schema Prisma não representa CHECKs nem índices únicos parciais (`user_roles`): eles são escritos à mão na migration. Consequências:
