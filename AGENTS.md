@@ -17,6 +17,7 @@ Instruções para agentes de IA. As regras de workflow estão em `CLAUDE.md` e v
 
 - TypeScript strict em todo o código.
 - Tenant sempre do contexto autenticado, nunca do input do cliente.
+- Repositories/services tenant-scoped usam `TenantContextService` + `TenantScope` (`apps/api/src/tenancy/`): `tenant_id + id` em toda query, inputs sem `tenantId`, falha sem contexto. Prisma direto em código de negócio exige revisão explícita; seed, migrations, testes e infraestrutura são exceções.
 - Não inventar regras fiscais ou de negócio; registrar dúvidas em `docs/`.
 - Não adicionar dependências sem necessidade clara.
 

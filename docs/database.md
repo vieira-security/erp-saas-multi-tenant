@@ -402,6 +402,7 @@ O schema Prisma não representa CHECKs nem índices únicos parciais (`user_role
 - Constraints devem reforçar o isolamento quando possível: unicidade composta (ex.: matrícula única por `(tenant_id, matricula)`), FKs que incluam `tenant_id`, índices iniciados por `tenant_id`.
 - Esquema compatível com RLS; RLS será ativada em fase posterior ([security.md](security.md)).
 - Proibido: database-per-tenant e schema-per-tenant.
+- **Acesso a dados (M2.1):** o banco não filtra leitura por tenant. Toda query de negócio em tabela tenant-scoped inclui `tenant_id` do `TenantContext` (`TenantScope`, [architecture.md](architecture.md)), mesmo quando filtra por `id` UUID. `tenants` (raiz) e `permissions` (global) nunca recebem filtro implícito. O padrão não exigiu migration nem grant novo: `erp_app` mantém a matriz exata acima.
 
 ## Convenções
 | Tema | Decisão |

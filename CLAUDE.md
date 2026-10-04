@@ -25,6 +25,7 @@ ERP SaaS multi-tenant para pequenas e médias lojas/restaurantes de alimentaçã
 
 - Todo dado de cliente é isolado por tenant.
 - Nunca confiar em `tenant_id` vindo livremente do frontend; o tenant vem do contexto autenticado.
+- Toda operação de negócio em entidade tenant-scoped obtém `tenant_id` do `TenantContext` e o inclui no escopo da query (`TenantScope`); nunca buscar/alterar só por `id`. `Tenant` e `Permission` são exceções por classificação (`docs/architecture.md`).
 - Modelar para múltiplas filiais.
 
 ## Comandos
