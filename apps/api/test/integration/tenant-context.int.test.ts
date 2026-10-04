@@ -104,12 +104,15 @@ describe("tenant context and tenant-scoped data access (PostgreSQL, as erp_app)"
     });
 
     it("fails before touching the database when there is no context (2)", async () => {
-      const count = await owner.company.count();
-      await expect(companies.create(newCompany("NoCtx"))).rejects.toThrow(TenantContextMissingError);
+      // Unique marker: other files create companies concurrently, so a global count would be flaky.
+      const marker = `NoCtx-${randomUUID()}`;
+      const before = await owner.company.findUniqueOrThrow({ where: { id: a1 } });
+      await expect(companies.create(newCompany(marker))).rejects.toThrow(TenantContextMissingError);
       await expect(companies.list()).rejects.toThrow(TenantContextMissingError);
       await expect(companies.findById(a1)).rejects.toThrow(TenantContextMissingError);
-      await expect(companies.update(a1, { tradeName: "x" })).rejects.toThrow(TenantContextMissingError);
-      expect(await owner.company.count()).toBe(count);
+      await expect(companies.update(a1, { tradeName: marker })).rejects.toThrow(TenantContextMissingError);
+      expect(await owner.company.count({ where: { tradeName: marker } })).toBe(0);
+      expect(await owner.company.findUniqueOrThrow({ where: { id: a1 } })).toEqual(before);
     });
 
     it("keeps concurrent A and B requests apart while they hit the database (3)", async () => {
