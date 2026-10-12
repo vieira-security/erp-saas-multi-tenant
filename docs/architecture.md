@@ -84,7 +84,7 @@ Cada módulo vive em `apps/api/src/<modulo>` e expõe apenas uma API pública. *
 ### Iniciais
 | Módulo | Responsabilidade |
 |---|---|
-| `auth` | Autenticação e emissão do contexto autenticado (tenant, usuário, sessão, dispositivo). Implementado no M2: senha Argon2id, login, tokens, sessões, guards, troca/reset de senha, lockout. |
+| `auth` | Autenticação e emissão do contexto autenticado (tenant, usuário, sessão, dispositivo). Implementado no M2: senha Argon2id, login por código público (`POST /auth/login`), refresh/logout por cookie HttpOnly, tokens, sessões, guards, troca/reset de senha, lockout. |
 | `authorization` | Permissões efetivas (`AuthorizationService`) e `PermissionGuard` (M2). |
 | `tenants` | Ciclo de vida do tenant (cliente SaaS). Hoje: provisionamento idempotente das roles padrão (M2.11). |
 | `companies` | Empresa do tenant. |

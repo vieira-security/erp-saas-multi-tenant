@@ -28,87 +28,133 @@ sequenceDiagram
   S->>D: consulta filtrada por tenant_id
 ```
 
-## Autenticação, autorização e dispositivos (M2)
-Implementação em `apps/api/src/auth/`, `apps/api/src/authorization/` e `apps/api/src/tenants/`. Os serviços são **transport-neutral**; o único transporte HTTP hoje é `Authorization: Bearer` para o access token. Autenticação das identidades do PostgreSQL em produção (Secrets Manager ou IAM database authentication): **TBD**.
+## Autenticação, autorização e dispositivos (M2 — encerrado)
+Implementação em `apps/api/src/auth/`, `apps/api/src/authorization/`, `apps/api/src/tenants/` e `apps/api/src/users/employee-number.ts`. As regras de produto abaixo foram decididas no fechamento do M2; o que continua futuro está em [open-questions.md](open-questions.md). Autenticação das identidades do PostgreSQL em produção (Secrets Manager ou IAM database authentication): **futuro**.
 
 ### Fluxo
 ```mermaid
 sequenceDiagram
-  participant R as LoginTenantResolver (confiável, TBD)
-  participant A as AuthService
+  participant W as Web/PDV (access token em memória)
+  participant A as API /auth
   participant G as AuthGuard (global)
   participant D as PostgreSQL (erp_app)
-  R->>A: tenant já resolvido + matrícula + senha (+ deviceKey)
-  A->>D: tenant, dispositivo e usuário com TenantScope
-  A->>D: sessão (só hash do refresh) + AuditLog
-  A-->>R: access token (JWT curto) + refresh token opaco
-  Note over G: a cada request
-  G->>G: verifica JWT (HS256, typ, iss/aud, exp)
+  W->>A: POST /auth/login {loginCode, employeeNumber, password}
+  A->>D: tenant por login_code; usuário/senha com TenantScope
+  A-->>W: {accessToken} + Set-Cookie refresh (HttpOnly, SameSite=Strict, Path=/auth)
+  W->>G: Authorization: Bearer <access>
   G->>D: sessão no tenant do TOKEN: ativa? usuário ACTIVE? dispositivo/tenant permitidos?
-  G->>G: AuthContext + TenantContext (AsyncLocalStorage) só durante o handler
+  W->>A: POST /auth/refresh (cookie) -> novo access + novo cookie
+  W->>A: POST /auth/logout (cookie) -> sessão revogada + cookie limpo
 ```
 
-### Senhas (Argon2id, M2.2)
-- `PasswordHasher` é o único ponto que gera/verifica senha: **somente Argon2id** (`argon2`), parâmetros centrais `ARGON2ID_PARAMS` (m = 19 MiB, t = 2, p = 1, baseline mínimo recomendado pela OWASP; não há benchmark do hardware de produção — revisar com medição no alvo de deploy e, havendo folga de latência/memória, subir para m = 46 MiB/t = 1 ou m = 64 MiB/t = 3; o rehash no login migra os hashes existentes), salt gerado pela biblioteca, hash PHC autocontido em `users.password_hash`. Hash com parâmetros antigos é recalculado no próximo login correto.
-- Entrada limitada a `password.maxBytes` (1 KiB, UTF-8) antes de qualquer hash (proteção contra DoS). Hash armazenado que não é Argon2id = falha genérica (`InvalidPasswordHashError`), nunca sucesso nem 500 com detalhes.
-- Senha nova (troca/reset): só tamanho mínimo `password.minLength` (**DECISION REQUIRED**, default técnico 8); nenhuma regra de complexidade foi aprovada. Sem normalização Unicode.
+### Endpoints HTTP
+| Endpoint | Autenticação | Função |
+|---|---|---|
+| `POST /auth/login` | pública + checagem de `Origin` | `{ loginCode, employeeNumber, password, deviceKey? }` → `{ accessToken, tokenType, accessTokenExpiresAt, sessionExpiresAt, mustChangePassword }` + cookie do refresh |
+| `POST /auth/refresh` | pública + `Origin`; refresh token **só do cookie** | rotação; novo access token + novo cookie; falha = 401 + cookie limpo |
+| `POST /auth/logout` | pública + `Origin`; cookie | revoga a sessão do cookie (se for o token atual), limpa o cookie, sempre 204 |
+| `POST /auth/password` | Bearer | troca da própria senha (aceita com `must_change_password`) |
+| `GET /health` | pública | liveness |
+
+Não existem endpoints administrativos (reset de senha, LOCKED/unlock, revogação de dispositivo): os serviços existem e os endpoints são **futuros**, protegidos por permissão (ex.: `user.manage`).
+
+### Descoberta do tenant: código público de login
+- `tenants.login_code` (migration `20261012000000_add_tenant_login_code`): **código público, não é segredo**, único globalmente, formato `^[A-Z0-9][A-Z0-9-]{2,30}[A-Z0-9]$` (CHECK no banco). Normalização na aplicação (`normalizeLoginCode`): trim + uppercase, validado como ASCII antes do uppercase. Nulo = tenant ainda sem login por código.
+- `LoginCodeTenantResolver` (implementação de `LoginTenantResolver`) só identifica o tenant; nunca autentica nem autoriza. Depois dele valem todas as regras do login. Código inexistente/inválido = a mesma falha genérica (401 `invalid_credentials`) com a verificação Argon2id equivalente. Nunca existe `X-Tenant-Id`, slug, subdomínio ou `tenantId` livre.
+- Nome `login_code` (e não `organization_code`): no domínio, "organization" já designa os dados da Company (`organization.read`/`organization.manage`).
+- Como o código é público, enumeração de códigos existe por natureza; mitigação = rate limiting distribuído (**futuro**, obrigatório antes de exposição em escala na internet).
+
+### Senhas (Argon2id)
+- `PasswordHasher` é o único ponto que gera/verifica senha: **somente Argon2id** (`argon2`), parâmetros centrais `ARGON2ID_PARAMS` (m = 19 MiB, t = 2, p = 1, baseline mínimo OWASP; revisar com benchmark no alvo de produção — o rehash no login migra hashes existentes), salt da biblioteca, hash PHC autocontido.
+- Entrada limitada a 1 KiB antes de qualquer hash (DoS); hash armazenado inválido = falha genérica.
+- Senha nova (troca/reset): tamanho mínimo `password.minLength` = 8 (**default técnico ainda pendente de decisão**); sem regra de complexidade.
 - Senha, senha temporária e hash nunca vão para log, erro, resposta ou AuditLog.
 
-### Login (M2.3)
-- `AuthService.login(resolvedTenant, { employeeNumber, password, deviceKey?, client? })`, dentro de um tenant **já resolvido** por uma implementação de `LoginTenantResolver`. **DECISION REQUIRED:** como o tenant é descoberto antes do login (dispositivo pareado, subdomínio, código de loja...). Enquanto não houver decisão, **não existe endpoint de login** nem `X-Tenant-Id`, slug ou `tenantId` livre.
-- Ordem fixa: status do tenant → dispositivo declarado → usuário → bloqueios → senha. Dispositivo e tenant são verificados **antes** da senha, para não virarem oráculo de senha certa/errada.
-- Matrícula comparada exatamente (normalização: **DECISION REQUIRED**). Matrícula inexistente, senha errada, `DISABLED`, `LOCKED` e bloqueio temporário retornam o **mesmo** `InvalidCredentialsError` (401 `invalid_credentials`); o motivo real fica no erro interno e no AuditLog. Quando não há senha a verificar, uma verificação Argon2id equivalente é executada (equalização de tempo). **Decidido no gate do M2:** a resposta externa continua genérica (não revela usuário inexistente, senha errada, desativado nem bloqueado); a causa segura fica só no AuditLog.
-- Sucesso, numa transação: zera `failed_login_attempts` e `locked_until`, grava `last_login_at` (e o rehash), cria a Session e registra `auth.login.succeeded`. `must_change_password` é devolvido e imposto pelo AuthGuard.
-- Status do Tenant que autenticam: `TRIAL`, `ACTIVE`, `PAST_DUE`; `SUSPENDED`/`CANCELLED` recebem 403 `tenant_unavailable` (**DECISION REQUIRED**; trial vencido não é avaliado).
+### Matrícula (employee number)
+- Decisão: trim + uppercase, **zeros à esquerda preservados** (`"007"` ≠ `"7"`), somente `[A-Z0-9._-]`, 1–32 caracteres. Mesma função (`normalizeEmployeeNumber`) para cadastro, login e comparações; entrada validada como ASCII antes do uppercase (mapeamentos Unicode como `ı`→`I` não geram matrícula válida).
+- O banco impõe o formato: `users_employee_number_check` = `^[A-Z0-9._-]{1,32}$` (migration `20261012010000_enforce_employee_number_format`, que normalizou os dados existentes e aborta explicitamente em colisão ou valor inválido). Matrícula continua única **por tenant**.
 
-### Status do usuário e lockout (M2.13)
-- `DISABLED` (desativação administrativa) e `LOCKED` (bloqueio de segurança **sem prazo**): nunca autenticam, não renovam sessão e sessões existentes deixam de valer no request seguinte. O Auth **nunca** altera `status`; quem coloca/retira `LOCKED` e a coerência com `disabled_at` são fluxos administrativos ainda não definidos (**DECISION REQUIRED**).
-- **Bloqueio temporário = `locked_until` no futuro, com `status` inalterado (`ACTIVE`).** Cada senha errada incrementa `failed_login_attempts` atomicamente no PostgreSQL (UPDATE com lock de linha na transação: tentativas simultâneas não perdem incremento); ao atingir `lockout.maxFailedAttempts`, grava `locked_until = agora + lockout.durationMs` e zera o contador (`auth.lockout.triggered`). Durante o bloqueio a senha **não** é verificada e nada é contado. Valores (5 tentativas, 15 min) em `AUTH_SECURITY_POLICY`: **DECISION REQUIRED**.
-- O bloqueio temporário **não** derruba sessões existentes nem impede refresh: senão errar a senha de propósito encerraria as sessões da vítima.
-- **Throttling:** não há rate limit em memória (não é defesa em ambiente multi-instância, e ainda não há endpoint público de login). O lockout persistido é a única defesa implementada; rate limiting distribuído (gateway/WAF/Redis) é **futuro**, junto com o endpoint de login.
+### Login e erros
+- Ordem fixa: tenant (código) → status do tenant → dispositivo declarado → usuário → bloqueios → senha.
+- Falhas de credencial são **sempre genéricas** externamente (401 `invalid_credentials`): matrícula inexistente, senha errada, `DISABLED`, `LOCKED` e `locked_until` são indistinguíveis; a causa segura fica só no AuditLog. Verificação Argon2id equivalente quando não há senha a verificar.
+- Sucesso, numa transação: zera contador e `locked_until`, grava `last_login_at` (e o rehash), cria a Session e registra `auth.login.succeeded`. `must_change_password` é devolvido e imposto pelo AuthGuard.
 
-### Access token (M2.4)
-- JWT **HS256** (`jose`), header `typ: at+jwt`, `iss`/`aud` = `erp-api`. Claims mínimas: `sub` (userId), `tid` (tenantId), `sid` (sessionId), `did` (deviceId, só se houver), `jti`, `iat`, `exp`. Nada de permissões, nome, status ou hashes.
-- A verificação aceita só HS256 (rejeita `alg=none` e qualquer outro algoritmo) e exige `typ`, emissor, audiência, expiração e o formato UUID de cada claim. Chave em `AUTH_ACCESS_TOKEN_SECRET` (>= 32 bytes; ausente, curta ou placeholder = a API não sobe, em qualquer ambiente). TTL padrão 15 min (**DECISION REQUIRED**).
-- O token sozinho não basta: o AuthGuard consulta a sessão a cada request, então logout, revogação e desativação valem no request seguinte (custo medido no gate do M2: 3 statements por request — sessão, usuário, tenant — e 4 quando a sessão tem dispositivo; todas por PK/unique com `tenant_id`. Trade-off deliberado pela revogação imediata; sem cache. Reduzir para 1 exigiria `relationJoins` (preview, muda a estratégia de todo o Prisma) ou SQL manual revisado — reavaliar com carga real).
+### Status do tenant
+Aplicado no login, no refresh e em cada request (`tenantAllowsAuthentication`):
 
-### Refresh token e Session (M2.5/M2.6)
-- Formato `rt1.<tenantId>.<sessionId>.<secret>.<proof>`, com `secret` = 32 bytes de `crypto.randomBytes` (base64url) e `proof` = HMAC-SHA256(K, `rt1|tenantId|sessionId|secret`), K derivada do `AUTH_ACCESS_TOKEN_SECRET` por HKDF com rótulo próprio (nunca a chave do JWT). `tenantId`/`sessionId` não são segredo: só localizam a sessão **com TenantScope** (sem consulta fora de tenant). Prova inválida = `invalid_refresh_token` **antes de qualquer acesso ao banco**, sem revogar nada. Trocar o segredo do Auth invalida todos os refresh tokens.
-- Persistido **somente** `sha256$<base64url(SHA-256(secret))>` em `sessions.refresh_token_hash` (SHA-256 basta para segredo de alta entropia; Argon2id não é usado aqui). Token puro e access token nunca são persistidos nem logados.
-- `expires_at` = login + TTL do refresh (padrão 12 h, **DECISION REQUIRED**, ligado à expiração offline #5). Vida **absoluta**: a rotação não estende.
-- **Rotação:** cada refresh valida a sessão (não revogada nem expirada), usuário `ACTIVE`, dispositivo e tenant permitidos e o hash, e troca o hash por um novo num **UPDATE condicional** (`tenant_id`, `id`, `refresh_token_hash = <apresentado>`, `revoked_at IS NULL`, `expires_at > agora`). O token antigo deixa de valer no mesmo comando; de refreshes concorrentes, no máximo um rotaciona.
-- **Replay:** sessão identificada mas segredo diferente do atual (token já rotacionado, ou corrida de dois refreshes) → a sessão é **revogada** (`auth.refresh.replay_detected` + `auth.session.revoked`) e todos os tokens dela morrem. Só conta como replay um token com **prova válida** (emitido pelo servidor para aquela sessão). Corrigido no gate do M2: antes, qualquer um que conhecesse `tenantId` + `sessionId` (presentes em todo access token e no `resource_id` do AuditLog) revogava a sessão alheia enviando um segredo aleatório; agora isso exige ter possuído um refresh token emitido para ela. Consequência aceita: clientes devem serializar o refresh (dois refreshes simultâneos com o mesmo token revogam a sessão). A rotação não usa lock explícito: o UPDATE condicional em READ COMMITTED reavalia a linha após o lock e só um vence.
-- **Logout e revogação (`SessionService`):** logout da sessão atual, revogação de uma sessão, de todas as sessões de um usuário (opcionalmente preservando uma) e de todas as de um dispositivo. Sempre `revoked_at` (UPDATE condicional, idempotente), nunca DELETE. Retenção/limpeza de sessões antigas segue pendente.
+| Status | Autentica? |
+|---|---|
+| `ACTIVE` | sim |
+| `TRIAL` | sim enquanto `trial_ends_at` for nulo ou futuro; expirado = não |
+| `PAST_DUE` | sim (o billing decidirá quando passar a `SUSPENDED`) |
+| `SUSPENDED`, `CANCELLED` | não |
 
-### AuthGuard, AuthContext e TenantContext (M2.7)
-- `AuthGuard` é **global** (`APP_GUARD`) e nega por padrão; só rotas `@Public()` (hoje apenas `/health`) dispensam token. `@Public()` e `@AllowWhenPasswordChangeRequired()` são **só de método** e lidas só do handler: marca na classe ou herdada de classe base nunca torna um controller público (endurecido no gate). Mais de um header `Authorization` nunca autentica (o Node mantém só o primeiro; um proxy pode ler o último). Contextos não HTTP são recusados. Extrai `Authorization: Bearer`, verifica o JWT e, **no tenant do token** (nunca de header, body, query ou parâmetro), carrega a sessão com TenantScope e exige `user_id`/`device_id` iguais às claims e as regras de `sessionInvalidity` (as mesmas do refresh).
-- `AuthContext = { tenantId, userId, sessionId, deviceId, mustChangePassword }` é separado do `TenantContext` (que continua `{ tenantId }`). O `AuthContextInterceptor` inscreve o handler dentro de `AuthContextService.run()`, que abre os dois contextos com o mesmo tenant; fora do handler não existe contexto (testado com requests concorrentes de dois tenants). `@CurrentAuth()` injeta o contexto no handler.
-- `must_change_password`: toda rota responde 403 `password_change_required`, exceto as marcadas com `@AllowWhenPasswordChangeRequired()` (`POST /auth/logout`, `POST /auth/password`).
-- Erros: `AuthExceptionFilter` devolve só `{ "error": "<código público>" }`; 401 = não autenticado/sessão inválida; 403 = autenticado sem permissão, tenant indisponível, dispositivo não permitido ou troca de senha obrigatória.
-- **DECISION REQUIRED — transporte dos tokens no cliente** (memória, cookie HttpOnly + CSRF, BFF...). Nada foi decidido nem implementado no frontend; por isso **refresh e login não têm endpoint**. Aceitar Bearer no backend não obriga o frontend a guardar o token em `localStorage`.
+Bloqueado = 403 `tenant_unavailable`. Sem modo somente leitura.
 
-### Dispositivos (M2.8)
-- `device_key` continua **identificador, não segredo**. O login pode declarar um dispositivo: ele precisa existir no mesmo tenant e ter status permitido; senão 403 `device_not_allowed` e nenhuma sessão é criada. A sessão guarda `device_id`, o token leva `did` e o `AuthContext` traz `deviceId`. Sessão sem dispositivo continua permitida.
-- `REVOKED` nunca cria, renova nem usa sessão. `INACTIVE` ("fora de uso temporário") é tratado igual (**decidido no gate do M2**). `SessionService.revokeAllForDevice` encerra as sessões de um dispositivo.
-- **Não implementado (DECISION REQUIRED/futuro):** pairing, segredo/certificado de dispositivo, QR, autenticação autônoma de PDV, heartbeat (`last_seen_at`) e se o usuário precisa de acesso à filial do dispositivo. Sem pairing, declarar um dispositivo só **restringe** a sessão; não prova que o pedido vem dele.
+### Usuário: status e lockout
+- `DISABLED` (desativação administrativa) e `LOCKED` (**bloqueio administrativo manual**, sem prazo) nunca autenticam, não renovam sessão e derrubam sessões no request seguinte. **O Auth nunca altera `status`**; LOCKED/unlock serão responsabilidade de endpoint administrativo futuro.
+- **Lockout temporário:** 5 senhas erradas → `locked_until = agora + 15 min`, contador zerado, `status` inalterado (`AUTH_SECURITY_POLICY.lockout`, configurável). Incremento atômico no PostgreSQL (sem lost update; vale para todas as instâncias). Durante o bloqueio a senha não é verificada e nada é contado. Bloqueio temporário não derruba sessões existentes. Senha atual errada na troca também conta (`auth.password.change_failed`).
+- **Lockout por conta ≠ rate limiting** por IP/dispositivo/distribuído: este é **futuro** (gateway/WAF/Redis).
 
-### Autorização (M2.9/M2.10)
-- `AuthorizationService` (`getEffectivePermissions`, `hasPermission`, `hasAllPermissions`, `hasAnyPermission`) resolve a cada chamada, numa única query (RolePermission ⨝ Role ⨝ UserRole ⨝ User ⨝ Permission) com TenantScope. Nada de permissões no JWT nem cache.
-- Concede só: usuário `ACTIVE` + role `ACTIVE` (`INACTIVE`/`ARCHIVED` = nada) + vínculos do tenant atual.
-- **Escopo explícito (`AuthorizationScope`):** `tenant` = só roles tenant-wide (`branch_id IS NULL`); role de filial **nunca** vira permissão global. `branch` = roles tenant-wide + roles daquela filial, **somente se o usuário tem `UserBranchAccess` àquela filial** (decidido no gate do M2: a role diz O QUE, o acesso diz ONDE; sem acesso = nenhuma permissão na filial, mesmo com role tenant-wide); filial inexistente ou de outro tenant não pode ter acesso (FK composta) = nenhuma permissão. O `branchId` vem do recurso/rota alvo ou de API interna, nunca de header, e é sempre revalidado no tenant autenticado.
-- **Guards:** `@RequirePermissions(...codes)` (escopo do tenant) e `@RequireBranchPermissions("branchId", ...codes)` (filial do parâmetro de rota); `PermissionGuard` global, registrado logo após o AuthGuard: 401 sem autenticação, 403 sem permissão. Semântica: todas as permissões listadas são exigidas (AND); requisitos na classe e no método valem **juntos** (o método não substitui a classe); código inexistente no catálogo nunca concede. Controllers dependem de códigos de permissão, nunca de nomes de role.
+### Access token
+- JWT HS256 (`jose`), `typ: at+jwt`, `iss`/`aud` = `erp-api`. Claims mínimas: `sub`, `tid`, `sid`, `did` (se houver), `jti`, `iat`, `exp`; nada de permissões ou dados sensíveis. Só HS256 é aceito.
+- TTL **15 min** (configurável). Devolvido no corpo; o frontend o mantém **em memória** e envia como `Authorization: Bearer`. Nunca persistido no servidor.
+- O AuthGuard consulta a sessão a cada request (3 statements; 4 com dispositivo): revogação imediata, sem cache.
 
-### Roles padrão e provisionamento (M2.11)
-- `TenantProvisioningService.provisionDefaultRoles()` cria `OWNER`, `MANAGER`, `ATTENDANT` e `KITCHEN` (`is_system = true`, `ACTIVE`) no tenant do contexto e acrescenta os vínculos da matriz, numa transação, com `INSERT ... ON CONFLICT DO NOTHING` (idempotente e seguro sob concorrência). Nunca remove vínculos, nunca altera role existente e nunca assume uma role customizada que use um código padrão (reportada em `conflicts`). Roda como `erp_app`.
-- **DECISION REQUIRED — default role permission matrix:** `DEFAULT_ROLE_PERMISSIONS` (`apps/api/src/tenants/default-roles.ts`) está **vazia para as quatro roles, inclusive OWNER**. Até a decisão, as roles padrão não concedem nada. Também pendentes: reserva dos códigos padrão, proteção de roles `is_system` e quando o provisionamento roda (não existe criação de tenant ainda).
+### Refresh token, cookie e sessão
+- Formato `rt1.<tenantId>.<sessionId>.<secret>.<proof>`: `secret` de 256 bits; `proof` = HMAC-SHA256(K, `rt1|tenantId|sessionId|secret`), K derivada do `AUTH_ACCESS_TOKEN_SECRET` por HKDF com rótulo próprio. O banco guarda só `sha256$...` do segredo. Prova inválida = rejeitado **antes de qualquer acesso ao banco**, nada revogado: conhecer `tenantId`+`sessionId` não permite revogar sessão alheia.
+- **Cookie** `__Secure-erp_rt` (sem prefixo e sem `Secure` só fora de produção, via `AUTH_COOKIE_SECURE=false`): `HttpOnly`, `Secure`, `SameSite=Strict`, `Path=/auth`, host-only (sem `Domain`), `Max-Age` = vida restante da sessão. Nunca no corpo nem em `localStorage`. Cookie repetido no header = ambíguo = recusado.
+- **CSRF/origem** (login, refresh, logout): `Origin` deve estar na allowlist exata `AUTH_ALLOWED_ORIGINS` (obrigatória e https em produção); `Origin: null` e `Sec-Fetch-Site: cross-site/same-site` sem `Origin` são recusados (403 `forbidden_origin`); clientes não-navegador (sem `Origin` nem fetch metadata) passam, pois não estão sujeitos a CSRF. Somado ao `SameSite=Strict`. Sem CORS habilitado (arquitetura same-site).
+- **Sessão:** 12 h **absolutas**, sem sliding (configurável). Rotação por UPDATE condicional (no máximo uma vence); token emitido mas já rotacionado = replay → sessão revogada (`auth.refresh.replay_detected`). Clientes devem serializar o refresh.
+- **Logout** (`POST /auth/logout`): revoga a sessão do cookie quando é o token atual (token forjado = nada; token rotacionado = replay), sempre limpa o cookie. Revogação/logout nunca apagam a sessão (`revoked_at`). Retenção/LGPD de sessões: **futuro**.
 
-### Troca e reset de senha (M2.12)
-- `POST /auth/password` (`PasswordService.changeOwnPassword`): exige a senha atual (errada conta para o lockout; durante bloqueio temporário nada é verificado), grava o novo hash, limpa `must_change_password` e revoga as **demais** sessões do usuário.
-- `PasswordService.resetPassword(userId, temporária)` (sem endpoint: não há API de administração de usuários): por usuário autenticado do mesmo tenant; a autorização é de quem chama (`PermissionGuard`). Grava só o hash, `must_change_password = true`, zera contador e bloqueio temporário e revoga **todas** as sessões do alvo; não muda `DISABLED`/`LOCKED`. Gerar e entregar a senha temporária é responsabilidade externa. Recuperação por e-mail: não aprovada, não implementada.
+### AuthGuard, AuthContext e TenantContext
+- `AuthGuard` global, deny by default; `@Public()` só em método (marca de classe/herança ignorada). Mais de um `Authorization` nunca autentica. Tenant sempre do token verificado; sessão, usuário, dispositivo e tenant validados a cada request.
+- `AuthContext = { tenantId, userId, sessionId, deviceId, mustChangePassword }`, separado do `TenantContext`; ambos abertos pelo `AuthContextInterceptor` só durante o handler (testado sob concorrência, transações e erros).
+- `must_change_password`: 403 `password_change_required`, exceto rotas `@AllowWhenPasswordChangeRequired()`.
+- Erros: só `{ "error": "<código>" }`; 401 = não autenticado, 403 = autenticado sem permissão / tenant indisponível / dispositivo / origem.
 
-**Acesso a filiais (`UserBranchAccess`) é separado de papel/permissão.** O vínculo só diz quais filiais (0..N) o usuário pode acessar; o que ele pode fazer vem de roles/permissions. O vínculo só existe dentro do mesmo tenant (FKs compostas), e role por filial exige o vínculo (FK de `user_roles`).
+### Dispositivos
+`device_key` é identificador, **não segredo**. Dispositivo declarado no login precisa ser do mesmo tenant e `ACTIVE`; `INACTIVE` e `REVOKED` bloqueiam login, refresh e requests. Pairing/autenticação de dispositivo: **futuro**.
 
-**Permission é um catálogo global**, controlado pelo sistema (seed), sem `tenant_id`; `code` é identificador estável. O que varia por tenant é quais permissões cada Role tem, via `RolePermission`.
+### Autorização
+- `AuthorizationService` resolve a cada chamada (sem cache, nada no JWT): só usuário `ACTIVE` + role `ACTIVE`, no tenant atual.
+- **Escopo:** `tenant` = só roles tenant-wide. `branch` = roles tenant-wide + roles da filial, **somente com `UserBranchAccess` àquela filial** (role = O QUE; acesso = ONDE), mesmo para role tenant-wide.
+- `@RequirePermissions(...)` / `@RequireBranchPermissions("branchId", ...)`: todas as permissões exigidas; classe e método valem juntos; código inexistente nunca concede; 401 sem autenticação, 403 sem permissão. Controllers usam códigos de permissão, nunca nomes de role.
+
+### Roles padrão e matriz
+`TenantProvisioningService.provisionDefaultRoles()` (idempotente, seguro sob concorrência, nunca assume role customizada) aplica `DEFAULT_ROLE_PERMISSIONS`:
+
+| Permissão | OWNER | MANAGER | ATTENDANT | KITCHEN |
+|---|:-:|:-:|:-:|:-:|
+| organization.read | ✓ | ✓ | | |
+| organization.manage | ✓ | | | |
+| branch.read | ✓ | ✓ | ✓ | |
+| branch.manage | ✓ | | | |
+| user.read | ✓ | ✓ | | |
+| user.manage | ✓ | ✓ | | |
+| role.read | ✓ | ✓ | | |
+| role.manage | ✓ | | | |
+| product.read | ✓ | ✓ | ✓ | ✓ |
+| product.manage | ✓ | ✓ | | |
+| order.read | ✓ | ✓ | ✓ | ✓ |
+| order.create | ✓ | ✓ | ✓ | |
+| order.cancel | ✓ | ✓ | | |
+| cash.read | ✓ | ✓ | ✓ | |
+| cash.open | ✓ | ✓ | ✓ | |
+| cash.close | ✓ | ✓ | | |
+| fiscal.read | ✓ | ✓ | ✓ | |
+| fiscal.issue | ✓ | ✓ | ✓ | |
+| fiscal.cancel | ✓ | ✓ | | |
+
+- OWNER recebe as 19 permissões **atuais**, listadas explicitamente; **não** recebe permissões futuras automaticamente. Toda permissão nova do catálogo deve ser adicionada explicitamente à matriz (um teste falha enquanto ela não estiver em nenhuma role).
+- **Regra futura de administração:** um usuário não pode conceder role/permissão com autoridade superior à sua própria (ex.: MANAGER tem `user.manage`, mas não pode atribuir OWNER nem role com permissão que ele não tem). Será imposta quando houver endpoints administrativos.
+
+### Troca e reset de senha
+- `POST /auth/password`: exige a senha atual, grava o novo hash, limpa `must_change_password` e revoga as demais sessões.
+- `PasswordService.resetPassword` (sem endpoint): senha temporária só como hash, `must_change_password = true`, lockout zerado, todas as sessões do alvo revogadas; não muda `DISABLED`/`LOCKED`. Geração/entrega da senha temporária é externa. Sem recuperação por e-mail.
+
+**Acesso a filiais (`UserBranchAccess`) é separado de papel/permissão** e só existe dentro do mesmo tenant (FKs compostas); role por filial exige o vínculo. **Permission é um catálogo global** controlado pelo seed; o que varia por tenant é a atribuição via `RolePermission`.
 
 ## Auditoria
 Módulo `audit`; registros não apagáveis fisicamente. Escopo geral dos eventos auditados: **TBD**; os eventos de segurança do Auth já são gravados (abaixo).

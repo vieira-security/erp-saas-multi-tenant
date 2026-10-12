@@ -34,7 +34,8 @@ ERP SaaS multi-tenant para pequenas e médias lojas/restaurantes de alimentaçã
 - Operação em escopo de filial usa `@RequireBranchPermissions` (ou `branchScope` com filial resolvida do recurso) e exige `UserBranchAccess`, mesmo com role tenant-wide.
 - Controllers declaram `@RequirePermissions`/`@RequireBranchPermissions` com códigos de permissão; nunca checar nome de role.
 - Senha só via `PasswordHasher` (Argon2id); nunca logar ou auditar senha, token ou hash. Eventos de segurança só via `SecurityAuditWriter` (allowlist).
-- Valores marcados `DECISION REQUIRED` em `AUTH_SECURITY_POLICY`, `auth-config.ts` e `default-roles.ts` não são alterados sem decisão de produto.
+- Regras de produto do Auth (TTLs, lockout, status do tenant, matriz das roles, formato da matrícula/`login_code`) só mudam com decisão de produto; permissão nova no catálogo exige decisão explícita na matriz (`default-roles.ts`).
+- Refresh token só em cookie HttpOnly; access token só em memória/Bearer; nunca `localStorage` nem `X-Tenant-Id`.
 
 ## Comandos
 

@@ -8,8 +8,8 @@ Registro único dos pontos em aberto. Resolver antes de implementar o módulo af
 | 2 | Precisão/escala de `numeric` monetário | database | products/payments |
 | 3 | Estratégia de remoção por entidade (sem soft delete universal). Já definido: Company sem soft delete, desativação via `status = INACTIVE`, FK Tenant→Company `RESTRICT`; Branch igual (sem soft delete, `INACTIVE`, FKs `RESTRICT`). Em aberto: demais entidades e se Tenant pode ser apagado fisicamente | database | primeiros models |
 | 4 | Desenho de idempotency keys (escopo, retenção) | database/offline-edge | offline-sync/orders |
-| 5 | ~~Autenticação, sessões~~ implementadas no M2 ([security.md](security.md)); restam descoberta do tenant pré-login, transporte dos tokens, TTLs e expiração offline ("Decisões pendentes do M2") | security | login público/PDV offline |
-| 6 | ~~Modelo de roles/permissions~~ resolução implementada no M2; resta a matriz das roles padrão e fronteiras entre módulos | architecture/security | users |
+| 5 | ~~Autenticação, sessões, transporte, TTLs~~ **resolvido no M2** ([security.md](security.md)); resta a expiração/autenticação offline do PDV | security | PDV offline |
+| 6 | ~~Modelo de roles/permissions e matriz padrão~~ **resolvido no M2**; restam fronteiras entre módulos | architecture/security | módulos futuros |
 | 7 | Transmissão de tenant à sessão do banco para RLS (pool, Prisma) | security | ativação da RLS |
 | 8 | Escopo da auditoria (estrutura `audit_logs` criada no M1.13; catálogo de ações, eventos obrigatórios e retenção em aberto) | security | audit |
 | 9 | LGPD x imutabilidade física | security | tenants/users |
@@ -73,7 +73,7 @@ Registro único dos pontos em aberto. Resolver antes de implementar o módulo af
 4. Se um dispositivo pode mudar de filial e se `ADMIN`/`EDGE` exigem ou proíbem `branch_id` (hoje livre).
 
 ## Pendências da autorização (M2) originadas no M1.10
-1. ~~Semântica de resolução~~ **Resolvido no M2.9:** role tenant-wide vale no tenant e em toda filial; role de filial só na filial; união sem precedência; só role `ACTIVE` e usuário `ACTIVE` concedem. Pendente: exigência de `UserBranchAccess` (decisão pendente 9).
+1. ~~Semântica de resolução~~ **Resolvido no M2.9:** role tenant-wide vale no tenant e em toda filial; role de filial só na filial; união sem precedência; só role `ACTIVE` e usuário `ACTIVE` concedem. `UserBranchAccess` obrigatório em escopo de filial (decidido no gate).
 2. Se trocar `role_id`/`branch_id` de um UserRole dentro do tenant deve ser proibido no banco (hoje aceito; fluxo previsto é delete + create).
 3. Revogar UserBranchAccess com roles escopadas exige remover as roles antes (`RESTRICT`); definir o fluxo administrativo.
 
@@ -85,40 +85,35 @@ Registro único dos pontos em aberto. Resolver antes de implementar o módulo af
 5. **Retenção e volume:** política de retenção, particionamento por tempo, arquivamento; LGPD de `ip_address` e de dados pessoais em `metadata` (#9).
 6. **Leitura:** quem pode consultar a trilha (permissão no catálogo, ex.: `audit.read`) e se há exportação.
 
-## Decisões pendentes do M2 (DECISION REQUIRED)
-O M2 foi implementado sem inventar estas regras; cada uma tem default técnico conservador (quando aplicável) num único lugar.
+## Decisões do M2 (fechamento) e itens futuros
+**Decididas e implementadas** ([security.md](security.md)): descoberta do tenant por código público de login (`tenants.login_code`); access token em memória via Bearer + refresh em cookie HttpOnly/Secure/SameSite=Strict/Path=/auth com checagem de `Origin`; matriz das roles padrão (OWNER = 19 permissões atuais, sem permissões futuras automáticas); matrícula normalizada (trim + uppercase, zeros à esquerda preservados, `[A-Z0-9._-]`, 1–32); access token 15 min e sessão 12 h absolutas sem sliding; lockout temporário 5 falhas / 15 min (`locked_until`), `LOCKED` = bloqueio administrativo manual nunca alterado pelo Auth; erros de login externos genéricos; status do tenant (ACTIVE e PAST_DUE autenticam, TRIAL até `trial_ends_at`, SUSPENDED/CANCELLED não); `UserBranchAccess` obrigatório em escopo de filial; Device `INACTIVE`/`REVOKED` bloqueados.
 
-1. **Descoberta do tenant pré-login** (dispositivo pareado, subdomínio, código de loja...). Bloqueia o endpoint HTTP de login: o core recebe o tenant de um `LoginTenantResolver` (`apps/api/src/auth/login-tenant.ts`), sem implementação.
-2. **Transporte/armazenamento dos tokens no cliente** (memória, cookie HttpOnly + CSRF, BFF). Bloqueia os endpoints de login e refresh; a API aceita o access token só via `Authorization: Bearer`.
-3. **Matriz de permissões das roles padrão** (`DEFAULT_ROLE_PERMISSIONS`, vazia para OWNER/MANAGER/ATTENDANT/KITCHEN). Também: reserva dos códigos padrão, proteção de roles `is_system` e momento do provisionamento (não há criação de tenant).
-4. **Lockout:** 5 tentativas / 15 min aceitos no gate do M2 como **default técnico** (`AUTH_SECURITY_POLICY.lockout`), não como decisão final de produto.
-5. **DECISION REQUIRED — session lifetime:** vida absoluta da sessão/refresh (default técnico 12 h) e se desliza; relação com a expiração offline (#5). Access token 15 min aceito no gate como default técnico.
-6. **Status:** quem coloca/retira `LOCKED` e reativa `DISABLED` (o Auth nunca muda status); se `PAST_DUE` e trial vencido autenticam (hoje TRIAL/ACTIVE/PAST_DUE autenticam, SUSPENDED/CANCELLED não); ~~semântica de Device `INACTIVE`~~ decidido no gate: bloqueia como `REVOKED`.
-7. ~~UX de falhas de login~~ **decidido no gate:** resposta externa genérica (`invalid_credentials`); causa só no AuditLog.
-8. **Política de senha:** tamanho mínimo de senha nova (default 8), complexidade, histórico, normalização Unicode; normalização da matrícula (hoje comparação exata).
-9. ~~Filial x UserBranchAccess~~ **decidido no gate:** toda autorização em escopo de filial exige `UserBranchAccess`, mesmo com role tenant-wide (implementado). Em aberto: se o usuário precisa de acesso à filial do dispositivo no login.
-10. **Dispositivo (futuro, decidido no gate):** pairing/segredo/certificado e autenticação autônoma do PDV; `device_key` continua não sendo segredo.
-11. **Rate limiting distribuído** (gateway/WAF/Redis) junto com o endpoint público de login; amplificação de escrita em `audit_logs` por tentativas falhas.
-12. **Retenção/limpeza** de sessões expiradas/revogadas e LGPD de `ip_address`/`user_agent` (#9); rotação da chave do access token sem invalidação (`kid`).
-13. **API administrativa (futuro)** de usuários (reset de senha, desativação com revogação de sessões, revogação de dispositivo): os serviços existem, os endpoints não; quando existirem, exigem permissão (ex.: `user.manage`).
-14. **Normalização da matrícula** (trim, caixa, zeros à esquerda, caracteres permitidos): hoje comparação exata, sem normalização.
-15. **Login com tenant `PAST_DUE` e trial vencido:** hoje `PAST_DUE` autentica e `trial_ends_at` não é avaliado.
+**Ainda pendente de decisão:** tamanho mínimo de senha nova (default técnico 8) e demais regras de política de senha.
 
-Opções e recomendações de cada pendência: relatório do gate do M2 (resumo em [security.md](security.md)).
+**Futuro (não implementar sem nova decisão):**
+1. Pairing/autenticação de dispositivo (`device_key` continua não sendo segredo); se o usuário precisa de acesso à filial do dispositivo.
+2. Rate limiting distribuído por IP/dispositivo (gateway/WAF/Redis) — **obrigatório antes de exposição do login em escala na internet**; inclui enumeração de `login_code` e amplificação de escrita em `audit_logs` por falhas de login.
+3. Retenção/limpeza de sessões e LGPD de `ip_address`/`user_agent` (#9).
+4. RLS (#7) e IAM database authentication.
+5. Endpoints administrativos de usuário (reset, LOCKED/unlock, desativação com revogação, revogação de dispositivo) e UI de delegação de permissões, impondo a regra "ninguém concede autoridade acima da própria".
+6. Sliding session, OAuth, MFA, passkeys.
+7. Atribuição de `login_code` a tenants (não há fluxo de criação de tenant); `trust proxy`/origem real do IP atrás de load balancer.
+8. Modo somente leitura por billing; decisão de quando PAST_DUE vira SUSPENDED (billing).
+9. Rotação da chave do Auth sem derrubar todas as sessões (`kid`/múltiplas chaves).
 
 ## Pendências do M2 (Auth) originadas no M1.12 — situação após o M2
-1. ~~Geração do refresh token, hash e comparação~~ **Resolvido no M2.5** (256 bits, SHA-256, comparação em tempo constante); duração de `expires_at`: decisão pendente 5.
+1. ~~Geração do refresh token, hash e comparação~~ **Resolvido no M2.5** (256 bits, SHA-256, comparação em tempo constante); duração de `expires_at`: 12 h absolutas (decidido).
 2. ~~Rotação transacional e replay~~ **Resolvido no M2.5** (UPDATE condicional; segredo não atual revoga a sessão).
-3. ~~Revogação~~ **Resolvido no M2.6** (logout, sessão, todas do usuário, do dispositivo); desativar usuário/revogar dispositivo já bloqueiam no request seguinte. Endpoints administrativos: decisão pendente 13.
+3. ~~Revogação~~ **Resolvido no M2.6** (logout, sessão, todas do usuário, do dispositivo); desativar usuário/revogar dispositivo já bloqueiam no request seguinte. Endpoints administrativos: futuro.
 4. Limpeza/retenção de sessões expiradas e revogadas; LGPD de `ip_address`/`user_agent` (#9).
 5. Se a CHECK `expires_at > created_at` atrapalhar importações/backfills, revisar.
 
 ## Pendências do M2 (Auth) originadas no M1.5 — situação após o M2
 1. ~~Algoritmo e parâmetros de hashing~~ **Resolvido no M2.2** (Argon2id PHC, `ARGON2ID_PARAMS`).
-2. Transições de `status`: semântica implementada (LOCKED/DISABLED sem prazo, `locked_until` temporário, Auth nunca muda status); fluxos administrativos: decisão pendente 6.
-3. ~~Lockout~~ **Resolvido no M2.13** (persistido, atômico); valores: decisão pendente 4; throttling distribuído: decisão pendente 11.
-4. ~~Reset administrativo com `must_change_password`~~ **Resolvido no M2.12** (serviço; endpoint: decisão pendente 13).
-5. Normalização da matrícula: decisão pendente 8.
+2. Transições de `status`: semântica implementada (LOCKED/DISABLED sem prazo, `locked_until` temporário, Auth nunca muda status); LOCKED = bloqueio administrativo manual; endpoints: futuro.
+3. ~~Lockout~~ **Resolvido no M2.13** (persistido, atômico); valores 5/15 min decididos; rate limiting distribuído: futuro.
+4. ~~Reset administrativo com `must_change_password`~~ **Resolvido no M2.12** (serviço; endpoint: futuro).
+5. ~~Normalização da matrícula~~ **Resolvido no M2** (trim + uppercase, `[A-Z0-9._-]`, 1–32, zeros preservados; CHECK no banco).
 6. LGPD: `users.name` é dado pessoal e o usuário não é apagado fisicamente (#9).
 
 ## Gate do M1 (M1.14.4): classificação das pendências

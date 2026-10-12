@@ -22,7 +22,7 @@ A lista acima é o conjunto fornecido. Se ela representa também a ordem de entr
 
 ## Marcos de implementação
 - **M1 — Core multi-tenant ✅** Tenant, Company, Branch, User, UserBranchAccess, Role, Permission, RolePermission, UserRole, Device, Session e AuditLog no PostgreSQL, com isolamento por `tenant_id` garantido no banco, `tenant_id` imutável, `audit_logs` append-only e identidades `erp_migrator`/`erp_app` ([database.md](database.md)). Encerrado pelo gate M1.14.4 ([open-questions.md](open-questions.md)).
-- **M2 — Auth e autorização runtime:** implementado (M2.1–M2.14) e auditado no gate final: **aprovado com decisões de produto pendentes**. Login por matrícula + senha (core, sem endpoint público até a decisão sobre descoberta do tenant), sessões com refresh rotativo, guards globais, autorização por permissão/filial, roles padrão (matriz pendente), troca/reset de senha, lockout ([security.md](security.md)). Decisões pendentes em [open-questions.md](open-questions.md) ("Decisões pendentes do M2").
+- **M2 — Auth e autorização runtime:** **✅ aprovado e encerrado.** Login por código público da organização + matrícula + senha, access token em memória + refresh em cookie HttpOnly, sessões de 12 h, guards globais, autorização por permissão/filial com matriz das roles padrão, troca/reset de senha, lockout. Login por matrícula + senha (core, sem endpoint público até a decisão sobre descoberta do tenant), sessões com refresh rotativo, guards globais, autorização por permissão/filial, roles padrão (matriz pendente), troca/reset de senha, lockout ([security.md](security.md)). Decisões pendentes em [open-questions.md](open-questions.md) ("Decisões pendentes do M2").
 
 ## Fora do MVP
 Compras, recebimento e estoque ficam para versões futuras.
