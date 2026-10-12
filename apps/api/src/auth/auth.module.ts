@@ -1,5 +1,6 @@
 import { Global, Module } from "@nestjs/common";
 import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from "@nestjs/core";
+import { PermissionGuard } from "../authorization/permission.guard.js";
 import { AUTH_CONFIG, loadAuthConfig } from "../config/auth-config.js";
 import { AuthService } from "./auth.service.js";
 import { AuthContextService } from "./context/auth-context.js";
@@ -25,7 +26,9 @@ import { AccessTokenService } from "./tokens/access-token.service.js";
     AuthContextService,
     AuthService,
     SessionService,
+    // Ordem importa: autenticação primeiro, depois autorização.
     { provide: APP_GUARD, useClass: AuthGuard },
+    { provide: APP_GUARD, useClass: PermissionGuard },
     { provide: APP_INTERCEPTOR, useClass: AuthContextInterceptor },
     { provide: APP_FILTER, useClass: AuthExceptionFilter },
   ],
