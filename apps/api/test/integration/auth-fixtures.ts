@@ -93,7 +93,7 @@ export interface SeedUser {
 export const DEFAULT_PASSWORD = "Senha-Correta-123";
 
 export async function seedUser(owner: PrismaClient, tenantId: string, input: SeedUser = {}): Promise<{ id: string; employeeNumber: string }> {
-  const employeeNumber = input.employeeNumber ?? `E${randomBytes(4).toString("hex")}`;
+  const employeeNumber = input.employeeNumber ?? `E${randomBytes(4).toString("hex").toUpperCase()}`;
   const user = await owner.user.create({
     data: {
       tenantId,

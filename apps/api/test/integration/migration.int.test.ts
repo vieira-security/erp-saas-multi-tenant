@@ -37,6 +37,8 @@ describe("migrations on a clean PostgreSQL database", () => {
       { name: "20261002120000_make_tenant_id_immutable", finished: true, rolledBack: false },
       { name: "20261002121000_forbid_audit_logs_truncate", finished: true, rolledBack: false },
       { name: "20261002130000_drop_redundant_company_tenant_index", finished: true, rolledBack: false },
+      { name: "20261012000000_add_tenant_login_code", finished: true, rolledBack: false },
+      { name: "20261012010000_enforce_employee_number_format", finished: true, rolledBack: false },
     ]);
   });
 
@@ -83,6 +85,7 @@ describe("migrations on a clean PostgreSQL database", () => {
       { name: "trial_ends_at", type: "timestamp(3) with time zone", nullable: "YES" },
       { name: "created_at", type: "timestamp(3) with time zone", nullable: "NO" },
       { name: "updated_at", type: "timestamp(3) with time zone", nullable: "NO" },
+      { name: "login_code", type: "text", nullable: "YES" },
     ]);
   });
 
@@ -254,7 +257,7 @@ describe("migrations on a clean PostgreSQL database", () => {
       SELECT conname AS name, pg_get_constraintdef(oid) AS definition
       FROM pg_constraint WHERE conrelid = 'public.users'::regclass ORDER BY conname`;
     expect(constraints).toEqual([
-      { name: "users_employee_number_check", definition: "CHECK ((btrim(employee_number) <> ''::text))" },
+      { name: "users_employee_number_check", definition: "CHECK ((employee_number ~ '^[A-Z0-9._-]{1,32}$'::text))" },
       { name: "users_failed_login_attempts_check", definition: "CHECK ((failed_login_attempts >= 0))" },
       { name: "users_name_check", definition: "CHECK ((btrim(name) <> ''::text))" },
       { name: "users_password_hash_check", definition: "CHECK ((btrim(password_hash) <> ''::text))" },

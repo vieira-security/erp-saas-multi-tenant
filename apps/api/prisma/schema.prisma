@@ -27,12 +27,15 @@ enum TenantStatus {
 }
 
 // Raiz do multi-tenancy: por isso NÃO possui `tenant_id`.
+// login_code: código PÚBLICO (não é segredo) que resolve o tenant antes do login; único global; nulo = sem login por
+// código. CHECK (fora do PSL, migration 20261012000000): ^[A-Z0-9][A-Z0-9-]{2,30}[A-Z0-9]$.
 model Tenant {
   id              String             @id @default(uuid(7)) @db.Uuid
   name            String
   status          TenantStatus
   trialStartedAt  DateTime?          @map("trial_started_at") @db.Timestamptz(3)
   trialEndsAt     DateTime?          @map("trial_ends_at") @db.Timestamptz(3)
+  loginCode       String?            @unique @map("login_code")
   createdAt       DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt       DateTime           @updatedAt @map("updated_at") @db.Timestamptz(3)
   companies       Company[]
@@ -122,8 +125,9 @@ enum UserStatus {
   @@map("user_status")
 }
 
-// Funcionário individual (login futuro: matrícula + senha). Sem coluna de senha em texto puro.
-// CHECKs (fora do PSL, definidos na migration): name, employee_number e password_hash não vazios;
+// Funcionário individual (login: matrícula + senha). Sem coluna de senha em texto puro.
+// CHECKs (fora do PSL, definidos na migration): name e password_hash não vazios; employee_number normalizado
+// ^[A-Z0-9._-]{1,32}$ (migration 20261012010000);
 // failed_login_attempts >= 0.
 model User {
   id                  String             @id @default(uuid(7)) @db.Uuid
