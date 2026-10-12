@@ -9,6 +9,7 @@ import { AuthExceptionFilter } from "./http/auth-exception.filter.js";
 import { AuthController } from "./http/auth.controller.js";
 import { AuthGuard } from "./http/auth.guard.js";
 import { PasswordHasher } from "./password/password-hasher.js";
+import { PasswordService } from "./password.service.js";
 import { SessionService } from "./session.service.js";
 import { AccessTokenService } from "./tokens/access-token.service.js";
 
@@ -26,12 +27,13 @@ import { AccessTokenService } from "./tokens/access-token.service.js";
     AuthContextService,
     AuthService,
     SessionService,
+    PasswordService,
     // Ordem importa: autenticação primeiro, depois autorização.
     { provide: APP_GUARD, useClass: AuthGuard },
     { provide: APP_GUARD, useClass: PermissionGuard },
     { provide: APP_INTERCEPTOR, useClass: AuthContextInterceptor },
     { provide: APP_FILTER, useClass: AuthExceptionFilter },
   ],
-  exports: [AUTH_CONFIG, PasswordHasher, AccessTokenService, AuthContextService, AuthService, SessionService],
+  exports: [AUTH_CONFIG, PasswordHasher, AccessTokenService, AuthContextService, AuthService, SessionService, PasswordService],
 })
 export class AuthModule {}

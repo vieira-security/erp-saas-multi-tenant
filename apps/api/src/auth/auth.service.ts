@@ -19,6 +19,7 @@ import {
 } from "./errors.js";
 import type { ResolvedLoginTenant } from "./login-tenant.js";
 import { AuthDeviceRepository, AuthTenantRepository, type DeviceRef } from "./persistence/auth-lookup.repository.js";
+import { isTemporarilyLocked, recordPasswordFailure } from "./lockout.js";
 import { sessionInvalidity } from "./session-validity.js";
 import { AuthUserRepository, type UserCredentials } from "./persistence/auth-user.repository.js";
 import { SessionRepository, type SessionState } from "./persistence/session.repository.js";
@@ -110,7 +111,7 @@ export class AuthService {
       }
 
       if (!(await this.verifyPassword(user, password))) {
-        await this.registerFailure(user.id, deviceId, now, client);
+        await recordPasswordFailure(this.prisma, this.scope, { userId: user.id, deviceId, now }, client);
         throw new InvalidCredentialsError();
       }
 
@@ -214,26 +215,6 @@ export class AuthService {
     }
   }
 
-  /**
-   * Falha de senha, numa transação: incremento atômico (o UPDATE segura o lock da linha até o commit, então tentativas
-   * simultâneas são serializadas e nenhuma se perde) e, ao atingir o limite, bloqueio temporário. Persistido no
-   * PostgreSQL: vale para todas as instâncias da API.
-   */
-  private async registerFailure(userId: string, deviceId: string | null, now: Date, client: SanitizedClient): Promise<void> {
-    const { maxFailedAttempts, durationMs } = AUTH_SECURITY_POLICY.lockout;
-    await this.prisma.$transaction(async (tx) => {
-      const users = new AuthUserRepository(tx, this.scope);
-      const audit = new SecurityAuditWriter(tx, this.scope);
-      const attempts = await users.incrementFailedAttempts(userId);
-      await audit.record({ action: "auth.login.failed", userId, deviceId, reason: "invalid_credentials" }, client);
-      if (attempts >= maxFailedAttempts) {
-        const lockedUntil = new Date(now.getTime() + durationMs);
-        await users.lockTemporarily(userId, lockedUntil);
-        await audit.record({ action: "auth.lockout.triggered", userId, lockedUntil }, client);
-      }
-    });
-  }
-
   private async issueTokens(
     userId: string,
     session: { id: string; expiresAt: Date },
@@ -279,6 +260,6 @@ function isEmployeeNumber(value: unknown): value is string {
 function blockedReason(user: UserCredentials, now: Date): { reason: "account_disabled" | "account_locked" | "temporarily_locked"; error: InvalidCredentialsError } | null {
   if (user.status === UserStatus.DISABLED) return { reason: "account_disabled", error: new AccountDisabledError() };
   if (user.status === UserStatus.LOCKED) return { reason: "account_locked", error: new AccountLockedError(false) };
-  if (user.lockedUntil && user.lockedUntil > now) return { reason: "temporarily_locked", error: new AccountLockedError(true) };
+  if (isTemporarilyLocked(user, now)) return { reason: "temporarily_locked", error: new AccountLockedError(true) };
   return null;
 }
