@@ -86,21 +86,43 @@ describe("authorization (PostgreSQL, as erp_app)", () => {
   const inTenant = <T>(org: Org, fn: () => Promise<T>) => h.tenants.run({ tenantId: org.tenantId }, fn);
   const effective = async (org: Org, userId: string, scope = TENANT_SCOPE) => [...(await inTenant(org, () => authz.getEffectivePermissions(userId, scope)))].sort();
 
-  it("a tenant-wide role grants in the tenant scope and in every branch of the tenant", async () => {
+  async function grantAccess(org: Org, userId: string, branchId: string): Promise<void> {
+    await owner.userBranchAccess.create({ data: { tenantId: org.tenantId, userId, branchId } });
+  }
+
+  it("a tenant-wide role grants in the tenant scope, but in a branch only with UserBranchAccess to it", async () => {
     const user = await seedUser(owner, orgA.tenantId);
     await assign(orgA, user.id, await role(orgA, [READ, WRITE]));
     expect(await effective(orgA, user.id)).toEqual([READ, WRITE].sort());
+    // The role says WHAT; UserBranchAccess says WHERE. No access to the branch = nothing there.
+    expect(await effective(orgA, user.id, branchScope(orgA.branchId))).toEqual([]);
+    expect(await effective(orgA, user.id, branchScope(orgA.otherBranchId))).toEqual([]);
+    await grantAccess(orgA, user.id, orgA.branchId);
     expect(await effective(orgA, user.id, branchScope(orgA.branchId))).toEqual([READ, WRITE].sort());
-    expect(await effective(orgA, user.id, branchScope(orgA.otherBranchId))).toEqual([READ, WRITE].sort());
+    expect(await effective(orgA, user.id, branchScope(orgA.otherBranchId))).toEqual([]);
+    // Revoking the access removes the branch permissions immediately (no cache).
+    await owner.userBranchAccess.deleteMany({ where: { tenantId: orgA.tenantId, userId: user.id, branchId: orgA.branchId } });
+    expect(await effective(orgA, user.id, branchScope(orgA.branchId))).toEqual([]);
   });
 
   it("a branch-scoped role grants only in its branch, never globally", async () => {
     const user = await seedUser(owner, orgA.tenantId);
-    await assign(orgA, user.id, await role(orgA, [WRITE]), orgA.branchId);
+    await assign(orgA, user.id, await role(orgA, [WRITE]), orgA.branchId); // creates the access to branchId
     await assign(orgA, user.id, await role(orgA, [READ]));
     expect(await effective(orgA, user.id)).toEqual([READ]);
     expect(await effective(orgA, user.id, branchScope(orgA.branchId))).toEqual([READ, WRITE].sort());
-    expect(await effective(orgA, user.id, branchScope(orgA.otherBranchId))).toEqual([READ]);
+    expect(await effective(orgA, user.id, branchScope(orgA.otherBranchId))).toEqual([]); // no access there
+    await grantAccess(orgA, user.id, orgA.otherBranchId);
+    expect(await effective(orgA, user.id, branchScope(orgA.otherBranchId))).toEqual([READ]); // tenant-wide only
+  });
+
+  it("duplicate grants (same role global + branch, same permission via two roles) collapse into one permission", async () => {
+    const user = await seedUser(owner, orgA.tenantId);
+    const r1 = await role(orgA, [READ, WRITE]);
+    await assign(orgA, user.id, r1);
+    await assign(orgA, user.id, r1, orgA.branchId);
+    await assign(orgA, user.id, await role(orgA, [READ]), orgA.branchId);
+    expect(await effective(orgA, user.id, branchScope(orgA.branchId))).toEqual([READ, WRITE].sort());
   });
 
   it("INACTIVE and ARCHIVED roles grant nothing", async () => {
@@ -198,7 +220,11 @@ describe("authorization (PostgreSQL, as erp_app)", () => {
       await assign(orgB, userB.id, await role(orgB, [WRITE]));
       const tokenB = await login(orgB, userB.id, userB.employeeNumber);
       expect((await http.request(`/authz-probe/branches/${orgA.branchId}/write`, { token: tokenB })).status).toBe(403);
+      // Tenant-wide role without UserBranchAccess: still 403 in its own tenant's branch.
+      expect((await http.request(`/authz-probe/branches/${orgB.branchId}/write`, { token: tokenB })).status).toBe(403);
+      await grantAccess(orgB, userB.id, orgB.branchId);
       expect((await http.request(`/authz-probe/branches/${orgB.branchId}/write`, { token: tokenB })).status).toBe(200);
+      expect((await http.request(`/authz-probe/branches/${orgB.otherBranchId}/write`, { token: tokenB })).status).toBe(403);
     });
   });
 

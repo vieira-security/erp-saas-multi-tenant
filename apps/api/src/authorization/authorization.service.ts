@@ -7,7 +7,8 @@ import { TenantScope } from "../tenancy/tenant-scope.js";
  * Escopo em que a permissão é avaliada. NUNCA vem direto do cliente: `branch` só deve ser construído com um `branchId`
  * já resolvido a partir do recurso (ex.: a filial do pedido, validada no tenant) ou de API interna confiável.
  * - `tenant`: só roles tenant-wide (`user_roles.branch_id IS NULL`). Role escopada a filial NÃO vira permissão global.
- * - `branch`: roles tenant-wide + roles daquela filial.
+ * - `branch`: roles tenant-wide + roles daquela filial, e SÓ se o usuário tem `UserBranchAccess` àquela filial: a role diz
+ *   O QUE ele pode fazer, o acesso diz ONDE pode operar (decisão do gate do M2). Sem acesso = nenhuma permissão na filial.
  */
 export type AuthorizationScope = { readonly kind: "tenant" } | { readonly kind: "branch"; readonly branchId: string };
 
@@ -25,7 +26,8 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
  * - só role `ACTIVE` concede (INACTIVE/ARCHIVED = nada);
  * - tudo no tenant do TenantContext (TenantScope); vínculos de outro tenant são impossíveis pelas FKs compostas e,
  *   mesmo assim, a query filtra `tenant_id`;
- * - escopo de filial conforme `AuthorizationScope`; filial inexistente no tenant = nenhuma permissão.
+ * - escopo de filial conforme `AuthorizationScope`; sem `UserBranchAccess` (inclusive filial inexistente ou de outro
+ *   tenant, que não pode ter acesso pela FK composta) = nenhuma permissão.
  * Uma única query (RolePermission ⨝ Role ⨝ UserRole ⨝ User ⨝ Permission), sem N+1. Nomes de role nunca são usados.
  */
 @Injectable()
@@ -37,7 +39,7 @@ export class AuthorizationService {
 
   async getEffectivePermissions(userId: string, scope: AuthorizationScope = TENANT_SCOPE): Promise<ReadonlySet<string>> {
     if (!UUID.test(userId)) return new Set();
-    if (scope.kind === "branch" && !(await this.branchExists(scope.branchId))) return new Set();
+    if (scope.kind === "branch" && !(await this.hasBranchAccess(userId, scope.branchId))) return new Set();
 
     const assignment: Prisma.UserRoleWhereInput = {
       userId,
@@ -69,8 +71,9 @@ export class AuthorizationService {
     return permissions.some((p) => effective.has(p));
   }
 
-  private async branchExists(branchId: string): Promise<boolean> {
+  /** Vínculo usuário-filial no tenant atual (a FK composta garante que a filial existe e é do mesmo tenant). */
+  private async hasBranchAccess(userId: string, branchId: string): Promise<boolean> {
     if (!UUID.test(branchId)) return false;
-    return (await this.prisma.branch.count({ where: this.scope.where({ id: branchId }) })) === 1;
+    return (await this.prisma.userBranchAccess.count({ where: this.scope.where({ userId, branchId }) })) === 1;
   }
 }
