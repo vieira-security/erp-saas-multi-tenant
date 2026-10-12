@@ -159,3 +159,13 @@ export class PermissionDeniedError extends AuthError {
     super("Permission denied");
   }
 }
+
+/** `Origin`/`Sec-Fetch-Site` fora da allowlist em endpoint que usa o cookie do refresh (CSRF). */
+export class UntrustedOriginError extends AuthError {
+  override readonly name = "UntrustedOriginError";
+  readonly code = "forbidden_origin";
+  readonly publicFailure = { status: 403, code: "forbidden_origin" } as const;
+  constructor() {
+    super("Request origin is not allowed");
+  }
+}

@@ -17,6 +17,7 @@ import {
   SessionRevokedError,
   TenantUnavailableError,
 } from "./errors.js";
+import { LoginCodeTenantResolver } from "./login-code-tenant.resolver.js";
 import type { ResolvedLoginTenant } from "./login-tenant.js";
 import { AuthDeviceRepository, AuthTenantRepository, type DeviceRef } from "./persistence/auth-lookup.repository.js";
 import { isTemporarilyLocked, recordPasswordFailure } from "./lockout.js";
@@ -68,7 +69,49 @@ export class AuthService {
     @Inject(PasswordHasher) private readonly hasher: PasswordHasher,
     @Inject(AccessTokenService) private readonly accessTokens: AccessTokenService,
     @Inject(AUTH_CONFIG) private readonly config: AuthConfig,
+    @Inject(LoginCodeTenantResolver) private readonly loginTenants: LoginCodeTenantResolver,
   ) {}
+
+  /**
+   * Login público: o código PÚBLICO da organização resolve o tenant (LoginCodeTenantResolver) e depois valem todas as
+   * regras de `login`. Código inexistente/inválido = a mesma falha genérica de credencial (com a verificação Argon2id
+   * equivalente), sem AuditLog (não há tenant onde gravar).
+   */
+  async loginWithCode(loginCode: unknown, command: LoginCommand): Promise<IssuedTokens> {
+    const tenant = await this.loginTenants.resolve(loginCode);
+    if (!tenant) {
+      await this.hasher.burnVerification(command.password);
+      throw new InvalidCredentialsError();
+    }
+    return this.login(tenant, command);
+  }
+
+  /**
+   * Logout pelo refresh token do cookie. Idempotente e silencioso: token sem prova válida, sessão inexistente ou já
+   * revogada = nada a fazer. Token emitido mas já rotacionado = replay (revoga e audita, como no refresh). Só o token
+   * ATUAL de uma sessão a encerra como logout. Nunca apaga a sessão.
+   */
+  async logout(refreshToken: unknown, clientInfo?: ClientInfo): Promise<void> {
+    const parsed = parseRefreshToken(this.config.refreshTokenProofKey, refreshToken);
+    if (!parsed) return;
+    const client = sanitizeClient(clientInfo);
+    await this.tenants.run({ tenantId: parsed.tenantId }, async () => {
+      const session = await new SessionRepository(this.prisma, this.scope).findState(parsed.sessionId);
+      if (!session || session.revokedAt) return;
+      if (!refreshHashesEqual(session.refreshTokenHash, hashRefreshSecret(parsed.secret))) {
+        await this.revokeForReplay(session, client);
+        return;
+      }
+      await this.prisma.$transaction(async (tx) => {
+        if (await new SessionRepository(tx, this.scope).revoke(session.id, new Date())) {
+          await new SecurityAuditWriter(tx, this.scope).record(
+            { action: "auth.session.revoked", sessionId: session.id, actorUserId: session.userId, reason: "logout" },
+            client,
+          );
+        }
+      });
+    });
+  }
 
   /**
    * Login no tenant já resolvido por um `LoginTenantResolver` confiável. Ordem fixa para não criar oráculos:
@@ -146,7 +189,7 @@ export class AuthService {
    * segredo não é o atual = replay de token já rotacionado (ou corrida de dois refreshes): a sessão é revogada. Token sem
    * prova válida nunca chega ao banco nem revoga nada.
    */
-  async refresh(refreshToken: string, clientInfo?: ClientInfo): Promise<IssuedTokens> {
+  async refresh(refreshToken: unknown, clientInfo?: ClientInfo): Promise<IssuedTokens> {
     const parsed = parseRefreshToken(this.config.refreshTokenProofKey, refreshToken);
     if (!parsed) throw new InvalidRefreshTokenError();
     const client = sanitizeClient(clientInfo);

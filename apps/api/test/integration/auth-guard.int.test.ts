@@ -218,7 +218,9 @@ describe("AuthGuard over HTTP (PostgreSQL, as erp_app)", () => {
 
   it("stops accepting the access token as soon as the session is revoked, expired or the user/device/tenant is blocked", async () => {
     const loggedOut = await loginNew();
-    expect((await http.request("/auth/logout", { method: "POST", token: loggedOut.accessToken })).status).toBe(204);
+    // Logout is driven by the refresh cookie (HTTP transport decision); a Bearer alone does not identify what to revoke.
+    const logout = await http.request("/auth/logout", { method: "POST", headers: { cookie: `__Secure-erp_rt=${loggedOut.refreshToken}` } });
+    expect(logout.status).toBe(204);
     expect(await http.request("/probe/whoami", { token: loggedOut.accessToken })).toEqual({ status: 401, body: { error: "unauthenticated" } });
     expect((await owner.session.findUniqueOrThrow({ where: { id: loggedOut.sessionId } })).revokedAt).not.toBeNull();
 

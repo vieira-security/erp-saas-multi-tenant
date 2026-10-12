@@ -9,6 +9,7 @@ import {
   type PrismaClient,
 } from "../../src/generated/prisma/client.js";
 import { AuthService } from "../../src/auth/auth.service.js";
+import { LoginCodeTenantResolver } from "../../src/auth/login-code-tenant.resolver.js";
 import { AuthContextService } from "../../src/auth/context/auth-context.js";
 import { PasswordHasher } from "../../src/auth/password/password-hasher.js";
 import { AccessTokenService } from "../../src/auth/tokens/access-token.service.js";
@@ -44,7 +45,7 @@ export function authHarness(app: PrismaClient, config: AuthConfig = testAuthConf
     authContext: new AuthContextService(tenants),
     hasher,
     accessTokens,
-    auth: new AuthService(app, tenants, scope, hasher, accessTokens, config),
+    auth: new AuthService(app, tenants, scope, hasher, accessTokens, config, new LoginCodeTenantResolver(app)),
   };
 }
 
@@ -53,11 +54,19 @@ export interface Org {
   readonly companyId: string;
   readonly branchId: string;
   readonly otherBranchId: string;
+  /** Public login code of the tenant (unique per run). */
+  readonly loginCode: string;
 }
 
 /** Tenant + company + two branches, created with the owner identity (fixtures are not the code under test). */
-export async function seedOrg(owner: PrismaClient, name = "Auth", status: TenantStatus = TenantStatus.ACTIVE): Promise<Org> {
-  const tenant = await owner.tenant.create({ data: { name, status } });
+export async function seedOrg(
+  owner: PrismaClient,
+  name = "Auth",
+  status: TenantStatus = TenantStatus.ACTIVE,
+  extra: { trialEndsAt?: Date | null } = {},
+): Promise<Org> {
+  const loginCode = `T${randomBytes(6).toString("hex").toUpperCase()}`;
+  const tenant = await owner.tenant.create({ data: { name, status, loginCode, trialEndsAt: extra.trialEndsAt ?? null } });
   const company = await owner.company.create({
     data: { tenantId: tenant.id, legalName: `${name} Ltda`, tradeName: name, cnpj: "11222333000181", status: CompanyStatus.ACTIVE, timezone: "America/Sao_Paulo" },
   });
@@ -66,7 +75,7 @@ export async function seedOrg(owner: PrismaClient, name = "Auth", status: Tenant
       data: { tenantId: tenant.id, companyId: company.id, name: code, code, status: BranchStatus.ACTIVE, timezone: "America/Sao_Paulo" },
     });
   const [main, other] = [await branch("MAIN"), await branch("OTHER")];
-  return { tenantId: tenant.id, companyId: company.id, branchId: main.id, otherBranchId: other.id };
+  return { tenantId: tenant.id, companyId: company.id, branchId: main.id, otherBranchId: other.id, loginCode };
 }
 
 const hashes = new Map<string, Promise<string>>();

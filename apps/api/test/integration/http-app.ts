@@ -6,10 +6,19 @@ import { AUTH_CONFIG, type AuthConfig } from "../../src/config/auth-config.js";
 import { PRISMA_CLIENT } from "../../src/database/database.module.js";
 import type { PrismaClient } from "../../src/generated/prisma/client.js";
 
+export interface RequestInit {
+  method?: string;
+  token?: string;
+  headers?: Record<string, string>;
+  body?: unknown;
+}
+
 export interface HttpApp {
   readonly app: INestApplication;
   readonly baseUrl: string;
-  request(path: string, init?: { method?: string; token?: string; headers?: Record<string, string>; body?: unknown }): Promise<{ status: number; body: unknown }>;
+  request(path: string, init?: RequestInit): Promise<{ status: number; body: unknown }>;
+  /** Same as `request`, also exposing the response headers (e.g. Set-Cookie). */
+  requestWithHeaders(path: string, init?: RequestInit): Promise<{ status: number; body: unknown; headers: Headers }>;
   close(): Promise<void>;
 }
 
@@ -28,20 +37,25 @@ export async function startHttpApp(prisma: PrismaClient, config: AuthConfig, con
   await app.listen(0, "127.0.0.1");
   const { port } = app.getHttpServer().address() as AddressInfo;
   const baseUrl = `http://127.0.0.1:${port}`;
+  const requestWithHeaders = async (path: string, init: RequestInit = {}) => {
+    const headers: Record<string, string> = { ...(init.headers ?? {}) };
+    if (init.token) headers["authorization"] = `Bearer ${init.token}`;
+    if (init.body !== undefined) headers["content-type"] = "application/json";
+    const res = await fetch(baseUrl + path, {
+      method: init.method ?? "GET",
+      headers,
+      ...(init.body !== undefined ? { body: JSON.stringify(init.body) } : {}),
+    });
+    const text = await res.text();
+    return { status: res.status, body: text ? (JSON.parse(text) as unknown) : null, headers: res.headers };
+  };
   return {
     app,
     baseUrl,
-    async request(path, init = {}) {
-      const headers: Record<string, string> = { ...(init.headers ?? {}) };
-      if (init.token) headers["authorization"] = `Bearer ${init.token}`;
-      if (init.body !== undefined) headers["content-type"] = "application/json";
-      const res = await fetch(baseUrl + path, {
-        method: init.method ?? "GET",
-        headers,
-        ...(init.body !== undefined ? { body: JSON.stringify(init.body) } : {}),
-      });
-      const text = await res.text();
-      return { status: res.status, body: text ? (JSON.parse(text) as unknown) : null };
+    requestWithHeaders,
+    async request(path, init) {
+      const { status, body } = await requestWithHeaders(path, init);
+      return { status, body };
     },
     close: () => app.close(),
   };

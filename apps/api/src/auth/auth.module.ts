@@ -9,6 +9,7 @@ import { AuthExceptionFilter } from "./http/auth-exception.filter.js";
 import { AuthController } from "./http/auth.controller.js";
 import { AuthGuard } from "./http/auth.guard.js";
 import { PasswordHasher } from "./password/password-hasher.js";
+import { LoginCodeTenantResolver } from "./login-code-tenant.resolver.js";
 import { PasswordService } from "./password.service.js";
 import { SessionService } from "./session.service.js";
 import { AccessTokenService } from "./tokens/access-token.service.js";
@@ -28,6 +29,7 @@ import { AccessTokenService } from "./tokens/access-token.service.js";
     AuthService,
     SessionService,
     PasswordService,
+    LoginCodeTenantResolver,
     // Ordem importa: autenticação primeiro, depois autorização.
     { provide: APP_GUARD, useClass: AuthGuard },
     { provide: APP_GUARD, useClass: PermissionGuard },
