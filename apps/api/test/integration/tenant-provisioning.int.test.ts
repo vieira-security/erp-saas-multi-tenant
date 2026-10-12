@@ -6,7 +6,7 @@ import { TenantContextMissingError, TenantContextService } from "../../src/tenan
 import { TenantScope } from "../../src/tenancy/tenant-scope.js";
 import { DEFAULT_ROLE_PERMISSIONS, type RolePermissionMatrix } from "../../src/tenants/default-roles.js";
 import { TenantProvisioningService, UnknownPermissionInMatrixError } from "../../src/tenants/tenant-provisioning.service.js";
-import { seedOrg, type Org } from "./auth-fixtures.js";
+import { ensurePermissionCatalog, seedOrg, type Org } from "./auth-fixtures.js";
 
 // M2.11: idempotent provisioning of the default roles, as erp_app (runtime grants only).
 describe("default role provisioning (PostgreSQL, as erp_app)", () => {
@@ -22,6 +22,7 @@ describe("default role provisioning (PostgreSQL, as erp_app)", () => {
     app = createPrismaClient(inject("appDatabaseUrl"));
     owner = createPrismaClient(inject("databaseUrl"));
     provisioning = new TenantProvisioningService(app, new TenantScope(tenants));
+    await ensurePermissionCatalog(owner);
     for (const action of ["read", "manage"]) await owner.permission.create({ data: { code: `${MOD}.${action}`, module: MOD, description: "Teste" } });
   });
 
@@ -35,9 +36,9 @@ describe("default role provisioning (PostgreSQL, as erp_app)", () => {
   const grantsOf = (org: Org) =>
     owner.rolePermission.findMany({ where: { tenantId: org.tenantId }, include: { role: true, permission: true }, orderBy: { id: "asc" } });
 
-  it("creates the four system roles, active, with no permission while the matrix is undecided; reruns change nothing", async () => {
+  it("creates the four active system roles with exactly the approved matrix; reruns change nothing", async () => {
     const org = await seedOrg(owner, "Prov default");
-    expect(await provision(org)).toEqual({ created: ["OWNER", "MANAGER", "ATTENDANT", "KITCHEN"], existing: [], conflicts: [], grantsAdded: 0 });
+    expect(await provision(org)).toEqual({ created: ["OWNER", "MANAGER", "ATTENDANT", "KITCHEN"], existing: [], conflicts: [], grantsAdded: 45 });
     const first = await rolesOf(org);
     expect(first.map((r) => [r.code, r.name, r.isSystem, r.status])).toEqual([
       ["ATTENDANT", "Atendente", true, RoleStatus.ACTIVE],
@@ -45,10 +46,19 @@ describe("default role provisioning (PostgreSQL, as erp_app)", () => {
       ["MANAGER", "Gerente", true, RoleStatus.ACTIVE],
       ["OWNER", "Proprietário", true, RoleStatus.ACTIVE],
     ]);
-    expect(await grantsOf(org)).toEqual([]);
-    expect(DEFAULT_ROLE_PERMISSIONS.OWNER).toEqual([]);
+    const byRole = (grants: Awaited<ReturnType<typeof grantsOf>>) => {
+      const out: Record<string, string[]> = {};
+      for (const g of grants) (out[g.role.code] ??= []).push(g.permission.code);
+      for (const codes of Object.values(out)) codes.sort();
+      return out;
+    };
+    const expected = Object.fromEntries(Object.entries(DEFAULT_ROLE_PERMISSIONS).map(([role, codes]) => [role, [...codes].sort()]));
+    expect(byRole(await grantsOf(org))).toEqual(expected);
+    expect(expected["OWNER"]).toHaveLength(19);
+    expect(expected["KITCHEN"]).toEqual(["order.read", "product.read"]);
 
     expect(await provision(org)).toEqual({ created: [], existing: ["OWNER", "MANAGER", "ATTENDANT", "KITCHEN"], conflicts: [], grantsAdded: 0 });
+    expect(await grantsOf(org)).toHaveLength(45);
     expect((await rolesOf(org)).map((r) => r.id)).toEqual(first.map((r) => r.id)); // stable ids
   });
 
@@ -60,7 +70,7 @@ describe("default role provisioning (PostgreSQL, as erp_app)", () => {
     );
     expect((await provision(org, sample)).grantsAdded).toBe(0);
     // A smaller matrix does not revoke anything already granted.
-    expect((await provision(org)).grantsAdded).toBe(0);
+    expect((await provision(org, { OWNER: [], MANAGER: [], ATTENDANT: [], KITCHEN: [] })).grantsAdded).toBe(0);
     expect(await grantsOf(org)).toHaveLength(3);
   });
 

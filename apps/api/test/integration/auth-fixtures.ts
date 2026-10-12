@@ -14,6 +14,7 @@ import { AuthContextService } from "../../src/auth/context/auth-context.js";
 import { PasswordHasher } from "../../src/auth/password/password-hasher.js";
 import { AccessTokenService } from "../../src/auth/tokens/access-token.service.js";
 import { AUTH_ENV, loadAuthConfig, type AuthConfig } from "../../src/config/auth-config.js";
+import { PERMISSION_CATALOG } from "../../src/database/seed/permissions.js";
 import { TenantContextService } from "../../src/tenancy/tenant-context.js";
 import { TenantScope } from "../../src/tenancy/tenant-scope.js";
 
@@ -134,6 +135,14 @@ export async function seedDevice(
     },
   });
   return { id: device.id, deviceKey };
+}
+
+/**
+ * The global permission catalog in the test database (the integration setup runs migrations, not the seed). Atomic
+ * INSERT ... ON CONFLICT DO NOTHING with the catalog's own values: safe alongside the seed tests running in parallel.
+ */
+export async function ensurePermissionCatalog(owner: PrismaClient): Promise<void> {
+  await owner.permission.createMany({ data: PERMISSION_CATALOG.map((p) => ({ ...p })), skipDuplicates: true });
 }
 
 /** Moves a session into the past (keeps the `expires_at > created_at` CHECK satisfied). */
