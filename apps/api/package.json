@@ -21,6 +21,8 @@
     "@nestjs/platform-express": "^12.1.2",
     "@prisma/adapter-pg": "~7.10.0",
     "@prisma/client": "~7.10.0",
+    "argon2": "0.45.1",
+    "jose": "6.2.12",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.2"
   },
