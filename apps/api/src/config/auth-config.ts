@@ -3,7 +3,7 @@ import { deriveRefreshProofKey } from "../auth/tokens/refresh-token.js";
 /**
  * Configuração do Auth, lida SOMENTE do ambiente e validada no boot (fail-fast): sem segredo, ou com segredo fraco, a
  * API não sobe, em qualquer ambiente. Nenhum default de segredo existe no código; testes usam um segredo próprio.
- * Os TTLs têm default técnico (DECISION REQUIRED: durações aprovadas pelo produto, docs/open-questions.md).
+ * TTLs aprovados no M2 (access 15 min, sessão 12 h absolutas, sem sliding), configuráveis por ambiente.
  */
 export interface AuthConfig {
   /** Chave HMAC do access token (HS256). Nunca logada nem devolvida. */

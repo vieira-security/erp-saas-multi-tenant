@@ -4,7 +4,7 @@
  *
  * Falhas de login são publicamente indistinguíveis (`invalid_credentials`): matrícula inexistente, senha errada,
  * conta desativada, conta bloqueada e bloqueio temporário retornam o mesmo 401. O motivo real fica no erro interno
- * (`reason`) e no AuditLog. DECISION REQUIRED: se a UX deve mostrar "conta bloqueada/desativada" ao usuário.
+ * (`reason`) e no AuditLog. Decisão do M2: a resposta externa é sempre genérica.
  */
 export abstract class AuthError extends Error {
   abstract readonly code: string;

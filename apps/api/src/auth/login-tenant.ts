@@ -1,10 +1,10 @@
 /**
  * Tenant em que um login acontece, JÁ resolvido por uma fonte confiável antes da autenticação.
  *
- * DECISION REQUIRED — descoberta pública do tenant pré-login: como o PDV/web informa em qual tenant a matrícula deve ser
- * procurada (dispositivo pareado, subdomínio, código de loja...) não está decidido. Por isso NÃO existe endpoint HTTP de
- * login, nem `X-Tenant-Id`, slug, subdomínio ou `tenantId` livre em controller. O core (`AuthService.login`) recebe este
- * valor de uma implementação de `LoginTenantResolver`, que só existirá quando a regra for aprovada.
+ * Decisão do M2: o tenant é resolvido pelo código PÚBLICO de login da organização (`tenants.login_code`, implementação
+ * `LoginCodeTenantResolver`). Nunca por `X-Tenant-Id`, slug, subdomínio ou `tenantId` livre em controller. O core
+ * (`AuthService.login`) continua recebendo o tenant já resolvido, para que outro resolver confiável (ex.: dispositivo
+ * pareado, futuro) possa ser acrescentado sem mudar as regras do login.
  */
 export interface ResolvedLoginTenant {
   readonly tenantId: string;

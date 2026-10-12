@@ -2,7 +2,7 @@ import { DeviceStatus, TenantStatus } from "../generated/prisma/enums.js";
 
 /**
  * Política de segurança do Auth, centralizada: nenhum número mágico espalhado pelo código. Os valores marcados
- * `DECISION REQUIRED` são defaults técnicos conservadores, ainda não aprovados pelo produto (docs/open-questions.md,
+ * `DECISION REQUIRED` são defaults técnicos ainda não aprovados pelo produto; os demais foram decididos no M2 (docs/open-questions.md,
  * "Decisões pendentes do M2"); mudar aqui muda o comportamento de todo o Auth.
  */
 export const AUTH_SECURITY_POLICY = Object.freeze({
@@ -16,14 +16,14 @@ export const AUTH_SECURITY_POLICY = Object.freeze({
     minLength: 8,
   }),
   lockout: Object.freeze({
-    /** DECISION REQUIRED: falhas consecutivas de senha que disparam o bloqueio temporário (`locked_until`). */
+    /** Decisão do M2: falhas consecutivas de senha que disparam o bloqueio TEMPORÁRIO (`locked_until`; status inalterado). */
     maxFailedAttempts: 5,
-    /** DECISION REQUIRED: duração do bloqueio temporário. */
+    /** Decisão do M2: duração do bloqueio temporário. */
     durationMs: 15 * 60 * 1000,
   }),
   /**
    * Status de Device que permitem criar, renovar e usar sessão. `REVOKED` nunca; `INACTIVE` ("fora de uso temporário")
-   * também bloqueia, fail-closed (DECISION REQUIRED: confirmar a semântica de INACTIVE).
+   * também bloqueia (decisão do M2). Pairing/autenticação de dispositivo: futuro.
    */
   deviceStatusesAllowed: Object.freeze([DeviceStatus.ACTIVE] as const),
   /** Limites de entrada para identificadores do login (rejeitados antes de consultar o banco). */
