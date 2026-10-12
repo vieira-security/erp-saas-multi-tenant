@@ -30,7 +30,8 @@ ERP SaaS multi-tenant para pequenas e médias lojas/restaurantes de alimentaçã
 
 ## Auth (M2)
 
-- Rotas exigem autenticação por padrão (AuthGuard global); `@Public()` só com justificativa explícita.
+- Rotas exigem autenticação por padrão (AuthGuard global); `@Public()` só em método e com justificativa explícita (marca de classe é ignorada).
+- Operação em escopo de filial usa `@RequireBranchPermissions` (ou `branchScope` com filial resolvida do recurso) e exige `UserBranchAccess`, mesmo com role tenant-wide.
 - Controllers declaram `@RequirePermissions`/`@RequireBranchPermissions` com códigos de permissão; nunca checar nome de role.
 - Senha só via `PasswordHasher` (Argon2id); nunca logar ou auditar senha, token ou hash. Eventos de segurança só via `SecurityAuditWriter` (allowlist).
 - Valores marcados `DECISION REQUIRED` em `AUTH_SECURITY_POLICY`, `auth-config.ts` e `default-roles.ts` não são alterados sem decisão de produto.

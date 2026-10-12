@@ -91,16 +91,20 @@ O M2 foi implementado sem inventar estas regras; cada uma tem default técnico c
 1. **Descoberta do tenant pré-login** (dispositivo pareado, subdomínio, código de loja...). Bloqueia o endpoint HTTP de login: o core recebe o tenant de um `LoginTenantResolver` (`apps/api/src/auth/login-tenant.ts`), sem implementação.
 2. **Transporte/armazenamento dos tokens no cliente** (memória, cookie HttpOnly + CSRF, BFF). Bloqueia os endpoints de login e refresh; a API aceita o access token só via `Authorization: Bearer`.
 3. **Matriz de permissões das roles padrão** (`DEFAULT_ROLE_PERMISSIONS`, vazia para OWNER/MANAGER/ATTENDANT/KITCHEN). Também: reserva dos códigos padrão, proteção de roles `is_system` e momento do provisionamento (não há criação de tenant).
-4. **Lockout:** número de tentativas (default 5) e duração (default 15 min) em `AUTH_SECURITY_POLICY.lockout`.
-5. **TTLs:** access token (default 15 min) e vida absoluta da sessão/refresh (default 12 h), e se a sessão deve deslizar; relação com a expiração offline (#5).
-6. **Status:** quem coloca/retira `LOCKED` e reativa `DISABLED` (o Auth nunca muda status); se `PAST_DUE` e trial vencido autenticam (hoje TRIAL/ACTIVE/PAST_DUE autenticam, SUSPENDED/CANCELLED não); semântica de Device `INACTIVE` (hoje bloqueia como `REVOKED`).
-7. **UX de falhas de login:** hoje toda falha é `invalid_credentials` (inclusive conta desativada/bloqueada), para não permitir enumeração.
+4. **Lockout:** 5 tentativas / 15 min aceitos no gate do M2 como **default técnico** (`AUTH_SECURITY_POLICY.lockout`), não como decisão final de produto.
+5. **DECISION REQUIRED — session lifetime:** vida absoluta da sessão/refresh (default técnico 12 h) e se desliza; relação com a expiração offline (#5). Access token 15 min aceito no gate como default técnico.
+6. **Status:** quem coloca/retira `LOCKED` e reativa `DISABLED` (o Auth nunca muda status); se `PAST_DUE` e trial vencido autenticam (hoje TRIAL/ACTIVE/PAST_DUE autenticam, SUSPENDED/CANCELLED não); ~~semântica de Device `INACTIVE`~~ decidido no gate: bloqueia como `REVOKED`.
+7. ~~UX de falhas de login~~ **decidido no gate:** resposta externa genérica (`invalid_credentials`); causa só no AuditLog.
 8. **Política de senha:** tamanho mínimo de senha nova (default 8), complexidade, histórico, normalização Unicode; normalização da matrícula (hoje comparação exata).
-9. **Filial:** se agir numa filial exige `UserBranchAccess` mesmo com role tenant-wide; se o usuário precisa de acesso à filial do dispositivo.
-10. **Dispositivo:** pairing/segredo/certificado e autenticação autônoma do PDV (sem isso, o dispositivo declarado no login só restringe a sessão).
+9. ~~Filial x UserBranchAccess~~ **decidido no gate:** toda autorização em escopo de filial exige `UserBranchAccess`, mesmo com role tenant-wide (implementado). Em aberto: se o usuário precisa de acesso à filial do dispositivo no login.
+10. **Dispositivo (futuro, decidido no gate):** pairing/segredo/certificado e autenticação autônoma do PDV; `device_key` continua não sendo segredo.
 11. **Rate limiting distribuído** (gateway/WAF/Redis) junto com o endpoint público de login; amplificação de escrita em `audit_logs` por tentativas falhas.
 12. **Retenção/limpeza** de sessões expiradas/revogadas e LGPD de `ip_address`/`user_agent` (#9); rotação da chave do access token sem invalidação (`kid`).
-13. **API administrativa** de usuários (reset de senha, desativação com revogação de sessões, revogação de dispositivo): os serviços existem, os endpoints e permissões não.
+13. **API administrativa (futuro)** de usuários (reset de senha, desativação com revogação de sessões, revogação de dispositivo): os serviços existem, os endpoints não; quando existirem, exigem permissão (ex.: `user.manage`).
+14. **Normalização da matrícula** (trim, caixa, zeros à esquerda, caracteres permitidos): hoje comparação exata, sem normalização.
+15. **Login com tenant `PAST_DUE` e trial vencido:** hoje `PAST_DUE` autentica e `trial_ends_at` não é avaliado.
+
+Opções e recomendações de cada pendência: relatório do gate do M2 (resumo em [security.md](security.md)).
 
 ## Pendências do M2 (Auth) originadas no M1.12 — situação após o M2
 1. ~~Geração do refresh token, hash e comparação~~ **Resolvido no M2.5** (256 bits, SHA-256, comparação em tempo constante); duração de `expires_at`: decisão pendente 5.

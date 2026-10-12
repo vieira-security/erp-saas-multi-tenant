@@ -234,7 +234,7 @@ Registro persistente de sessão, base para o módulo Auth (M2): sessões revogá
 - **Nunca persistir refresh token puro nem access token.** Não existem colunas `refresh_token`, `token` ou `access_token`; a auditoria de credenciais as rejeita.
 - **CHECK `expires_at > created_at`**: compara valores da própria linha (com o default, `created_at` é o início da transação), então não depende de ordem de avaliação. Fixtures de sessões já expiradas precisam informar também um `created_at` anterior.
 - Índices: unique `(refresh_token_hash)`, `(tenant_id, user_id)` (sessões do usuário e FK para `users`) e `(tenant_id, device_id)` (sessões do dispositivo e FK para `devices`). Sem índice em `expires_at` por enquanto.
-- **Rotação (M2):** a sessão guarda apenas o hash do refresh token válido, substituído por UPDATE condicional (`refresh_token_hash = <apresentado> AND revoked_at IS NULL AND expires_at > agora`). Sem histórico/token family: segredo diferente do atual numa sessão existente é tratado como replay e revoga a sessão.
+- **Rotação (M2):** a sessão guarda apenas o hash do refresh token válido, substituído por UPDATE condicional (`refresh_token_hash = <apresentado> AND revoked_at IS NULL AND expires_at > agora`). Sem histórico/token family e sem coluna nova: o refresh token carrega uma prova HMAC de que foi emitido pelo servidor para aquela sessão; só um token com prova válida cujo segredo não é o atual é tratado como replay e revoga a sessão (token forjado é apenas inválido).
 - **Remoção com `RESTRICT`:** User, Device e Tenant com sessão não são apagados; User ou Device com sessão também não mudam de tenant. Retenção/LGPD das sessões históricas ainda será definida.
 
 ## AuditLog

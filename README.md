@@ -1,6 +1,6 @@
 # ERP SaaS multi-tenant
 
-ERP para lojas/restaurantes de alimentação em shopping centers no Brasil. Estado atual: **M1 — Core multi-tenant ✅**; **M2 — Auth e autorização runtime implementado, aguardando auditoria final** (Argon2id, sessões com refresh rotativo, guards globais, autorização por permissão e filial; sem endpoint público de login até a decisão sobre descoberta do tenant). Sem API de negócio nem frontend funcional. Marcos em `docs/product.md`.
+ERP para lojas/restaurantes de alimentação em shopping centers no Brasil. Estado atual: **M1 — Core multi-tenant ✅**; **M2 — Auth e autorização runtime aprovado no gate final, com decisões de produto pendentes** (Argon2id, sessões com refresh rotativo, guards globais, autorização por permissão e filial; sem endpoint público de login até a decisão sobre descoberta do tenant). Sem API de negócio nem frontend funcional. Marcos em `docs/product.md`.
 
 ## Estrutura
 
