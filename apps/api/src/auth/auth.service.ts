@@ -16,10 +16,10 @@ import {
   SessionExpiredError,
   SessionRevokedError,
   TenantUnavailableError,
-  UnauthenticatedError,
 } from "./errors.js";
 import type { ResolvedLoginTenant } from "./login-tenant.js";
 import { AuthDeviceRepository, AuthTenantRepository, type DeviceRef } from "./persistence/auth-lookup.repository.js";
+import { sessionInvalidity } from "./session-validity.js";
 import { AuthUserRepository, type UserCredentials } from "./persistence/auth-user.repository.js";
 import { SessionRepository, type SessionState } from "./persistence/session.repository.js";
 import { InvalidPasswordHashError, PasswordHasher, isAcceptablePasswordInput } from "./password/password-hasher.js";
@@ -176,14 +176,11 @@ export class AuthService {
     });
   }
 
-  /** Mesmas regras do AuthGuard para uma sessão continuar valendo (exceto o hash, verificado à parte). */
+  /** Mesmas regras do AuthGuard (session-validity.ts), exceto o hash, verificado à parte. */
   private async assertSessionUsable(session: SessionState, now: Date): Promise<void> {
-    if (session.revokedAt) throw new SessionRevokedError();
-    if (session.expiresAt <= now) throw new SessionExpiredError();
-    if (session.user.status !== UserStatus.ACTIVE) throw new UnauthenticatedError("user_inactive");
-    if (session.device && !isDeviceStatusAllowed(session.device.status)) throw new DeviceNotAllowedError();
-    const status = await new AuthTenantRepository(this.prisma).findStatus(this.scope.tenantId());
-    if (!status || !isTenantStatusAllowed(status)) throw new TenantUnavailableError();
+    const tenantStatus = await new AuthTenantRepository(this.prisma).findStatus(this.scope.tenantId());
+    const invalid = sessionInvalidity(session, tenantStatus, now);
+    if (invalid) throw invalid;
   }
 
   private async revokeForReplay(session: SessionState, client: SanitizedClient): Promise<void> {
