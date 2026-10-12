@@ -58,7 +58,7 @@ export class SessionService {
 
 /** Versão para uso dentro de uma transação já aberta (troca/reset de senha). */
 export async function revokeAllForUserIn(
-  tx: Pick<PrismaClient, "session" | "auditLog">,
+  tx: Pick<PrismaClient, "session" | "device" | "auditLog">,
   scope: TenantScope,
   userId: string,
   reason: SessionRevocationReason,

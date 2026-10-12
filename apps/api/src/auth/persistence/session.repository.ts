@@ -1,4 +1,4 @@
-import type { DeviceStatus, PrismaClient, UserStatus } from "../../generated/prisma/client.js";
+import { DeviceStatus, type PrismaClient, type UserStatus } from "../../generated/prisma/client.js";
 import type { TenantScope } from "../../tenancy/tenant-scope.js";
 
 export interface NewSession {
@@ -22,7 +22,7 @@ export interface SessionState {
   readonly device: { readonly status: DeviceStatus } | null;
 }
 
-export type SessionDb = Pick<PrismaClient, "session">;
+export type SessionDb = Pick<PrismaClient, "session" | "device">;
 
 /**
  * Sessões do tenant atual. Estado derivado (docs/database.md): ativa = `revoked_at IS NULL AND expires_at > agora`.
@@ -43,8 +43,12 @@ export class SessionRepository {
     });
   }
 
+  /**
+   * Sessão + status do usuário (e do dispositivo, só se a sessão tiver um). O dispositivo é lido à parte e só quando
+   * existe: um `include` opcional custaria uma query a mais em toda sessão sem dispositivo (medido no gate do M2).
+   */
   async findState(id: string): Promise<SessionState | null> {
-    return this.db.session.findFirst({
+    const session = await this.db.session.findFirst({
       where: this.scope.where({ id }),
       select: {
         id: true,
@@ -54,9 +58,14 @@ export class SessionRepository {
         expiresAt: true,
         revokedAt: true,
         user: { select: { status: true, mustChangePassword: true } },
-        device: { select: { status: true } },
       },
     });
+    if (!session) return null;
+    const device = session.deviceId
+      ? await this.db.device.findFirst({ where: this.scope.where({ id: session.deviceId }), select: { status: true } })
+      : null;
+    // Sessão com device_id sem dispositivo visível é impossível pela FK composta; tratada como dispositivo revogado.
+    return { ...session, device: session.deviceId ? (device ?? { status: DeviceStatus.REVOKED }) : null };
   }
 
   /**
