@@ -51,7 +51,7 @@ export class PasswordService {
       valid = false;
     }
     if (!valid) {
-      await recordPasswordFailure(this.prisma, this.scope, { userId: user.id, deviceId: auth.deviceId, now }, {});
+      await recordPasswordFailure(this.prisma, this.scope, { userId: user.id, deviceId: auth.deviceId, now, source: "password_change" }, {});
       throw new CurrentPasswordInvalidError();
     }
     if (!satisfiesPasswordPolicy(newPassword)) throw new PasswordPolicyError();

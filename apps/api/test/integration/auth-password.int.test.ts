@@ -82,6 +82,9 @@ describe("password lifecycle (PostgreSQL, as erp_app)", () => {
       body: { error: "invalid_current_password" },
     });
     expect((await userRow(user.id)).failedLoginAttempts).toBe(1);
+    const failures = await owner.auditLog.findMany({ where: { tenantId: orgA.tenantId, resourceId: user.id, action: { contains: "failed" } } });
+    expect(failures.map((a) => a.action)).toEqual(["auth.password.change_failed"]); // not mislabelled as a login failure
+    expect(containsSecret(failures, ["errada", "Outra-Senha-789"])).toBe(false);
     expect(await change(accessToken, { currentPassword: DEFAULT_PASSWORD, newPassword: "curta" })).toEqual({
       status: 400,
       body: { error: "password_policy_violation" },

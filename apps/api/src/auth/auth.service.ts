@@ -111,7 +111,7 @@ export class AuthService {
       }
 
       if (!(await this.verifyPassword(user, password))) {
-        await recordPasswordFailure(this.prisma, this.scope, { userId: user.id, deviceId, now }, client);
+        await recordPasswordFailure(this.prisma, this.scope, { userId: user.id, deviceId, now, source: "login" }, client);
         throw new InvalidCredentialsError();
       }
 

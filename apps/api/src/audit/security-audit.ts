@@ -24,6 +24,7 @@ export type SecurityAuditEvent =
       deviceId: string | null;
       reason: "invalid_credentials" | "account_disabled" | "account_locked" | "temporarily_locked" | "device_not_allowed";
     }
+  | { action: "auth.password.change_failed"; userId: string; deviceId: string | null }
   | { action: "auth.lockout.triggered"; userId: string; lockedUntil: Date }
   | { action: "auth.session.revoked"; sessionId: string; actorUserId: string | null; reason: SessionRevocationReason }
   | { action: "auth.sessions.revoked"; userId: string; actorUserId: string | null; reason: SessionRevocationReason; count: number }
@@ -45,7 +46,7 @@ type AuditRow = {
 };
 
 /** Chaves aceitas em `metadata` de evento de segurança. Qualquer outra chave é bug e falha (fail-closed). */
-const METADATA_KEYS = new Set(["reason", "count", "locked_until", "target_user_id", "session_id"]);
+const METADATA_KEYS = new Set(["reason", "count", "locked_until"]);
 const SAFE_VALUE = /^[a-z0-9_:.\-TZ]+$/i;
 
 export class UnsafeAuditMetadataError extends Error {
@@ -57,6 +58,7 @@ export class UnsafeAuditMetadataError extends Error {
 
 /** Defesa em profundidade: mesmo montado internamente, o metadata é conferido antes de gravar. */
 export function assertSafeAuditMetadata(metadata: Record<string, unknown>): void {
+  if (typeof metadata !== "object" || metadata === null || Array.isArray(metadata)) throw new UnsafeAuditMetadataError("<root>");
   for (const [key, value] of Object.entries(metadata)) {
     if (!METADATA_KEYS.has(key)) throw new UnsafeAuditMetadataError(key);
     const ok =
@@ -72,6 +74,8 @@ function toRow(event: SecurityAuditEvent): AuditRow {
       return { action: event.action, resourceType: "session", resourceId: event.sessionId, userId: event.userId, deviceId: event.deviceId, metadata: null };
     case "auth.login.failed":
       return { action: event.action, resourceType: "user", resourceId: event.userId, userId: event.userId, deviceId: event.deviceId, metadata: { reason: event.reason } };
+    case "auth.password.change_failed":
+      return { action: event.action, resourceType: "user", resourceId: event.userId, userId: event.userId, deviceId: event.deviceId, metadata: null };
     case "auth.lockout.triggered":
       return { action: event.action, resourceType: "user", resourceId: event.userId, userId: event.userId, deviceId: null, metadata: { locked_until: event.lockedUntil.toISOString() } };
     case "auth.session.revoked":

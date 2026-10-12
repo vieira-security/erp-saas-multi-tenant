@@ -13,7 +13,7 @@ import { AuthUserRepository } from "./persistence/auth-user.repository.js";
 export async function recordPasswordFailure(
   prisma: PrismaClient,
   scope: TenantScope,
-  input: { userId: string; deviceId: string | null; now: Date },
+  input: { userId: string; deviceId: string | null; now: Date; source: "login" | "password_change" },
   client: AuditClientInfo,
 ): Promise<{ locked: boolean }> {
   const { maxFailedAttempts, durationMs } = AUTH_SECURITY_POLICY.lockout;
@@ -21,7 +21,12 @@ export async function recordPasswordFailure(
     const users = new AuthUserRepository(tx, scope);
     const audit = new SecurityAuditWriter(tx, scope);
     const attempts = await users.incrementFailedAttempts(input.userId);
-    await audit.record({ action: "auth.login.failed", userId: input.userId, deviceId: input.deviceId, reason: "invalid_credentials" }, client);
+    await audit.record(
+      input.source === "login"
+        ? { action: "auth.login.failed", userId: input.userId, deviceId: input.deviceId, reason: "invalid_credentials" }
+        : { action: "auth.password.change_failed", userId: input.userId, deviceId: input.deviceId },
+      client,
+    );
     if (attempts < maxFailedAttempts) return { locked: false };
     const lockedUntil = new Date(input.now.getTime() + durationMs);
     await users.lockTemporarily(input.userId, lockedUntil);
