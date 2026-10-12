@@ -15,6 +15,17 @@ const READ = `${MOD}.read`;
 const WRITE = `${MOD}.write`;
 const ADMIN = `${MOD}.admin`;
 
+/** A method-level requirement never replaces the class-level one: both apply. */
+@Controller("authz-class")
+@RequirePermissions(ADMIN)
+class AuthzClassController {
+  @Get("read")
+  @RequirePermissions(READ)
+  read(): unknown {
+    return { ok: true };
+  }
+}
+
 @Controller("authz-probe")
 class AuthzProbeController {
   @Get("read")
@@ -52,7 +63,7 @@ describe("authorization (PostgreSQL, as erp_app)", () => {
     const config = testAuthConfig();
     h = authHarness(app, config);
     authz = new AuthorizationService(app, h.scope);
-    http = await startHttpApp(createPrismaClient(inject("appDatabaseUrl")), config, [AuthzProbeController]);
+    http = await startHttpApp(createPrismaClient(inject("appDatabaseUrl")), config, [AuthzProbeController, AuthzClassController]);
     for (const code of [READ, WRITE, ADMIN]) perm[code] = (await owner.permission.create({ data: { code, module: MOD, description: "Teste" } })).id;
     orgA = await seedOrg(owner, "Authz A");
     orgB = await seedOrg(owner, "Authz B");
@@ -226,6 +237,16 @@ describe("authorization (PostgreSQL, as erp_app)", () => {
       expect((await http.request(`/authz-probe/branches/${orgB.branchId}/write`, { token: tokenB })).status).toBe(200);
       expect((await http.request(`/authz-probe/branches/${orgB.otherBranchId}/write`, { token: tokenB })).status).toBe(403);
     });
+  });
+
+  it("class and method permission requirements both apply (a method cannot weaken its class)", async () => {
+    const user = await seedUser(owner, orgA.tenantId);
+    const readRole = await role(orgA, [READ]);
+    await assign(orgA, user.id, readRole);
+    const { accessToken: token } = await h.auth.login({ tenantId: orgA.tenantId }, { employeeNumber: user.employeeNumber, password: "Senha-Correta-123" });
+    expect((await http.request("/authz-class/read", { token })).status).toBe(403);
+    await assign(orgA, user.id, await role(orgA, [ADMIN]));
+    expect((await http.request("/authz-class/read", { token })).status).toBe(200);
   });
 
   it("rejects invalid permission codes when the decorator is applied", () => {

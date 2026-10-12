@@ -17,6 +17,12 @@ import { ALLOW_PASSWORD_CHANGE_REQUIRED, IS_PUBLIC, REQUEST_AUTH, type RequestWi
  * o frontend o guarda (memória, cookie HttpOnly via BFF...), decisão em aberto (docs/open-questions.md).
  */
 export function extractBearerToken(request: RequestWithAuth): string | null {
+  // O Node mantém só o PRIMEIRO Authorization repetido e descarta os demais; um proxy pode ler o último. Ambiguidade =
+  // recusa (fail-closed): mais de um header Authorization nunca autentica.
+  const raw = request.rawHeaders ?? [];
+  let count = 0;
+  for (let i = 0; i < raw.length; i += 2) if (raw[i]?.toLowerCase() === "authorization") count++;
+  if (count > 1) return null;
   const header = request.headers["authorization"];
   if (typeof header !== "string") return null;
   const match = /^Bearer ([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)$/i.exec(header);
@@ -43,8 +49,11 @@ export class AuthGuard implements CanActivate {
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
-    const targets = [context.getHandler(), context.getClass()];
-    if (this.reflector.getAllAndOverride<boolean>(IS_PUBLIC, targets)) return true;
+    // Só HTTP existe hoje; qualquer outro tipo de contexto (rpc/ws) é recusado até ter guard próprio (fail-closed).
+    if (context.getType() !== "http") throw new UnauthenticatedError("unsupported_context");
+    // Marcas lidas SÓ do handler: nunca da classe nem herdadas por ela (ver `Public`).
+    const handler = context.getHandler();
+    if (this.reflector.get<boolean>(IS_PUBLIC, handler) === true) return true;
 
     const request = context.switchToHttp().getRequest<RequestWithAuth>();
     const token = extractBearerToken(request);
@@ -69,7 +78,7 @@ export class AuthGuard implements CanActivate {
       });
     });
 
-    if (auth.mustChangePassword && !this.reflector.getAllAndOverride<boolean>(ALLOW_PASSWORD_CHANGE_REQUIRED, targets)) {
+    if (auth.mustChangePassword && this.reflector.get<boolean>(ALLOW_PASSWORD_CHANGE_REQUIRED, handler) !== true) {
       throw new PasswordChangeRequiredError();
     }
     request[REQUEST_AUTH] = auth;

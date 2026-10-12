@@ -1,15 +1,43 @@
 import { setTimeout as sleep } from "node:timers/promises";
-import { Controller, Get, Inject, Post } from "@nestjs/common";
+import { request as httpRequest } from "node:http";
+import { Controller, Get, Inject, Post, SetMetadata } from "@nestjs/common";
 import { base64url } from "jose";
 import { afterAll, beforeAll, describe, expect, inject, it } from "vitest";
 import { DeviceStatus, TenantStatus, UserStatus, type PrismaClient } from "../../src/generated/prisma/client.js";
 import { createPrismaClient } from "../../src/database/create-prisma-client.js";
 import type { IssuedTokens } from "../../src/auth/auth.service.js";
 import { AuthContextService, type AuthContext } from "../../src/auth/context/auth-context.js";
-import { CurrentAuth, Public } from "../../src/auth/http/auth-decorators.js";
+import { CurrentAuth, IS_PUBLIC, Public } from "../../src/auth/http/auth-decorators.js";
 import { TenantContextService } from "../../src/tenancy/tenant-context.js";
 import { authHarness, expireSession, seedDevice, seedOrg, seedUser, testAuthConfig, type AuthHarness, type Org } from "./auth-fixtures.js";
 import { startHttpApp, type HttpApp } from "./http-app.js";
+
+/** Misuse: the public mark applied to a whole class. The guard must ignore it. */
+@Controller("class-marked-public")
+@(SetMetadata(IS_PUBLIC, true) as ClassDecorator)
+class ClassMarkedPublicController {
+  @Get()
+  get(): unknown {
+    return { leaked: true };
+  }
+}
+
+class PublicBase {
+  @Public()
+  @Get("open")
+  open(): unknown {
+    return { base: true };
+  }
+}
+
+/** Child overriding an inherited public method without the mark: the override is protected. */
+@Controller("child")
+class ChildController extends PublicBase {
+  @Get("open")
+  override open(): unknown {
+    return { leaked: true };
+  }
+}
 
 @Controller("probe")
 class ProbeController {
@@ -52,7 +80,7 @@ describe("AuthGuard over HTTP (PostgreSQL, as erp_app)", () => {
     owner = createPrismaClient(inject("databaseUrl"));
     const config = testAuthConfig();
     h = authHarness(prisma, config);
-    http = await startHttpApp(prisma, config, [ProbeController]);
+    http = await startHttpApp(prisma, config, [ProbeController, ClassMarkedPublicController, ChildController]);
     orgA = await seedOrg(owner, "Guard A");
     orgB = await seedOrg(owner, "Guard B");
   });
@@ -78,6 +106,30 @@ describe("AuthGuard over HTTP (PostgreSQL, as erp_app)", () => {
     }
     expect((await http.request("/health")).status).toBe(200);
     expect(await http.request("/probe/public")).toEqual({ status: 200, body: { tenant: null, auth: null } });
+  });
+
+  it("public marks only count on the handler: never from the class, never through inheritance of an overridden method", async () => {
+    expect(await http.request("/class-marked-public")).toEqual({ status: 401, body: { error: "unauthenticated" } });
+    expect(await http.request("/child/open")).toEqual({ status: 401, body: { error: "unauthenticated" } });
+  });
+
+  it("duplicate Authorization headers never authenticate, in any order (Node keeps only the first; a proxy may read the last)", async () => {
+    const tokens = await loginNew();
+    const raw = (headers: [string, string][]) =>
+      new Promise<number>((resolve, reject) => {
+        const url = new URL(`${http.baseUrl}/probe/whoami`);
+        const req = httpRequest({ host: url.hostname, port: url.port, path: url.pathname, method: "GET", headers: [["host", url.host], ...headers].flat() as never }, (res) => {
+          res.resume();
+          resolve(res.statusCode ?? 0);
+        });
+        req.once("error", reject);
+        req.end();
+      });
+    // Without the guard's duplicate check, the second request would be 200 (Node silently keeps the first header).
+    expect(await raw([["authorization", "Bearer garbage.garbage.garbage"], ["authorization", `Bearer ${tokens.accessToken}`]])).toBe(401);
+    expect(await raw([["authorization", `Bearer ${tokens.accessToken}`], ["authorization", "Bearer garbage.garbage.garbage"]])).toBe(401);
+    expect(await raw([["authorization", `Bearer ${tokens.accessToken}`]])).toBe(200);
+    expect(await raw([["authorization", `Bearer ${tokens.accessToken}, Bearer ${tokens.accessToken}`]])).toBe(401);
   });
 
   it("builds the tenant and auth contexts from the verified token and session only", async () => {

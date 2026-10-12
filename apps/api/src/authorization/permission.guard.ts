@@ -47,24 +47,26 @@ export class PermissionGuard implements CanActivate {
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
-    const required = this.reflector.getAllAndOverride<PermissionRequirement | undefined>(REQUIRED_PERMISSIONS, [
-      context.getHandler(),
-      context.getClass(),
-    ]);
-    if (!required) return true;
+    // Classe e método valem JUNTOS (AND): um método nunca enfraquece o que a classe exige (sem override).
+    const requirements = [context.getClass(), context.getHandler()]
+      .map((target) => this.reflector.get<PermissionRequirement | undefined>(REQUIRED_PERMISSIONS, target))
+      .filter((r): r is PermissionRequirement => r !== undefined);
+    if (requirements.length === 0) return true;
 
     const request = context.switchToHttp().getRequest<RequestWithAuth & { params?: Record<string, string | undefined> }>();
     const auth = authOfRequest(request);
     if (!auth) throw new UnauthenticatedError("missing_auth_context");
 
-    let scope: AuthorizationScope = TENANT_SCOPE;
-    if (required.branchParam) {
-      const branchId = request.params?.[required.branchParam];
-      if (typeof branchId !== "string" || branchId.length === 0) throw new PermissionDeniedError();
-      scope = branchScope(branchId);
+    for (const required of requirements) {
+      let scope: AuthorizationScope = TENANT_SCOPE;
+      if (required.branchParam) {
+        const branchId = request.params?.[required.branchParam];
+        if (typeof branchId !== "string" || branchId.length === 0) throw new PermissionDeniedError();
+        scope = branchScope(branchId);
+      }
+      const allowed = await this.authContext.run(auth, () => this.authorization.hasAllPermissions(auth.userId, required.permissions, scope));
+      if (!allowed) throw new PermissionDeniedError();
     }
-    const allowed = await this.authContext.run(auth, () => this.authorization.hasAllPermissions(auth.userId, required.permissions, scope));
-    if (!allowed) throw new PermissionDeniedError();
     return true;
   }
 }
