@@ -1,6 +1,8 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { request as httpRequest } from "node:http";
-import { Controller, Get, Inject, Post, SetMetadata } from "@nestjs/common";
+import { Controller, Get, Inject, Param, Post, SetMetadata } from "@nestjs/common";
+import { PRISMA_CLIENT } from "../../src/database/database.module.js";
+import { TenantScope } from "../../src/tenancy/tenant-scope.js";
 import { base64url } from "jose";
 import { afterAll, beforeAll, describe, expect, inject, it } from "vitest";
 import { DeviceStatus, TenantStatus, UserStatus, type PrismaClient } from "../../src/generated/prisma/client.js";
@@ -36,6 +38,33 @@ class ChildController extends PublicBase {
   @Get("open")
   override open(): unknown {
     return { leaked: true };
+  }
+}
+
+/** Context under load: a real transaction, Promise.all, nested awaits and failures inside the handler. */
+@Controller("stress")
+class StressController {
+  constructor(
+    @Inject(PRISMA_CLIENT) private readonly prisma: PrismaClient,
+    @Inject(TenantScope) private readonly scope: TenantScope,
+    @Inject(AuthContextService) private readonly auth: AuthContextService,
+  ) {}
+
+  @Get(":mode")
+  async run(@Param("mode") mode: string): Promise<unknown> {
+    const seen = await this.prisma.$transaction(async (tx) => {
+      const [users, sessions] = await Promise.all([
+        tx.user.count({ where: this.scope.where({}) }),
+        (async () => {
+          await sleep(Math.floor(Math.random() * 5));
+          return tx.session.count({ where: this.scope.where({ id: this.auth.require().sessionId }) });
+        })(),
+      ]);
+      return { tenantId: this.scope.tenantId(), users, sessions };
+    });
+    await sleep(Math.floor(Math.random() * 5));
+    if (mode === "fail") throw new Error("handler failure");
+    return { ...seen, after: this.auth.require().tenantId };
   }
 }
 
@@ -80,7 +109,7 @@ describe("AuthGuard over HTTP (PostgreSQL, as erp_app)", () => {
     owner = createPrismaClient(inject("databaseUrl"));
     const config = testAuthConfig();
     h = authHarness(prisma, config);
-    http = await startHttpApp(prisma, config, [ProbeController, ClassMarkedPublicController, ChildController]);
+    http = await startHttpApp(prisma, config, [ProbeController, ClassMarkedPublicController, ChildController, StressController]);
     orgA = await seedOrg(owner, "Guard A");
     orgB = await seedOrg(owner, "Guard B");
   });
@@ -219,6 +248,34 @@ describe("AuthGuard over HTTP (PostgreSQL, as erp_app)", () => {
     const tokens = await loginNew(orgA, { mustChangePassword: true });
     expect(await http.request("/probe/whoami", { token: tokens.accessToken })).toEqual({ status: 403, body: { error: "password_change_required" } });
     expect((await http.request("/auth/logout", { method: "POST", token: tokens.accessToken })).status).toBe(204);
+  });
+
+  it("stress: 300 concurrent requests of three tenants with transactions, Promise.all and failures never mix contexts", async () => {
+    const orgC = await seedOrg(owner, "Guard C");
+    const tokens = [await loginNew(orgA), await loginNew(orgB), await loginNew(orgC)];
+    const plan = Array.from({ length: 300 }, (_, i) => ({ t: tokens[i % 3]!, fail: i % 7 === 0 }));
+    // At most 60 in flight (Windows refuses bursts of hundreds of simultaneous TCP connects); still heavily interleaved.
+    const responses: { status: number; body: unknown }[] = new Array(plan.length);
+    let next = 0;
+    await Promise.all(
+      Array.from({ length: 60 }, async () => {
+        while (next < plan.length) {
+          const i = next++;
+          const { t, fail } = plan[i]!;
+          responses[i] = await http.request(`/stress/${fail ? "fail" : "ok"}`, { token: t.accessToken });
+        }
+      }),
+    );
+    responses.forEach((res, i) => {
+      const { t, fail } = plan[i]!;
+      if (fail) {
+        expect(res.status).toBe(500);
+        expect(JSON.stringify(res.body)).not.toContain("handler failure");
+      } else {
+        expect(res).toMatchObject({ status: 200, body: { tenantId: t.tenantId, after: t.tenantId, sessions: 1 } });
+      }
+    });
+    expect(await http.request("/probe/public")).toEqual({ status: 200, body: { tenant: null, auth: null } });
   });
 
   it("isolates contexts across many concurrent requests of two tenants and leaks nothing afterwards", async () => {
