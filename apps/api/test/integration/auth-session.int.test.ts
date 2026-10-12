@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, inject, it } from "vitest";
 import { DeviceStatus, TenantStatus, UserStatus, type PrismaClient } from "../../src/generated/prisma/client.js";
 import { createPrismaClient } from "../../src/database/create-prisma-client.js";
@@ -13,7 +14,8 @@ import {
   UnauthenticatedError,
 } from "../../src/auth/errors.js";
 import { SessionService } from "../../src/auth/session.service.js";
-import { formatRefreshToken, parseRefreshToken } from "../../src/auth/tokens/refresh-token.js";
+import { PasswordService } from "../../src/auth/password.service.js";
+import { parseRefreshToken } from "../../src/auth/tokens/refresh-token.js";
 import { authHarness, containsSecret, expireSession, seedDevice, seedOrg, seedUser, type AuthHarness, type Org } from "./auth-fixtures.js";
 
 // M2.5 / M2.6: refresh rotation, replay handling, logout and revocation, as erp_app.
@@ -64,7 +66,7 @@ describe("refresh, rotation, replay and revocation (PostgreSQL, as erp_app)", ()
 
     const audit = await owner.auditLog.findMany({ where: { tenantId: orgA.tenantId, resourceId: first.sessionId } });
     expect(audit.map((a) => a.action).sort()).toEqual(["auth.login.succeeded", "auth.refresh.replay_detected", "auth.session.revoked"]);
-    expect(containsSecret(audit, [first.refreshToken, second.refreshToken, third.refreshToken, parseRefreshToken(first.refreshToken)!.secret])).toBe(false);
+    expect(containsSecret(audit, [first.refreshToken, second.refreshToken, third.refreshToken, parseRefreshToken(h.config.refreshTokenProofKey, first.refreshToken)!.secret])).toBe(false);
   });
 
   it("lets at most one of many concurrent refreshes with the same token rotate it", async () => {
@@ -95,19 +97,59 @@ describe("refresh, rotation, replay and revocation (PostgreSQL, as erp_app)", ()
     }
   });
 
-  it("a refresh token never resolves a session of another tenant, and tampering does not revoke the real session", async () => {
+  it("a refresh token never resolves a session of another tenant, and tampered tokens revoke nothing", async () => {
     const a = await loginNew(orgA);
     const b = await loginNew(orgB);
-    const pa = parseRefreshToken(a.refreshToken)!;
-    const pb = parseRefreshToken(b.refreshToken)!;
+    const [, , , secretA, proofA] = a.refreshToken.split(".") as [string, string, string, string, string];
+    const [, , , secretB, proofB] = b.refreshToken.split(".") as [string, string, string, string, string];
 
-    await expect(h.auth.refresh(formatRefreshToken(orgB.tenantId, pa.sessionId, pa.secret))).rejects.toBeInstanceOf(InvalidRefreshTokenError);
-    await expect(h.auth.refresh(formatRefreshToken(orgA.tenantId, pb.sessionId, pb.secret))).rejects.toBeInstanceOf(InvalidRefreshTokenError);
-    // B's secret on A's session (both real): a mismatch on an identified session is replay -> A revoked, B intact.
-    await expect(h.auth.refresh(formatRefreshToken(orgA.tenantId, pa.sessionId, pb.secret))).rejects.toBeInstanceOf(RefreshTokenReplayError);
-    expect((await sessionRow(a.sessionId)).revokedAt).not.toBeNull();
+    for (const forged of [
+      `rt1.${orgB.tenantId}.${a.sessionId}.${secretA}.${proofA}`, // session of A claimed in tenant B
+      `rt1.${orgA.tenantId}.${b.sessionId}.${secretB}.${proofB}`, // session of B claimed in tenant A
+      `rt1.${orgA.tenantId}.${a.sessionId}.${secretB}.${proofB}`, // real secret of B on the session of A
+      `rt1.${orgA.tenantId}.${a.sessionId}.${secretB}.${proofA}`,
+    ]) {
+      await expect(h.auth.refresh(forged)).rejects.toBeInstanceOf(InvalidRefreshTokenError);
+    }
+    expect((await sessionRow(a.sessionId)).revokedAt).toBeNull();
     expect((await sessionRow(b.sessionId)).revokedAt).toBeNull();
+    expect((await h.auth.refresh(a.refreshToken)).tenantId).toBe(orgA.tenantId);
     expect((await h.auth.refresh(b.refreshToken)).tenantId).toBe(orgB.tenantId);
+  });
+
+  it("knowing tenantId + sessionId (both in the access token) is not enough to revoke the session", async () => {
+    const victim = await loginNew(orgA);
+    const claims = await h.accessTokens.verify(victim.accessToken); // what an attacker could read from a leaked access token or log
+    const [, , , , realProof] = victim.refreshToken.split(".") as [string, string, string, string, string];
+    for (let i = 0; i < 20; i++) {
+      const guess = randomBytes(32).toString("base64url");
+      const proof = i % 2 === 0 ? randomBytes(32).toString("base64url") : realProof;
+      await expect(h.auth.refresh(`rt1.${claims.tenantId}.${claims.sessionId}.${guess}.${proof}`)).rejects.toBeInstanceOf(
+        InvalidRefreshTokenError,
+      );
+    }
+    expect((await sessionRow(victim.sessionId)).revokedAt).toBeNull();
+    expect(await owner.auditLog.count({ where: { resourceId: victim.sessionId, action: "auth.refresh.replay_detected" } })).toBe(0);
+    await h.auth.refresh(victim.refreshToken);
+  });
+
+  it("revokeAll and password reset racing a refresh always leave the session revoked and unusable", async () => {
+    const passwords = new PasswordService(app, h.scope, h.authContext, h.hasher);
+    for (const race of ["revokeAll", "reset"] as const) {
+      for (let i = 0; i < 5; i++) {
+        const tokens = await loginNew();
+        const actor = { tenantId: orgA.tenantId, userId: tokens.userId, sessionId: tokens.sessionId, deviceId: null, mustChangePassword: false };
+        const competing =
+          race === "revokeAll"
+            ? h.tenants.run({ tenantId: orgA.tenantId }, () => sessions.revokeAllForUser(tokens.userId, "admin", null))
+            : h.authContext.run(actor, () => passwords.resetPassword(tokens.userId, "Temporaria-Corrida-1"));
+        const [refreshed, other] = await Promise.allSettled([h.auth.refresh(tokens.refreshToken), competing]);
+        expect(other.status, race).toBe("fulfilled");
+        expect((await sessionRow(tokens.sessionId)).revokedAt, race).not.toBeNull();
+        if (refreshed.status === "fulfilled") await expect(h.auth.refresh(refreshed.value.refreshToken)).rejects.toBeInstanceOf(SessionRevokedError);
+        else expect(refreshed.reason, race).toBeInstanceOf(SessionRevokedError);
+      }
+    }
   });
 
   it("rejects garbage refresh tokens without touching any session", async () => {

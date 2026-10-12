@@ -58,7 +58,7 @@ describe("login (PostgreSQL, as erp_app)", () => {
     const verified = await h.accessTokens.verify(tokens.accessToken);
     expect(verified).toMatchObject({ tenantId: orgA.tenantId, userId: user.id, sessionId: tokens.sessionId, deviceId: null });
 
-    const parsed = parseRefreshToken(tokens.refreshToken);
+    const parsed = parseRefreshToken(h.config.refreshTokenProofKey, tokens.refreshToken);
     expect(parsed).toMatchObject({ tenantId: orgA.tenantId, sessionId: tokens.sessionId });
     const session = await owner.session.findUniqueOrThrow({ where: { id: tokens.sessionId } });
     expect(session).toMatchObject({ tenantId: orgA.tenantId, userId: user.id, deviceId: null, revokedAt: null, ipAddress: "10.0.0.7", userAgent: "vitest" });

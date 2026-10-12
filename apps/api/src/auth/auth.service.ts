@@ -140,15 +140,16 @@ export class AuthService {
 
   /**
    * Rotação do refresh token. O token antigo deixa de valer no mesmo UPDATE condicional que grava o novo hash; de dois
-   * refreshes concorrentes com o mesmo token, no máximo um rotaciona. Segredo que não é o atual de uma sessão existente
-   * = possível replay de token já rotacionado (ou corrida de dois refreshes): a sessão é revogada.
+   * refreshes concorrentes com o mesmo token, no máximo um rotaciona. Token com prova válida (emitido pelo servidor) cujo
+   * segredo não é o atual = replay de token já rotacionado (ou corrida de dois refreshes): a sessão é revogada. Token sem
+   * prova válida nunca chega ao banco nem revoga nada.
    */
   async refresh(refreshToken: string, clientInfo?: ClientInfo): Promise<IssuedTokens> {
-    const parsed = parseRefreshToken(refreshToken);
+    const parsed = parseRefreshToken(this.config.refreshTokenProofKey, refreshToken);
     if (!parsed) throw new InvalidRefreshTokenError();
     const client = sanitizeClient(clientInfo);
 
-    // O tenant do token só ESCOPA a busca: sem a sessão daquele tenant com aquele segredo, nada é concedido.
+    // A prova HMAC já foi conferida (token emitido por este servidor para este tenant/sessão). O tenant só ESCOPA a busca.
     return this.tenants.run({ tenantId: parsed.tenantId }, async () => {
       const now = new Date();
       const sessions = new SessionRepository(this.prisma, this.scope);
@@ -228,7 +229,7 @@ export class AuthService {
     return {
       accessToken: access.token,
       accessTokenExpiresAt: access.expiresAt,
-      refreshToken: formatRefreshToken(tenantId, session.id, secret),
+      refreshToken: formatRefreshToken(this.config.refreshTokenProofKey, tenantId, session.id, secret),
       refreshTokenExpiresAt: session.expiresAt,
       sessionId: session.id,
       userId,

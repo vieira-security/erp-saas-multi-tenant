@@ -1,3 +1,5 @@
+import { deriveRefreshProofKey } from "../auth/tokens/refresh-token.js";
+
 /**
  * Configuração do Auth, lida SOMENTE do ambiente e validada no boot (fail-fast): sem segredo, ou com segredo fraco, a
  * API não sobe, em qualquer ambiente. Nenhum default de segredo existe no código; testes usam um segredo próprio.
@@ -6,6 +8,8 @@
 export interface AuthConfig {
   /** Chave HMAC do access token (HS256). Nunca logada nem devolvida. */
   readonly accessTokenSecret: Uint8Array;
+  /** Chave da prova HMAC dos refresh tokens, derivada do mesmo segredo por HKDF com rótulo próprio. */
+  readonly refreshTokenProofKey: Uint8Array;
   readonly accessTokenTtlSeconds: number;
   /** Vida ABSOLUTA da sessão (`sessions.expires_at`), fixada no login; a rotação não a estende. */
   readonly refreshTokenTtlSeconds: number;
@@ -67,8 +71,10 @@ export function loadAuthConfig(env: NodeJS.ProcessEnv = process.env): AuthConfig
     throw new AuthConfigError(`${AUTH_ENV.refreshTtl} must be greater than ${AUTH_ENV.accessTtl}`);
   }
 
+  const accessTokenSecret = new Uint8Array(Buffer.from(secret, "utf8"));
   return Object.freeze({
-    accessTokenSecret: new Uint8Array(Buffer.from(secret, "utf8")),
+    accessTokenSecret,
+    refreshTokenProofKey: deriveRefreshProofKey(accessTokenSecret),
     accessTokenTtlSeconds,
     refreshTokenTtlSeconds,
     issuer: "erp-api",
