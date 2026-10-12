@@ -18,6 +18,8 @@ Scripts e detalhes em [`infrastructure/postgres/README.md`](../infrastructure/po
 2. **Credenciais:** login de `erp_migrator` e `erp_app` provisionado fora do git (mecanismo de produção **TBD**: Secrets Manager ou IAM database authentication).
 3. **Cada deploy, como `erp_migrator`:** `prisma migrate deploy`, `npm run db:seed` quando aplicável e `03-runtime-grants.sql`, nessa ordem e antes de a nova versão receber tráfego.
 4. **Runtime:** API e workers com `DATABASE_URL` de `erp_app`. Nunca usar a identidade admin nem `erp_migrator` na aplicação.
+5. **Segredos do Auth (M2):** `AUTH_ACCESS_TOKEN_SECRET` (>= 32 bytes aleatórios, por ambiente, do cofre de segredos) é obrigatório; ausente ou fraco, a API não sobe. Trocar a chave invalida todos os access tokens (sessões continuam; o cliente renova). TTLs opcionais `AUTH_ACCESS_TOKEN_TTL_SECONDS`/`AUTH_REFRESH_TOKEN_TTL_SECONDS`. Rotação de chave sem invalidação (múltiplas chaves/`kid`) ainda não existe. Nomes em `apps/api/.env.example`.
+6. **Dependência nativa:** `argon2` usa binário pré-compilado (N-API) do pacote; a imagem de produção precisa de plataforma suportada (linux x64/arm64 glibc ou musl).
 
 Uma migration que cria tabela exige atualizar `03-runtime-grants.sql` no mesmo PR; sem isso, a tabela fica inacessível para a aplicação e a auditoria de testes falha.
 

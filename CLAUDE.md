@@ -28,6 +28,13 @@ ERP SaaS multi-tenant para pequenas e médias lojas/restaurantes de alimentaçã
 - Toda operação de negócio em entidade tenant-scoped obtém `tenant_id` do `TenantContext` e o inclui no escopo da query (`TenantScope`); nunca buscar/alterar só por `id`. `Tenant` e `Permission` são exceções por classificação (`docs/architecture.md`).
 - Modelar para múltiplas filiais.
 
+## Auth (M2)
+
+- Rotas exigem autenticação por padrão (AuthGuard global); `@Public()` só com justificativa explícita.
+- Controllers declaram `@RequirePermissions`/`@RequireBranchPermissions` com códigos de permissão; nunca checar nome de role.
+- Senha só via `PasswordHasher` (Argon2id); nunca logar ou auditar senha, token ou hash. Eventos de segurança só via `SecurityAuditWriter` (allowlist).
+- Valores marcados `DECISION REQUIRED` em `AUTH_SECURITY_POLICY`, `auth-config.ts` e `default-roles.ts` não são alterados sem decisão de produto.
+
 ## Comandos
 
 - `npm run lint`

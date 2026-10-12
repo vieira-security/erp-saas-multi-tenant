@@ -8,8 +8,8 @@ Registro único dos pontos em aberto. Resolver antes de implementar o módulo af
 | 2 | Precisão/escala de `numeric` monetário | database | products/payments |
 | 3 | Estratégia de remoção por entidade (sem soft delete universal). Já definido: Company sem soft delete, desativação via `status = INACTIVE`, FK Tenant→Company `RESTRICT`; Branch igual (sem soft delete, `INACTIVE`, FKs `RESTRICT`). Em aberto: demais entidades e se Tenant pode ser apagado fisicamente | database | primeiros models |
 | 4 | Desenho de idempotency keys (escopo, retenção) | database/offline-edge | offline-sync/orders |
-| 5 | Autenticação, sessões, expiração offline | security | auth |
-| 6 | Modelo de roles/permissions e fronteiras entre módulos | architecture/security | users |
+| 5 | ~~Autenticação, sessões~~ implementadas no M2 ([security.md](security.md)); restam descoberta do tenant pré-login, transporte dos tokens, TTLs e expiração offline ("Decisões pendentes do M2") | security | login público/PDV offline |
+| 6 | ~~Modelo de roles/permissions~~ resolução implementada no M2; resta a matriz das roles padrão e fronteiras entre módulos | architecture/security | users |
 | 7 | Transmissão de tenant à sessão do banco para RLS (pool, Prisma) | security | ativação da RLS |
 | 8 | Escopo da auditoria (estrutura `audit_logs` criada no M1.13; catálogo de ações, eventos obrigatórios e retenção em aberto) | security | audit |
 | 9 | LGPD x imutabilidade física | security | tenants/users |
@@ -73,7 +73,7 @@ Registro único dos pontos em aberto. Resolver antes de implementar o módulo af
 4. Se um dispositivo pode mudar de filial e se `ADMIN`/`EDGE` exigem ou proíbem `branch_id` (hoje livre).
 
 ## Pendências da autorização (M2) originadas no M1.10
-1. Semântica de resolução: role global vale em todas as filiais? Como combinar global + específica (redundância, precedência) e roles de status `INACTIVE`/`ARCHIVED` ou usuário `DISABLED`/`LOCKED`.
+1. ~~Semântica de resolução~~ **Resolvido no M2.9:** role tenant-wide vale no tenant e em toda filial; role de filial só na filial; união sem precedência; só role `ACTIVE` e usuário `ACTIVE` concedem. Pendente: exigência de `UserBranchAccess` (decisão pendente 9).
 2. Se trocar `role_id`/`branch_id` de um UserRole dentro do tenant deve ser proibido no banco (hoje aceito; fluxo previsto é delete + create).
 3. Revogar UserBranchAccess com roles escopadas exige remover as roles antes (`RESTRICT`); definir o fluxo administrativo.
 
@@ -85,19 +85,36 @@ Registro único dos pontos em aberto. Resolver antes de implementar o módulo af
 5. **Retenção e volume:** política de retenção, particionamento por tempo, arquivamento; LGPD de `ip_address` e de dados pessoais em `metadata` (#9).
 6. **Leitura:** quem pode consultar a trilha (permissão no catálogo, ex.: `audit.read`) e se há exportação.
 
-## Pendências do M2 (Auth) originadas no M1.12
-1. Geração do refresh token (entropia), algoritmo de hash e comparação; duração de `expires_at`.
-2. Rotação transacional do `refresh_token_hash`; proteção contra replay/reuso (histórico, token family, hash anterior) se necessária.
-3. Revogação: logout, encerramento administrativo, revogação ao desativar/bloquear usuário ou revogar dispositivo.
+## Decisões pendentes do M2 (DECISION REQUIRED)
+O M2 foi implementado sem inventar estas regras; cada uma tem default técnico conservador (quando aplicável) num único lugar.
+
+1. **Descoberta do tenant pré-login** (dispositivo pareado, subdomínio, código de loja...). Bloqueia o endpoint HTTP de login: o core recebe o tenant de um `LoginTenantResolver` (`apps/api/src/auth/login-tenant.ts`), sem implementação.
+2. **Transporte/armazenamento dos tokens no cliente** (memória, cookie HttpOnly + CSRF, BFF). Bloqueia os endpoints de login e refresh; a API aceita o access token só via `Authorization: Bearer`.
+3. **Matriz de permissões das roles padrão** (`DEFAULT_ROLE_PERMISSIONS`, vazia para OWNER/MANAGER/ATTENDANT/KITCHEN). Também: reserva dos códigos padrão, proteção de roles `is_system` e momento do provisionamento (não há criação de tenant).
+4. **Lockout:** número de tentativas (default 5) e duração (default 15 min) em `AUTH_SECURITY_POLICY.lockout`.
+5. **TTLs:** access token (default 15 min) e vida absoluta da sessão/refresh (default 12 h), e se a sessão deve deslizar; relação com a expiração offline (#5).
+6. **Status:** quem coloca/retira `LOCKED` e reativa `DISABLED` (o Auth nunca muda status); se `PAST_DUE` e trial vencido autenticam (hoje TRIAL/ACTIVE/PAST_DUE autenticam, SUSPENDED/CANCELLED não); semântica de Device `INACTIVE` (hoje bloqueia como `REVOKED`).
+7. **UX de falhas de login:** hoje toda falha é `invalid_credentials` (inclusive conta desativada/bloqueada), para não permitir enumeração.
+8. **Política de senha:** tamanho mínimo de senha nova (default 8), complexidade, histórico, normalização Unicode; normalização da matrícula (hoje comparação exata).
+9. **Filial:** se agir numa filial exige `UserBranchAccess` mesmo com role tenant-wide; se o usuário precisa de acesso à filial do dispositivo.
+10. **Dispositivo:** pairing/segredo/certificado e autenticação autônoma do PDV (sem isso, o dispositivo declarado no login só restringe a sessão).
+11. **Rate limiting distribuído** (gateway/WAF/Redis) junto com o endpoint público de login; amplificação de escrita em `audit_logs` por tentativas falhas.
+12. **Retenção/limpeza** de sessões expiradas/revogadas e LGPD de `ip_address`/`user_agent` (#9); rotação da chave do access token sem invalidação (`kid`).
+13. **API administrativa** de usuários (reset de senha, desativação com revogação de sessões, revogação de dispositivo): os serviços existem, os endpoints e permissões não.
+
+## Pendências do M2 (Auth) originadas no M1.12 — situação após o M2
+1. ~~Geração do refresh token, hash e comparação~~ **Resolvido no M2.5** (256 bits, SHA-256, comparação em tempo constante); duração de `expires_at`: decisão pendente 5.
+2. ~~Rotação transacional e replay~~ **Resolvido no M2.5** (UPDATE condicional; segredo não atual revoga a sessão).
+3. ~~Revogação~~ **Resolvido no M2.6** (logout, sessão, todas do usuário, do dispositivo); desativar usuário/revogar dispositivo já bloqueiam no request seguinte. Endpoints administrativos: decisão pendente 13.
 4. Limpeza/retenção de sessões expiradas e revogadas; LGPD de `ip_address`/`user_agent` (#9).
 5. Se a CHECK `expires_at > created_at` atrapalhar importações/backfills, revisar.
 
-## Pendências do M2 (Auth) originadas no M1.5
-1. Algoritmo e parâmetros de hashing (previsão Argon2id) e formato do `password_hash`.
-2. Regras de transição de `status` e coerência com `disabled_at`/`locked_until` (inclusive reativação e bloqueio sem prazo).
-3. Lockout/throttling: uso de `failed_login_attempts` e `locked_until`; atualização de `last_login_at`.
-4. Fluxo de credencial temporária/reset administrativo com `must_change_password`, sem guardar senha temporária em texto.
-5. Normalização da matrícula (trim/caixa) antes de gravar e no login.
+## Pendências do M2 (Auth) originadas no M1.5 — situação após o M2
+1. ~~Algoritmo e parâmetros de hashing~~ **Resolvido no M2.2** (Argon2id PHC, `ARGON2ID_PARAMS`).
+2. Transições de `status`: semântica implementada (LOCKED/DISABLED sem prazo, `locked_until` temporário, Auth nunca muda status); fluxos administrativos: decisão pendente 6.
+3. ~~Lockout~~ **Resolvido no M2.13** (persistido, atômico); valores: decisão pendente 4; throttling distribuído: decisão pendente 11.
+4. ~~Reset administrativo com `must_change_password`~~ **Resolvido no M2.12** (serviço; endpoint: decisão pendente 13).
+5. Normalização da matrícula: decisão pendente 8.
 6. LGPD: `users.name` é dado pessoal e o usuário não é apagado fisicamente (#9).
 
 ## Gate do M1 (M1.14.4): classificação das pendências
@@ -107,7 +124,7 @@ Registro único dos pontos em aberto. Resolver antes de implementar o módulo af
 Nenhuma. Banco limpo e caminho incremental produzem o mesmo catálogo; isolamento cross-tenant de escrita, imutabilidade de `tenant_id`, append-only de `audit_logs`, matriz runtime de `erp_app` e auditorias fail-closed estão verdes e provados por checagens negativas.
 
 ### Tratar durante o M2 (Auth e autorização)
-1. ~~**Tenant context na camada de aplicação**~~ **Fundação entregue no M2.1:** `TenantContextService` (AsyncLocalStorage), `TenantScope`, `MODEL_SCOPE` e `CompanyRepository` como prova, com testes de isolamento de leitura/escrita como `erp_app`. Restam (M2): (a) o produtor do contexto — Auth/guard que resolve sessão/token, valida existência/status do tenant e chama `run()` por request; (b) provider Nest de `PrismaClient` e fiação dos repositories; (c) repositories das demais entidades seguindo o padrão; (d) checagem automática de uso direto de `PrismaClient` em código de negócio (hoje regra documentada + review; uma regra ESLint de import seria frágil e foi adiada); (e) contexto em workers/jobs (sem request: o job precisa carregar e validar o tenant explicitamente).
+1. ~~**Tenant context na camada de aplicação**~~ **Fundação entregue no M2.1; produtor (AuthGuard) e provider Nest de `PrismaClient` entregues no M2.7.** Texto original: `TenantContextService` (AsyncLocalStorage), `TenantScope`, `MODEL_SCOPE` e `CompanyRepository` como prova, com testes de isolamento de leitura/escrita como `erp_app`. Restam (M2): (a) o produtor do contexto — Auth/guard que resolve sessão/token, valida existência/status do tenant e chama `run()` por request; (b) provider Nest de `PrismaClient` e fiação dos repositories; (c) repositories das demais entidades seguindo o padrão; (d) checagem automática de uso direto de `PrismaClient` em código de negócio (hoje regra documentada + review; uma regra ESLint de import seria frágil e foi adiada); (e) contexto em workers/jobs (sem request: o job precisa carregar e validar o tenant explicitamente).
 2. Autenticação, sessões e expiração offline (#5): hashing de senha e formato de `password_hash`, refresh token (geração, hash, rotação, replay), revogação, lockout, normalização da matrícula (seções "Pendências do M2 (Auth)").
 3. Semântica da autorização (#6): resolução global x filial, status de role/usuário, fluxo de troca/remoção de UserRole e UserBranchAccess ("Pendências da autorização").
 4. Provisionamento do tenant: criação das roles padrão `OWNER`/`MANAGER`/`ATTENDANT`/`KITCHEN`, reserva dos códigos, proteção de `is_system` e matriz de permissões por role (pendência 2 do M1.8). **Depende de regras de negócio a fornecer.**
