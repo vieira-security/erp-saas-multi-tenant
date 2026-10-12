@@ -1,4 +1,5 @@
-import type { DeviceStatus, PrismaClient, TenantStatus } from "../../generated/prisma/client.js";
+import type { DeviceStatus, PrismaClient } from "../../generated/prisma/client.js";
+import type { TenantAuthState } from "../auth-security-policy.js";
 import type { TenantScope } from "../../tenancy/tenant-scope.js";
 
 export interface DeviceRef {
@@ -25,8 +26,16 @@ export class AuthDeviceRepository {
 export class AuthTenantRepository {
   constructor(private readonly db: Pick<PrismaClient, "tenant">) {}
 
-  async findStatus(tenantId: string): Promise<TenantStatus | null> {
-    const tenant = await this.db.tenant.findUnique({ where: { id: tenantId }, select: { status: true } });
-    return tenant?.status ?? null;
+  async findAuthState(tenantId: string): Promise<TenantAuthState | null> {
+    return this.db.tenant.findUnique({ where: { id: tenantId }, select: { status: true, trialEndsAt: true } });
+  }
+
+  /**
+   * Tenant pelo código PÚBLICO de login (já normalizado). Lookup por coluna única global, sem filtro de tenant por
+   * definição (`root`): o código só identifica o tenant; não autentica nem autoriza.
+   */
+  async findIdByLoginCode(loginCode: string): Promise<string | null> {
+    const tenant = await this.db.tenant.findUnique({ where: { loginCode }, select: { id: true } });
+    return tenant?.id ?? null;
   }
 }

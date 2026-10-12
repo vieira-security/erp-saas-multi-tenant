@@ -5,7 +5,7 @@ import { PRISMA_CLIENT } from "../database/database.module.js";
 import { UserStatus, type PrismaClient } from "../generated/prisma/client.js";
 import { TenantContextService } from "../tenancy/tenant-context.js";
 import { TenantScope } from "../tenancy/tenant-scope.js";
-import { AUTH_SECURITY_POLICY, isDeviceStatusAllowed, isTenantStatusAllowed } from "./auth-security-policy.js";
+import { AUTH_SECURITY_POLICY, isDeviceStatusAllowed, tenantAllowsAuthentication } from "./auth-security-policy.js";
 import {
   AccountDisabledError,
   AccountLockedError,
@@ -24,6 +24,7 @@ import { sessionInvalidity } from "./session-validity.js";
 import { AuthUserRepository, type UserCredentials } from "./persistence/auth-user.repository.js";
 import { SessionRepository, type SessionState } from "./persistence/session.repository.js";
 import { InvalidPasswordHashError, PasswordHasher, isAcceptablePasswordInput } from "./password/password-hasher.js";
+import { normalizeEmployeeNumber } from "../users/employee-number.js";
 import { AccessTokenService } from "./tokens/access-token.service.js";
 import { formatRefreshToken, hashRefreshSecret, newRefreshSecret, parseRefreshToken, refreshHashesEqual } from "./tokens/refresh-token.js";
 
@@ -81,8 +82,8 @@ export class AuthService {
       const client = sanitizeClient(command.client);
       const audit = new SecurityAuditWriter(this.prisma, this.scope);
 
-      const tenantStatus = await new AuthTenantRepository(this.prisma).findStatus(this.scope.tenantId());
-      if (!tenantStatus || !isTenantStatusAllowed(tenantStatus)) throw new TenantUnavailableError();
+      const tenantState = await new AuthTenantRepository(this.prisma).findAuthState(this.scope.tenantId());
+      if (!tenantAllowsAuthentication(tenantState, now)) throw new TenantUnavailableError();
 
       const device = await this.resolveDevice(command.deviceKey);
       if (device === "rejected") {
@@ -91,10 +92,11 @@ export class AuthService {
       }
       const deviceId = device?.id ?? null;
 
-      const { employeeNumber, password } = command;
+      const { password } = command;
+      // Mesma normalização do cadastro (trim + uppercase, zeros à esquerda preservados): "  mor-007 " = "MOR-007".
+      const employeeNumber = normalizeEmployeeNumber(command.employeeNumber);
       const users = new AuthUserRepository(this.prisma, this.scope);
-      const user =
-        isEmployeeNumber(employeeNumber) && isAcceptablePasswordInput(password) ? await users.findByEmployeeNumber(employeeNumber) : null;
+      const user = employeeNumber && isAcceptablePasswordInput(password) ? await users.findByEmployeeNumber(employeeNumber) : null;
 
       if (!user) {
         await this.hasher.burnVerification(password);
@@ -180,8 +182,8 @@ export class AuthService {
 
   /** Mesmas regras do AuthGuard (session-validity.ts), exceto o hash, verificado à parte. */
   private async assertSessionUsable(session: SessionState, now: Date): Promise<void> {
-    const tenantStatus = await new AuthTenantRepository(this.prisma).findStatus(this.scope.tenantId());
-    const invalid = sessionInvalidity(session, tenantStatus, now);
+    const tenant = await new AuthTenantRepository(this.prisma).findAuthState(this.scope.tenantId());
+    const invalid = sessionInvalidity(session, tenant, now);
     if (invalid) throw invalid;
   }
 
@@ -248,10 +250,6 @@ interface SanitizedClient {
 function sanitizeClient(client: ClientInfo | undefined): SanitizedClient {
   const userAgent = typeof client?.userAgent === "string" ? client.userAgent.slice(0, AUTH_SECURITY_POLICY.input.maxUserAgentLength) : null;
   return { ipAddress: normalizeIp(client?.ipAddress), userAgent: userAgent || null };
-}
-
-function isEmployeeNumber(value: unknown): value is string {
-  return typeof value === "string" && value.length > 0 && value.length <= AUTH_SECURITY_POLICY.input.maxEmployeeNumberLength;
 }
 
 /**

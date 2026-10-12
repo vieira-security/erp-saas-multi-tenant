@@ -32,7 +32,7 @@ export class AuthUserRepository {
     private readonly scope: TenantScope,
   ) {}
 
-  /** Matrícula comparada exatamente (sem normalização: DECISION REQUIRED, open-questions M1.5 #5). */
+  /** Recebe a matrícula JÁ normalizada (`normalizeEmployeeNumber`); o banco só guarda o formato normalizado. */
   async findByEmployeeNumber(employeeNumber: string): Promise<UserCredentials | null> {
     return this.db.user.findFirst({ where: this.scope.where({ employeeNumber }), select: CREDENTIAL_FIELDS });
   }

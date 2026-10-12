@@ -66,8 +66,8 @@ export class AuthGuard implements CanActivate {
       if (!session || session.userId !== claims.userId || session.deviceId !== claims.deviceId) {
         throw new UnauthenticatedError("session_mismatch");
       }
-      const tenantStatus = await new AuthTenantRepository(this.prisma).findStatus(claims.tenantId);
-      const invalid = sessionInvalidity(session, tenantStatus, now);
+      const tenant = await new AuthTenantRepository(this.prisma).findAuthState(claims.tenantId);
+      const invalid = sessionInvalidity(session, tenant, now);
       if (invalid) throw invalid;
       return Object.freeze({
         tenantId: claims.tenantId,

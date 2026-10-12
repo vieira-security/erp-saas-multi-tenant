@@ -22,18 +22,12 @@ export const AUTH_SECURITY_POLICY = Object.freeze({
     durationMs: 15 * 60 * 1000,
   }),
   /**
-   * DECISION REQUIRED: status de Tenant que permitem login, refresh e uso de sessão. `SUSPENDED` e `CANCELLED` bloqueiam;
-   * `PAST_DUE` permanece liberado até haver regra de assinatura (não inventar cobrança no Auth).
-   */
-  tenantStatusesAllowed: Object.freeze([TenantStatus.TRIAL, TenantStatus.ACTIVE, TenantStatus.PAST_DUE] as const),
-  /**
    * Status de Device que permitem criar, renovar e usar sessão. `REVOKED` nunca; `INACTIVE` ("fora de uso temporário")
    * também bloqueia, fail-closed (DECISION REQUIRED: confirmar a semântica de INACTIVE).
    */
   deviceStatusesAllowed: Object.freeze([DeviceStatus.ACTIVE] as const),
   /** Limites de entrada para identificadores do login (rejeitados antes de consultar o banco). */
   input: Object.freeze({
-    maxEmployeeNumberLength: 64,
     maxDeviceKeyLength: 256,
     maxUserAgentLength: 512,
   }),
@@ -41,8 +35,29 @@ export const AUTH_SECURITY_POLICY = Object.freeze({
 
 export type AuthSecurityPolicy = typeof AUTH_SECURITY_POLICY;
 
-export function isTenantStatusAllowed(status: TenantStatus): boolean {
-  return (AUTH_SECURITY_POLICY.tenantStatusesAllowed as readonly TenantStatus[]).includes(status);
+/** Estado do Tenant relevante para autenticação. */
+export interface TenantAuthState {
+  readonly status: TenantStatus;
+  readonly trialEndsAt: Date | null;
+}
+
+/**
+ * Decisão de produto do M2: quem autentica (login, refresh e cada request). ACTIVE e PAST_DUE sim (o billing decide
+ * quando passar a SUSPENDED); TRIAL só com `trial_ends_at` ausente ou no futuro; SUSPENDED e CANCELLED não.
+ * Tenant inexistente = não. Sem modo somente leitura.
+ */
+export function tenantAllowsAuthentication(tenant: TenantAuthState | null, now: Date): boolean {
+  if (!tenant) return false;
+  switch (tenant.status) {
+    case TenantStatus.ACTIVE:
+    case TenantStatus.PAST_DUE:
+      return true;
+    case TenantStatus.TRIAL:
+      return tenant.trialEndsAt === null || tenant.trialEndsAt > now;
+    case TenantStatus.SUSPENDED:
+    case TenantStatus.CANCELLED:
+      return false;
+  }
 }
 
 export function isDeviceStatusAllowed(status: DeviceStatus): boolean {
