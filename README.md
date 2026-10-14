@@ -1,6 +1,6 @@
 # ERP SaaS multi-tenant
 
-ERP para lojas/restaurantes de alimentação em shopping centers no Brasil. Estado atual: **fundação do projeto** (Next.js, NestJS, Prisma, Vitest; sem funcionalidades de negócio).
+ERP para lojas/restaurantes de alimentação em shopping centers no Brasil. Estado atual: **M1 — Core multi-tenant ✅** (schema multi-tenant, segurança do banco e RBAC estrutural no PostgreSQL; sem Auth, API de negócio nem frontend funcional). Marcos em `docs/product.md`.
 
 ## Estrutura
 
