@@ -1,11 +1,378 @@
-// Schema inicial intencionalmente vazio: nenhum modelo de negócio ainda.
-//
 // Diretrizes (ver docs/database.md):
-// - PostgreSQL compartilhado; dados de cliente terão `tenant_id` (decisão aprovada).
+// - PostgreSQL compartilhado; dados de cliente têm `tenant_id` (decisão aprovada).
 // - Compatível com Row-Level Security futura; RLS NÃO está ativa.
 // - Sem database-per-tenant nem schema-per-tenant.
-// - A URL de conexão virá de variável de ambiente (nunca no código).
+// - A URL de conexão vem de variável de ambiente (prisma.config.ts), nunca do código.
+// - IDs: UUIDv7 gerado pelo Prisma Client (`uuid(7)`), coluna física `uuid`.
+// - Datas: `timestamptz`, em UTC.
+
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  moduleFormat = "esm"
+}
 
 datasource db {
   provider = "postgresql"
+}
+
+enum TenantStatus {
+  TRIAL
+  ACTIVE
+  PAST_DUE
+  SUSPENDED
+  CANCELLED
+
+  @@map("tenant_status")
+}
+
+// Raiz do multi-tenancy: por isso NÃO possui `tenant_id`.
+// login_code: código PÚBLICO (não é segredo) que resolve o tenant antes do login; único global; nulo = sem login por
+// código. CHECK (fora do PSL, migration 20261012000000): ^[A-Z0-9][A-Z0-9-]{2,30}[A-Z0-9]$.
+model Tenant {
+  id              String             @id @default(uuid(7)) @db.Uuid
+  name            String
+  status          TenantStatus
+  trialStartedAt  DateTime?          @map("trial_started_at") @db.Timestamptz(3)
+  trialEndsAt     DateTime?          @map("trial_ends_at") @db.Timestamptz(3)
+  loginCode       String?            @unique @map("login_code")
+  createdAt       DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt       DateTime           @updatedAt @map("updated_at") @db.Timestamptz(3)
+  companies       Company[]
+  branches        Branch[]
+  users           User[]
+  branchAccesses  UserBranchAccess[]
+  roles           Role[]
+  rolePermissions RolePermission[]
+  userRoles       UserRole[]
+  devices         Device[]
+  sessions        Session[]
+  auditLogs       AuditLog[]
+
+  @@map("tenants")
+}
+
+enum CompanyStatus {
+  ACTIVE
+  INACTIVE
+
+  @@map("company_status")
+}
+
+// CHECKs (fora do PSL, definidos na migration): cnpj = 14 dígitos; legal_name e trade_name não vazios.
+model Company {
+  id        String        @id @default(uuid(7)) @db.Uuid
+  tenantId  String        @map("tenant_id") @db.Uuid
+  legalName String        @map("legal_name")
+  tradeName String        @map("trade_name")
+  cnpj      String
+  status    CompanyStatus
+  timezone  String
+  createdAt DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime      @updatedAt @map("updated_at") @db.Timestamptz(3)
+  tenant    Tenant        @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  branches  Branch[]
+
+  @@unique([tenantId, cnpj])
+  // Alvo da FK composta de Branch: garante que a Company pertence ao mesmo tenant da Branch.
+  @@unique([tenantId, id])
+  // Sem índice isolado em tenant_id: (tenant_id, status), (tenant_id, cnpj) e (tenant_id, id) já começam por ele (M1.14.3).
+  @@index([tenantId, status])
+  @@map("companies")
+}
+
+enum BranchStatus {
+  ACTIVE
+  INACTIVE
+
+  @@map("branch_status")
+}
+
+// CHECKs (fora do PSL, definidos na migration): name e code não vazios; cnpj nulo ou 14 dígitos.
+model Branch {
+  id           String             @id @default(uuid(7)) @db.Uuid
+  tenantId     String             @map("tenant_id") @db.Uuid
+  companyId    String             @map("company_id") @db.Uuid
+  name         String
+  code         String
+  cnpj         String?
+  status       BranchStatus
+  timezone     String
+  createdAt    DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt    DateTime           @updatedAt @map("updated_at") @db.Timestamptz(3)
+  tenant       Tenant             @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  // FK composta (tenant_id, company_id) -> companies(tenant_id, id): impede Company de outro tenant.
+  company      Company            @relation(fields: [tenantId, companyId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  userAccesses UserBranchAccess[]
+  devices      Device[]
+  auditLogs    AuditLog[]
+
+  @@unique([tenantId, code])
+  // NULLS DISTINCT (padrão do PostgreSQL): várias branches sem CNPJ são permitidas.
+  @@unique([tenantId, cnpj])
+  // Alvo da FK composta de UserBranchAccess.
+  @@unique([tenantId, id])
+  @@index([tenantId, companyId])
+  @@index([tenantId, status])
+  @@map("branches")
+}
+
+enum UserStatus {
+  ACTIVE
+  DISABLED
+  LOCKED
+
+  @@map("user_status")
+}
+
+// Funcionário individual (login: matrícula + senha). Sem coluna de senha em texto puro.
+// CHECKs (fora do PSL, definidos na migration): name e password_hash não vazios; employee_number normalizado
+// ^[A-Z0-9._-]{1,32}$ (migration 20261012010000);
+// failed_login_attempts >= 0.
+model User {
+  id                  String             @id @default(uuid(7)) @db.Uuid
+  tenantId            String             @map("tenant_id") @db.Uuid
+  name                String
+  employeeNumber      String             @map("employee_number")
+  passwordHash        String             @map("password_hash")
+  status              UserStatus
+  mustChangePassword  Boolean            @default(false) @map("must_change_password")
+  failedLoginAttempts Int                @default(0) @map("failed_login_attempts")
+  lockedUntil         DateTime?          @map("locked_until") @db.Timestamptz(3)
+  lastLoginAt         DateTime?          @map("last_login_at") @db.Timestamptz(3)
+  disabledAt          DateTime?          @map("disabled_at") @db.Timestamptz(3)
+  createdAt           DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt           DateTime           @updatedAt @map("updated_at") @db.Timestamptz(3)
+  tenant              Tenant             @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  branchAccesses      UserBranchAccess[]
+  roles               UserRole[]
+  sessions            Session[]
+  auditLogs           AuditLog[]
+
+  @@unique([tenantId, employeeNumber])
+  // Alvo da FK composta de UserBranchAccess.
+  @@unique([tenantId, id])
+  @@index([tenantId, status])
+  @@map("users")
+}
+
+// Filiais que um usuário pode acessar (0..N, mesmo tenant). Não é papel/permissão.
+// Sem updated_at: o vínculo não tem dados mutáveis; existe ou não existe.
+model UserBranchAccess {
+  id        String     @id @default(uuid(7)) @db.Uuid
+  tenantId  String     @map("tenant_id") @db.Uuid
+  userId    String     @map("user_id") @db.Uuid
+  branchId  String     @map("branch_id") @db.Uuid
+  createdAt DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
+  tenant    Tenant     @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  // FKs compostas: User e Branch precisam pertencer ao mesmo tenant do vínculo.
+  user      User       @relation(fields: [tenantId, userId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  branch    Branch     @relation(fields: [tenantId, branchId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  // Roles escopadas a esta filial dependem deste acesso.
+  userRoles UserRole[]
+
+  @@unique([tenantId, userId, branchId])
+  @@index([tenantId, branchId])
+  @@map("user_branch_access")
+}
+
+enum RoleStatus {
+  ACTIVE
+  INACTIVE
+  ARCHIVED
+
+  @@map("role_status")
+}
+
+// Papel do RBAC, por tenant. Códigos padrão previstos (templates, criados no provisionamento futuro):
+// OWNER, MANAGER, ATTENDANT, KITCHEN. Roles customizadas usam is_system = false.
+// Sozinha, uma Role não concede permissão alguma: permissões via RolePermission, atribuição via UserRole.
+// CHECKs (fora do PSL, definidos na migration): code e name não vazios.
+model Role {
+  id          String           @id @default(uuid(7)) @db.Uuid
+  tenantId    String           @map("tenant_id") @db.Uuid
+  code        String
+  name        String
+  description String?
+  isSystem    Boolean          @default(false) @map("is_system")
+  status      RoleStatus
+  createdAt   DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime         @updatedAt @map("updated_at") @db.Timestamptz(3)
+  tenant      Tenant           @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  permissions RolePermission[]
+  userRoles   UserRole[]
+
+  @@unique([tenantId, code])
+  // Alvo da FK composta de RolePermission (id já é PK; não cria regra funcional nova).
+  @@unique([tenantId, id])
+  @@index([tenantId, status])
+  @@map("roles")
+}
+
+// Catálogo técnico GLOBAL de permissões (sem tenant_id): controlado pelo sistema via seed.
+// `code` (<module>.<action>) é identificador técnico estável usado pelo código da aplicação.
+// Sem tenant, usuário, role ou escopo de filial: associações entram em módulos posteriores.
+// CHECKs (fora do PSL, definidos na migration): formato de code; module e description não vazios.
+model Permission {
+  id          String           @id @default(uuid(7)) @db.Uuid
+  code        String           @unique
+  module      String
+  description String
+  createdAt   DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
+  roles       RolePermission[]
+
+  @@index([module])
+  @@map("permissions")
+}
+
+// Permissões concedidas a uma Role do tenant. Role é por tenant (FK composta); Permission é global
+// (FK simples). Sem updated_at: o vínculo existe ou não existe. Não liga Role a User.
+model RolePermission {
+  id           String     @id @default(uuid(7)) @db.Uuid
+  tenantId     String     @map("tenant_id") @db.Uuid
+  roleId       String     @map("role_id") @db.Uuid
+  permissionId String     @map("permission_id") @db.Uuid
+  createdAt    DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
+  tenant       Tenant     @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  role         Role       @relation(fields: [tenantId, roleId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@unique([tenantId, roleId, permissionId])
+  // Consulta inversa (quais roles usam a permissão) e checagem do RESTRICT ao apagar uma permissão.
+  @@index([permissionId])
+  @@map("role_permissions")
+}
+
+// Role atribuída a um User. branch_id NULL = role válida em todo o tenant; preenchido = só naquela filial,
+// e então exige UserBranchAccess (FK composta, verificada pelo PostgreSQL apenas quando branch_id não é NULL).
+// Sem updated_at: para mudar uma atribuição, apagar e criar outra.
+// Índices únicos parciais (fora do PSL, definidos na migration):
+//   user_roles_tenant_scope_key  (tenant_id, user_id, role_id)            WHERE branch_id IS NULL
+//   user_roles_branch_scope_key  (tenant_id, user_id, role_id, branch_id) WHERE branch_id IS NOT NULL
+model UserRole {
+  id           String            @id @default(uuid(7)) @db.Uuid
+  tenantId     String            @map("tenant_id") @db.Uuid
+  userId       String            @map("user_id") @db.Uuid
+  roleId       String            @map("role_id") @db.Uuid
+  branchId     String?           @map("branch_id") @db.Uuid
+  createdAt    DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
+  tenant       Tenant            @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  user         User              @relation(fields: [tenantId, userId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  role         Role              @relation(fields: [tenantId, roleId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  // Escopo por filial: garante Branch no mesmo tenant e acesso do usuário (dispensa FK direta para Branch).
+  branchAccess UserBranchAccess? @relation(fields: [tenantId, userId, branchId], references: [tenantId, userId, branchId], onDelete: Restrict, onUpdate: Restrict)
+
+  // Roles de um usuário (todas ou numa filial) e lookups das FKs para users e user_branch_access.
+  @@index([tenantId, userId, branchId])
+  // Usuários com uma role (consulta inversa) e lookup da FK para roles.
+  @@index([tenantId, roleId])
+  @@map("user_roles")
+}
+
+enum DeviceType {
+  POS
+  TABLET
+  ADMIN
+  KITCHEN_DISPLAY
+  EDGE
+
+  @@map("device_type")
+}
+
+enum DeviceStatus {
+  ACTIVE
+  INACTIVE
+  REVOKED
+
+  @@map("device_status")
+}
+
+// Terminal/dispositivo conhecido pelo ERP, do tenant; branch_id NULL = dispositivo de nível do tenant.
+// device_key é identificador técnico estável (NÃO é segredo). Sem pairing, autenticação, segredo ou heartbeat.
+// CHECKs (fora do PSL, definidos na migration): name e device_key não vazios.
+model Device {
+  id         String       @id @default(uuid(7)) @db.Uuid
+  tenantId   String       @map("tenant_id") @db.Uuid
+  branchId   String?      @map("branch_id") @db.Uuid
+  name       String
+  deviceType DeviceType   @map("device_type")
+  deviceKey  String       @map("device_key")
+  status     DeviceStatus
+  lastSeenAt DateTime?    @map("last_seen_at") @db.Timestamptz(3)
+  createdAt  DateTime     @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt  DateTime     @updatedAt @map("updated_at") @db.Timestamptz(3)
+  tenant     Tenant       @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  // FK composta MATCH SIMPLE: verificada só quando branch_id não é NULL; filial sempre do mesmo tenant.
+  branch     Branch?      @relation(fields: [tenantId, branchId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  sessions   Session[]
+  auditLogs  AuditLog[]
+
+  @@unique([tenantId, deviceKey])
+  // Alvo da FK composta de Session (id já é PK; não cria regra funcional nova).
+  @@unique([tenantId, id])
+  @@index([tenantId, status])
+  // Listagem por filial e lookup da FK para branches.
+  @@index([tenantId, branchId])
+  @@map("devices")
+}
+
+// Sessão persistente (base para Auth no M2): só o HASH do refresh token atual; access token nunca é persistido.
+// Estado derivado: ativa = revoked_at IS NULL AND expires_at > now(); revogada = revoked_at IS NOT NULL;
+// expirada = expires_at <= now(). Sem status nem updated_at: eventos de segurança usam datas próprias.
+// CHECKs (fora do PSL, definidos na migration): refresh_token_hash não vazio; expires_at > created_at.
+model Session {
+  id               String    @id @default(uuid(7)) @db.Uuid
+  tenantId         String    @map("tenant_id") @db.Uuid
+  userId           String    @map("user_id") @db.Uuid
+  deviceId         String?   @map("device_id") @db.Uuid
+  refreshTokenHash String    @unique @map("refresh_token_hash")
+  ipAddress        String?   @map("ip_address") @db.Inet
+  userAgent        String?   @map("user_agent")
+  expiresAt        DateTime  @map("expires_at") @db.Timestamptz(3)
+  revokedAt        DateTime? @map("revoked_at") @db.Timestamptz(3)
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  tenant           Tenant    @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  user             User      @relation(fields: [tenantId, userId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  // FK composta MATCH SIMPLE: verificada só quando device_id não é NULL; dispositivo sempre do mesmo tenant.
+  device           Device?   @relation(fields: [tenantId, deviceId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+
+  // Sessões de um usuário e lookup da FK para users.
+  @@index([tenantId, userId])
+  // Sessões de um dispositivo e lookup da FK para devices.
+  @@index([tenantId, deviceId])
+  @@map("sessions")
+}
+
+// Trilha de auditoria append-only do tenant: só INSERT no fluxo normal (sem updated_at, status ou soft delete).
+// Ator e contexto opcionais: user_id NULL = evento sem usuário (worker, rotina, sistema, só dispositivo);
+// branch_id/device_id NULL = sem filial/dispositivo. FKs compostas MATCH SIMPLE: verificadas só quando preenchidas.
+// resource_id é referência lógica/polimórfica a qualquer recurso: SEM FK, de propósito (o log sobrevive ao recurso).
+// metadata NUNCA guarda credenciais (senha, hash, tokens, segredos, chaves, PIN, cartão completo).
+// CHECKs (fora do PSL, definidos na migration): formato de action e de resource_type.
+model AuditLog {
+  id           String   @id @default(uuid(7)) @db.Uuid
+  tenantId     String   @map("tenant_id") @db.Uuid
+  userId       String?  @map("user_id") @db.Uuid
+  branchId     String?  @map("branch_id") @db.Uuid
+  deviceId     String?  @map("device_id") @db.Uuid
+  action       String
+  resourceType String   @map("resource_type")
+  resourceId   String?  @map("resource_id") @db.Uuid
+  metadata     Json?    @db.JsonB
+  ipAddress    String?  @map("ip_address") @db.Inet
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  tenant       Tenant   @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  user         User?    @relation(fields: [tenantId, userId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  branch       Branch?  @relation(fields: [tenantId, branchId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  device       Device?  @relation(fields: [tenantId, deviceId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+
+  // Linha do tempo do tenant.
+  @@index([tenantId, createdAt])
+  // Ações de um usuário, de uma filial e de um dispositivo; também atendem as FKs compostas.
+  @@index([tenantId, userId, createdAt])
+  @@index([tenantId, branchId, createdAt])
+  @@index([tenantId, deviceId, createdAt])
+  // Histórico de um recurso (referência lógica, sem FK).
+  @@index([tenantId, resourceType, resourceId, createdAt])
+  @@map("audit_logs")
 }

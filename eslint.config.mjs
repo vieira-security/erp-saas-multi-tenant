@@ -2,8 +2,10 @@ import js from "@eslint/js";
 import nextCoreWebVitals from "eslint-config-next/core-web-vitals";
 import tseslint from "typescript-eslint";
 
+const prismaClientMessage = "Use createPrismaClient() from apps/api/src/database/create-prisma-client.ts.";
+
 export default tseslint.config(
-  { ignores: ["**/node_modules/**", "**/dist/**", "**/.next/**", "**/coverage/**", "**/next-env.d.ts"] },
+  { ignores: ["**/node_modules/**", "**/dist/**", "**/.next/**", "**/coverage/**", "**/next-env.d.ts", "apps/api/src/generated/**"] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   // Next.js recommended rules (incl. React/hooks), scoped to the web app only.
@@ -12,4 +14,23 @@ export default tseslint.config(
     files: ["apps/web/**/*.{js,jsx,mjs,ts,tsx}"],
     settings: { ...config.settings, next: { rootDir: "apps/web/" } },
   })),
+  // PrismaClient só pode ser criado por createPrismaClient (fixa TimeZone=UTC; ver docs/database.md).
+  {
+    ignores: ["apps/api/src/database/create-prisma-client.ts"],
+    rules: {
+      "no-restricted-syntax": [
+        "error",
+        { selector: "NewExpression[callee.name='PrismaClient']", message: prismaClientMessage },
+      ],
+      "@typescript-eslint/no-restricted-imports": [
+        "error",
+        {
+          paths: [{ name: "@prisma/client", importNames: ["PrismaClient"], allowTypeImports: true, message: prismaClientMessage }],
+          patterns: [
+            { group: ["**/generated/prisma/*"], importNames: ["PrismaClient"], allowTypeImports: true, message: prismaClientMessage },
+          ],
+        },
+      ],
+    },
+  },
 );
