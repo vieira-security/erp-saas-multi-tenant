@@ -1,7 +1,7 @@
 # Banco de dados
 
 ## Estado atual
-PostgreSQL via Prisma. Models: `Tenant` (tabela `tenants`, migration `20261002000000_create_tenants`), `Company` (tabela `companies`, migration `20261002010000_create_companies`), `Branch` (tabela `branches`, migration `20261002020000_create_branches`), `User` (tabela `users`, migration `20261002030000_create_users`), `UserBranchAccess` (tabela `user_branch_access`, migration `20261002040000_create_user_branch_access`), `Role` (tabela `roles`, migration `20261002050000_create_roles`), `Permission` (tabela global `permissions`, migration `20261002060000_create_permissions`), `RolePermission` (tabela `role_permissions`, migration `20261002070000_create_role_permissions`), `UserRole` (tabela `user_roles`, migration `20261002080000_create_user_roles`), `Device` (tabela `devices`, migration `20261002090000_create_devices`), `Session` (tabela `sessions`, migration `20261002100000_create_sessions`) e `AuditLog` (tabela `audit_logs`, migrations `20261002110000_create_audit_logs` e `20261002111000_make_audit_logs_append_only`). A imutabilidade de `tenant_id` é imposta pela migration `20261002120000_make_tenant_id_immutable` (M1.14.1); o bloqueio de `TRUNCATE` em `audit_logs`, pela `20261002121000_forbid_audit_logs_truncate` (M1.14.2a); a remoção do índice redundante `companies_tenant_id_idx`, pela `20261002130000_drop_redundant_company_tenant_index` (M1.14.3). A URL de conexão vem de `DATABASE_URL` (lida em `apps/api/prisma.config.ts`), nunca do código. Identidades e privilégios do PostgreSQL (`erp_migrator`/`erp_app`, M1.14.2b): seção "Identidades e privilégios do PostgreSQL" abaixo.
+PostgreSQL via Prisma. Models: `Tenant` (tabela `tenants`, migration `20261002000000_create_tenants`), `Company` (tabela `companies`, migration `20261002010000_create_companies`), `Branch` (tabela `branches`, migration `20261002020000_create_branches`), `User` (tabela `users`, migration `20261002030000_create_users`), `UserBranchAccess` (tabela `user_branch_access`, migration `20261002040000_create_user_branch_access`), `Role` (tabela `roles`, migration `20261002050000_create_roles`), `Permission` (tabela global `permissions`, migration `20261002060000_create_permissions`), `RolePermission` (tabela `role_permissions`, migration `20261002070000_create_role_permissions`), `UserRole` (tabela `user_roles`, migration `20261002080000_create_user_roles`), `Device` (tabela `devices`, migration `20261002090000_create_devices`), `Session` (tabela `sessions`, migration `20261002100000_create_sessions`) e `AuditLog` (tabela `audit_logs`, migrations `20261002110000_create_audit_logs` e `20261002111000_make_audit_logs_append_only`). A imutabilidade de `tenant_id` é imposta pela migration `20261002120000_make_tenant_id_immutable` (M1.14.1); o bloqueio de `TRUNCATE` em `audit_logs`, pela `20261002121000_forbid_audit_logs_truncate` (M1.14.2a); a remoção do índice redundante `companies_tenant_id_idx`, pela `20261002130000_drop_redundant_company_tenant_index` (M1.14.3). No M2: `tenants.login_code` pela `20261012000000_add_tenant_login_code` e o formato normalizado de `users.employee_number` pela `20261012010000_enforce_employee_number_format`. A URL de conexão vem de `DATABASE_URL` (lida em `apps/api/prisma.config.ts`), nunca do código. Identidades e privilégios do PostgreSQL (`erp_migrator`/`erp_app`, M1.14.2b): seção "Identidades e privilégios do PostgreSQL" abaixo.
 
 ## Tenant
 Raiz do multi-tenancy; por isso **não** possui `tenant_id`.
@@ -12,11 +12,13 @@ Raiz do multi-tenancy; por isso **não** possui `tenant_id`.
 | `name` | `text` | não | |
 | `status` | enum `tenant_status` | não | `TRIAL`, `ACTIVE`, `PAST_DUE`, `SUSPENDED`, `CANCELLED`; sem default |
 | `trial_started_at` | `timestamptz(3)` | sim | |
-| `trial_ends_at` | `timestamptz(3)` | sim | |
+| `trial_ends_at` | `timestamptz(3)` | sim | TRIAL autentica só enquanto nulo ou futuro (M2) |
 | `created_at` | `timestamptz(3)` | não | default `CURRENT_TIMESTAMP` |
 | `updated_at` | `timestamptz(3)` | não | mantido pelo Prisma (`@updatedAt`) |
 
-Sem soft delete, billing, regra automática de trial ou RLS.
+| `login_code` | `text` | sim | código **público** de login da organização (M2): não é segredo, só resolve o tenant antes do login; `UNIQUE` global (`tenants_login_code_key`); CHECK `^[A-Z0-9][A-Z0-9-]{2,30}[A-Z0-9]$`; nulo = sem login por código (coluna física no fim da tabela) |
+
+Sem soft delete, billing ou RLS. Status que autenticam: ver [security.md](security.md).
 
 ## Company
 Empresa de um tenant. Relação **Tenant 1 → N Company**; o MVP começa com uma empresa por tenant, mas **não** há constraint 1:1.
@@ -67,14 +69,14 @@ A FK simples `company_id → companies.id` não impede `branches.tenant_id` dife
 O banco então rejeita, por Prisma ou SQL direto: criar Branch do Tenant A com Company do Tenant B; trocar só `company_id` ou só `tenant_id` da Branch para outro tenant; trocar `tenant_id` de uma Company que tem Branches (`ON UPDATE RESTRICT`). Os testes de integração verificam esses casos e que a versão com FK simples falharia. Entidades futuras que referenciem Company/Branch devem seguir o mesmo padrão.
 
 ## User
-Funcionário individual do tenant (sem usuários compartilhados). Login futuro no PDV por **matrícula + senha**; autenticação **ainda não implementada** (nada de hashing, login, tokens ou lockout nesta etapa). Relação **Tenant 1 → N User**.
+Funcionário individual do tenant (sem usuários compartilhados). Login no PDV por **matrícula + senha** (M2, [security.md](security.md)): `password_hash` = Argon2id PHC; `failed_login_attempts`/`locked_until` = lockout temporário persistido; `last_login_at` gravado no login; `status`/`disabled_at` nunca alterados pelo Auth. Relação **Tenant 1 → N User**.
 
 | Coluna | Tipo PostgreSQL | Nulo | Observação |
 |---|---|---|---|
 | `id` | `uuid` (PK) | não | UUIDv7 gerado pelo Prisma Client |
 | `tenant_id` | `uuid` | não | FK `tenants.id`, `ON DELETE RESTRICT ON UPDATE RESTRICT` |
 | `name` | `text` | não | CHECK `btrim(name) <> ''` |
-| `employee_number` | `text` | não | matrícula; CHECK `btrim(employee_number) <> ''`; `UNIQUE (tenant_id, employee_number)`; sem formato numérico imposto |
+| `employee_number` | `text` | não | matrícula normalizada (M2): CHECK `employee_number ~ '^[A-Z0-9._-]{1,32}$'` (trim + uppercase feitos pela aplicação; zeros à esquerda preservados); `UNIQUE (tenant_id, employee_number)`; sem formato numérico imposto |
 | `password_hash` | `text` | não | **somente o hash**, gravado sem transformação; CHECK `btrim(password_hash) <> ''` |
 | `status` | enum `user_status` | não | `ACTIVE`, `DISABLED` (desativação administrativa), `LOCKED` (bloqueio de segurança); sem default |
 | `must_change_password` | `boolean` | não | default `false` |
@@ -86,7 +88,7 @@ Funcionário individual do tenant (sem usuários compartilhados). Login futuro n
 | `updated_at` | `timestamptz(3)` | não | mantido pelo Prisma (`@updatedAt`) |
 
 - Índices: unique `(tenant_id, employee_number)`, `(tenant_id, status)` e unique `(tenant_id, id)` (alvo da FK composta de UserBranchAccess, criada no M1.6).
-- **Matrícula única por tenant**, não global: a mesma matrícula pode existir em outro tenant. Comparação exata (sem normalização além de impedir vazio/espaços).
+- **Matrícula única por tenant**, não global: a mesma matrícula pode existir em outro tenant. Comparação exata do valor normalizado (`normalizeEmployeeNumber`, mesma regra no cadastro e no login).
 - **Senha nunca é persistida em texto puro.** Não existe coluna `password`, `plain_password`, `temporary_password` nem equivalente; a auditoria do catálogo falha se surgir coluna textual com nome de credencial além de `users.password_hash`. O algoritmo (previsão: Argon2id) pertence ao M2.
 - **Sem exclusão física no fluxo normal:** o usuário é desativado (`status = DISABLED`) e permanece no histórico. Sem soft delete universal e sem cascade; Tenant com User não pode ser apagado.
 - Coerência entre `status` e `disabled_at`/`locked_until` **não** é imposta no banco (ex.: reativação, bloqueio sem prazo); fica para a camada de aplicação (Auth/M2).
@@ -110,7 +112,7 @@ Define quais filiais um usuário pode acessar: **User 0..N Branches, sempre no m
 - Sem regra de "filial padrão", convite ou expiração.
 
 ## Role
-Catálogo de papéis do RBAC, **pertencente ao Tenant**. Sozinha, uma Role **não concede permissão alguma**: as permissões vêm de `RolePermission` e a atribuição a usuários de `UserRole`; nenhuma verificação de autorização existe ainda (M2). Relação **Tenant 1 → N Role**.
+Catálogo de papéis do RBAC, **pertencente ao Tenant**. Sozinha, uma Role **não concede permissão alguma**: as permissões vêm de `RolePermission` e a atribuição a usuários de `UserRole`, resolvidas pelo `AuthorizationService` (M2; só roles `ACTIVE` concedem). Relação **Tenant 1 → N Role**.
 
 | Coluna | Tipo PostgreSQL | Nulo | Observação |
 |---|---|---|---|
@@ -125,7 +127,7 @@ Catálogo de papéis do RBAC, **pertencente ao Tenant**. Sozinha, uma Role **nã
 | `updated_at` | `timestamptz(3)` | não | mantido pelo Prisma (`@updatedAt`) |
 
 - Índices: unique `(tenant_id, code)`, `(tenant_id, status)` e unique `(tenant_id, id)` (alvo da FK composta de RolePermission, criada no M1.9; não cria regra funcional, `id` já é PK).
-- **Códigos padrão previstos** (templates, `is_system = true`): `OWNER` (Proprietário), `MANAGER` (Gerente), `ATTENDANT` (Atendente), `KITCHEN` (Cozinha). Serão criados **no provisionamento do Tenant** (futuro); **não há seed global**. O banco não reserva esses códigos: hoje uma role customizada poderia usar `OWNER` se o código ainda não existir no tenant.
+- **Códigos padrão previstos** (templates, `is_system = true`): `OWNER` (Proprietário), `MANAGER` (Gerente), `ATTENDANT` (Atendente), `KITCHEN` (Cozinha). Criados pelo provisionamento do Tenant (`TenantProvisioningService`, M2.11, idempotente); **não há seed global**. A matriz de permissões aprovada está em `DEFAULT_ROLE_PERMISSIONS` ([security.md](security.md)). O banco não reserva esses códigos: hoje uma role customizada poderia usar `OWNER` se o código ainda não existir no tenant.
 - **Roles customizadas** são suportadas (`is_system = false`, código livre e único por tenant). A aplicação poderá normalizar `code` (trim + uppercase) no futuro.
 - Sem regras de edição/exclusão de role de sistema ainda. Sem exclusão física como operação normal: roles são desativadas ou arquivadas; Tenant com Role não pode ser apagado (`RESTRICT`).
 - A Role não tem filial; o escopo por filial fica na atribuição (`user_roles.branch_id`).
@@ -167,7 +169,7 @@ Permissões concedidas a uma Role: **Role N ↔ N Permission**. **Permission é 
 - Índice `(permission_id)`: consulta inversa (quais roles, em qualquer tenant, usam a permissão; manutenção do catálogo) e checagem do `RESTRICT` ao apagar uma permissão. Escolhido em vez de `(permission_id, tenant_id)` por simplicidade: consultas por tenant partem da role, já cobertas pela unique.
 - O banco rejeita, por Prisma ou SQL: Role de outro tenant; troca posterior de `role_id` para Role de outro tenant; troca só de `tenant_id`. A mesma Permission pode, naturalmente, estar em roles de vários tenants.
 - **Remoção com `RESTRICT`:** Role com permissões não pode ser apagada nem mudar de tenant; **Permission vinculada não pode ser apagada** (uma permissão que sair do catálogo exigirá remover os vínculos explicitamente, política ainda não definida); Tenant com RolePermission não pode ser apagado.
-- **Sem provisionamento:** a matriz de permissões das roles padrão (OWNER, MANAGER, ATTENDANT, KITCHEN) **ainda será decidida**; nenhuma permissão é atribuída automaticamente.
+- **Provisionamento (M2):** `TenantProvisioningService` acrescenta os vínculos da matriz aprovada das roles padrão (OWNER = 19, MANAGER = 16, ATTENDANT = 8, KITCHEN = 2), de forma idempotente; nunca remove vínculos. Permissão nova do catálogo não entra em role alguma até decisão explícita na matriz.
 
 ## UserRole
 Role atribuída a um User, **global ou por filial**. Relações Tenant/User/Role **1 → N** UserRole; UserBranchAccess **1 → N** UserRole escopadas.
@@ -214,7 +216,7 @@ Terminal/dispositivo conhecido pelo ERP (PDV, tablet, terminal administrativo, d
 - Sem soft delete: o fluxo normal usa `INACTIVE`/`REVOKED`. Branch ou Tenant com Device não podem ser apagados; Branch com Device também não pode mudar de tenant (`ON UPDATE RESTRICT`).
 
 ## Session
-Registro persistente de sessão, base para o módulo Auth (M2): sessões revogáveis, refresh tokens rotativos, encerramento administrativo. **Pertence a User e Tenant**; o Device é opcional. **Nada de login, JWT, geração/hash/rotação de token, logout, cookies ou guards nesta etapa.**
+Registro persistente de sessão, base para o módulo Auth (M2): sessões revogáveis, refresh tokens rotativos, encerramento administrativo. **Pertence a User e Tenant**; o Device é opcional. Usada pelo Auth (M2): `refresh_token_hash` = `sha256$...` do segredo de 256 bits do refresh token, rotação por UPDATE condicional, revogação por `revoked_at` (logout, replay, troca/reset de senha, admin); ver [security.md](security.md). **Sem migration nova no M2.**
 
 | Coluna | Tipo PostgreSQL | Nulo | Observação |
 |---|---|---|---|
@@ -234,7 +236,7 @@ Registro persistente de sessão, base para o módulo Auth (M2): sessões revogá
 - **Nunca persistir refresh token puro nem access token.** Não existem colunas `refresh_token`, `token` ou `access_token`; a auditoria de credenciais as rejeita.
 - **CHECK `expires_at > created_at`**: compara valores da própria linha (com o default, `created_at` é o início da transação), então não depende de ordem de avaliação. Fixtures de sessões já expiradas precisam informar também um `created_at` anterior.
 - Índices: unique `(refresh_token_hash)`, `(tenant_id, user_id)` (sessões do usuário e FK para `users`) e `(tenant_id, device_id)` (sessões do dispositivo e FK para `devices`). Sem índice em `expires_at` por enquanto.
-- **Rotação (M2):** a sessão guarda apenas o hash do refresh token válido; na rotação o hash será substituído transacionalmente. Histórico de tokens, token family, hash anterior ou detecção de reuso/replay **não** foram antecipados.
+- **Rotação (M2):** a sessão guarda apenas o hash do refresh token válido, substituído por UPDATE condicional (`refresh_token_hash = <apresentado> AND revoked_at IS NULL AND expires_at > agora`). Sem histórico/token family e sem coluna nova: o refresh token carrega uma prova HMAC de que foi emitido pelo servidor para aquela sessão; só um token com prova válida cujo segredo não é o atual é tratado como replay e revoga a sessão (token forjado é apenas inválido).
 - **Remoção com `RESTRICT`:** User, Device e Tenant com sessão não são apagados; User ou Device com sessão também não mudam de tenant. Retenção/LGPD das sessões históricas ainda será definida.
 
 ## AuditLog
@@ -402,6 +404,8 @@ O schema Prisma não representa CHECKs nem índices únicos parciais (`user_role
 - Constraints devem reforçar o isolamento quando possível: unicidade composta (ex.: matrícula única por `(tenant_id, matricula)`), FKs que incluam `tenant_id`, índices iniciados por `tenant_id`.
 - Esquema compatível com RLS; RLS será ativada em fase posterior ([security.md](security.md)).
 - Proibido: database-per-tenant e schema-per-tenant.
+- **Auth e autorização (M2):** usam só a matriz runtime existente de `erp_app` (SELECT/INSERT/UPDATE em `users`, `sessions`, `roles`; SELECT em `devices`, `tenants`, `permissions`, `user_roles`, `role_permissions`, `branches`; INSERT em `audit_logs` e `role_permissions`). Nenhum privilégio novo; a auditoria `RUNTIME_TABLE_PRIVILEGES` segue inalterada.
+- **Acesso a dados (M2.1):** o banco não filtra leitura por tenant. Toda query de negócio em tabela tenant-scoped inclui `tenant_id` do `TenantContext` (`TenantScope`, [architecture.md](architecture.md)), mesmo quando filtra por `id` UUID. `tenants` (raiz) e `permissions` (global) nunca recebem filtro implícito. O padrão não exigiu migration nem grant novo: `erp_app` mantém a matriz exata acima.
 
 ## Convenções
 | Tema | Decisão |

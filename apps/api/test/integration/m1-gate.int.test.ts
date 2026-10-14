@@ -14,6 +14,7 @@ import {
 import { createPrismaClient } from "../../src/database/create-prisma-client.js";
 import {
   GLOBAL_TABLES,
+  MODEL_TABLES,
   RUNTIME_TABLE_PRIVILEGES,
   classifyTable,
   checkConstraintViolations,
@@ -38,22 +39,6 @@ import {
 const FK_VIOLATION = "23503";
 const TENANT_ID_IMMUTABLE = "23000";
 const INSUFFICIENT_PRIVILEGE = "42501";
-
-/** Every Prisma model of M1 and its table. A new model must be reviewed here (and in the audits) before M2. */
-const M1_MODELS: Readonly<Record<string, string>> = {
-  Tenant: "tenants",
-  Company: "companies",
-  Branch: "branches",
-  User: "users",
-  UserBranchAccess: "user_branch_access",
-  Role: "roles",
-  Permission: "permissions",
-  RolePermission: "role_permissions",
-  UserRole: "user_roles",
-  Device: "devices",
-  Session: "sessions",
-  AuditLog: "audit_logs",
-};
 
 /** Editable tenant tables, all guarded by <table>_tenant_id_immutable. */
 const EDITABLE_TENANT_TABLES = [
@@ -147,8 +132,8 @@ describe("M1 final gate (PostgreSQL)", () => {
 
   describe("structural state of M1", () => {
     it("has exactly the twelve M1 models, mapped to the expected tables, and no unexpected table", async () => {
-      expect(Object.keys(Prisma.ModelName).sort()).toEqual(Object.keys(M1_MODELS).sort());
-      expect(await listTables(owner)).toEqual([...Object.values(M1_MODELS), "_prisma_migrations"].sort());
+      expect(Object.keys(Prisma.ModelName).sort()).toEqual(Object.keys(MODEL_TABLES).sort());
+      expect(await listTables(owner)).toEqual([...Object.values(MODEL_TABLES), "_prisma_migrations"].sort());
     });
 
     it("keeps permissions as the only global business table and every other business table tenant-scoped", async () => {

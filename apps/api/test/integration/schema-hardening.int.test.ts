@@ -68,7 +68,7 @@ describe("schema hardening (PostgreSQL catalog)", () => {
         role_permissions: ["role_permissions_permission_id_idx", "role_permissions_pkey", "role_permissions_tenant_id_role_id_permission_id_key"],
         roles: ["roles_pkey", "roles_tenant_id_code_key", "roles_tenant_id_id_key", "roles_tenant_id_status_idx"],
         sessions: ["sessions_pkey", "sessions_refresh_token_hash_key", "sessions_tenant_id_device_id_idx", "sessions_tenant_id_user_id_idx"],
-        tenants: ["tenants_pkey"],
+        tenants: ["tenants_login_code_key", "tenants_pkey"],
         user_branch_access: [
           "user_branch_access_pkey",
           "user_branch_access_tenant_id_branch_id_idx",
@@ -90,12 +90,14 @@ describe("schema hardening (PostgreSQL catalog)", () => {
       const indexes = await listIndexes(prisma);
       const notTenantLeading = indexes.filter((i) => !i.primary && i.columns[0] !== "tenant_id").map((i) => i.name);
       // Global by design: Permission is a global catalog, refresh_token_hash is globally unique, permission_id is a
-      // simple FK to the global catalog. Primary keys are on id.
+      // simple FK to the global catalog, tenants.login_code is the globally unique public login code of the root table.
+      // Primary keys are on id.
       expect(notTenantLeading).toEqual([
         "permissions_code_key",
         "permissions_module_idx",
         "role_permissions_permission_id_idx",
         "sessions_refresh_token_hash_key",
+        "tenants_login_code_key",
       ]);
     });
   });
@@ -221,7 +223,7 @@ describe("schema hardening (PostgreSQL catalog)", () => {
 
   describe("manual CHECK constraints", () => {
     it("pins every CHECK of the schema with its exact definition", async () => {
-      expect(Object.keys(MANUAL_CHECK_CONSTRAINTS)).toHaveLength(21);
+      expect(Object.keys(MANUAL_CHECK_CONSTRAINTS)).toHaveLength(22);
       expect(await checkConstraintViolations(prisma)).toEqual([]);
     });
 

@@ -23,7 +23,7 @@ Rust **não** faz parte do planejamento atual; só poderá ser reconsiderado por
 | Workspace | Estado | Papel |
 |---|---|---|
 | `apps/web` | Next.js 16, React 19, Tailwind, Vitest, ESLint `core-web-vitals` | PWA-first (PDV e backoffice) |
-| `apps/api` | NestJS 12, Prisma ORM 7.10 (CLI + client + `adapter-pg`), os 12 models do Core M1 ([database.md](database.md)), health endpoint, teste de boot isolado, testes de integração com PostgreSQL | Backend modular monolith |
+| `apps/api` | NestJS 12, Prisma ORM 7.10 (CLI + client + `adapter-pg`), os 12 models do Core M1 ([database.md](database.md)), Auth/autorização runtime do M2 (`argon2`, `jose`), health endpoint, testes de boot isolados, testes de integração com PostgreSQL | Backend modular monolith |
 | `apps/worker` | Node/TS mínimo, sem filas | Tarefas assíncronas |
 | `packages/contracts` | vazio | Contratos compartilhados (DTOs/eventos) |
 | `packages/validation` | vazio | Validação compartilhada |
@@ -63,7 +63,19 @@ Linhas tracejadas = previsto, não implementado.
 - O tenant vem do **contexto autenticado**; o frontend nunca escolhe livremente `tenant_id`.
 - Constraints de banco devem reforçar o isolamento quando possível (unicidade composta com `tenant_id`, FKs compostas).
 - A camada de repository/service **exige tenant context**; não deve existir acesso a dado de cliente sem ele.
+- **Regra arquitetural (M2.1): toda operação de negócio em entidade tenant-scoped obtém `tenant_id` de um `TenantContext` confiável e o inclui no escopo da query.** IDs globalmente únicos (UUID) não substituem o filtro: buscar, alterar ou apagar é sempre por `tenant_id + id`. `Tenant` (raiz) e `Permission` (global) são exceções por classificação.
 - RLS será segunda camada de proteção, ativada em fase posterior.
+
+### Tenant Context e data access (M2.1)
+Implementação em `apps/api/src/tenancy/`.
+
+- **`TenantContextService`** (provido pelo `TenancyModule`, global): `run(context, fn)`, `current()`, `requireContext()`, `requireTenantId()`. O contrato mínimo é `TenantContext = { tenantId }`; campos como usuário, filial, dispositivo ou sessão só entram quando o Auth os produzir.
+- **Propagação por `AsyncLocalStorage`** (`node:async_hooks`, sem dependência nova): o contexto vive na cadeia assíncrona de cada `run()` e acompanha awaits, `Promise.all`, timers e transações Prisma iniciados dentro dela; requests concorrentes não compartilham estado e não existe variável global de tenant. Um `run()` aninhado substitui o contexto só durante o callback interno e restaura o externo, inclusive em erro. Fora de `run()`, `requireTenantId()` lança `TenantContextMissingError` (sem fallback, tenant nulo, primeiro tenant ou tenant de ambiente). O `tenantId` é validado como UUID ao criar o contexto (normalizado para minúsculas) e o objeto é copiado e congelado; existência/status do tenant são verificados pelo Auth (login, refresh e AuthGuard).
+- **Quem preenche o contexto (M2.7):** em requests HTTP, só o `AuthGuard` global, a partir do access token verificado e da sessão ativa no banco; o `AuthContextInterceptor` executa o handler dentro de `AuthContextService.run()`, que abre o `TenantContext` e o `AuthContext` (`{ tenantId, userId, sessionId, deviceId, mustChangePassword }`, separado para não inchar o TenantContext). Login e refresh abrem o contexto do tenant resolvido/do token só para escopar as próprias queries. Testes e infraestrutura chamam `run()` diretamente. Não há middleware, header nem parâmetro de tenant. `TenantContext` **não é autenticação** e `AsyncLocalStorage` não protege nada sozinho: só transporta o que um produtor confiável colocou. Detalhes em [security.md](security.md).
+- **Classificação (`MODEL_SCOPE`, `tenant-scope.ts`):** `Tenant` = `root`, `Permission` = `global`, demais models = `tenant`; o typecheck falha se um model novo não for classificado, e um teste de integração compara com a classificação de tabelas do M1.
+- **Padrão de data access: helper explícito `TenantScope`**, sem Prisma extension que reescreva queries. Repositories tenant-scoped usam `scope.where({...})` em toda leitura, update e delete e `scope.data({...})` em todo create; os dois lançam `TenantScopeViolationError` se o chamador tentar informar `tenantId`/`tenant`. Os tipos de input dos repositories não têm `tenantId` (tipos estreitos, não `Omit<Prisma...Input>`). Update/delete por chave usam `where: scope.where({ id })` (unique + `tenant_id`): registro de outro tenant = não encontrado. Para transações, o repository recebe o client da transação (`new XRepository(tx, scope)`).
+- **Prova do padrão:** `CompanyRepository` (`apps/api/src/companies/`: create, findById, list, update) e `PermissionRepository` (`apps/api/src/permissions/`, global, sem contexto). Desde o M2, `DatabaseModule` fornece o `PrismaClient` (token `PRISMA_CLIENT`, `DATABASE_URL` obrigatória no boot); services constroem repositories com o client ou com o da transação (`new XRepository(prisma | tx, scope)`). Os repositories do Auth (`apps/api/src/auth/persistence/`) seguem o mesmo padrão; o único acesso sem filtro de tenant é o status do `Tenant` (`root`).
+- **Prisma direto:** código de negócio acessa models tenant-scoped só via repository com `TenantScope`; uso direto de `PrismaClient`/`$queryRaw` em código de negócio exige revisão explícita e filtro por `tenant_id`. Exceções: seed, migrations, testes e infraestrutura administrativa.
 - **Identidades do banco separadas:** a API e os workers usam `erp_app` (sem ownership, matriz explícita de privilégios); migrations e seed usam `erp_migrator` (dono dos objetos, só no deploy); a identidade admin só provisiona. Roles e grants são infraestrutura (`infrastructure/postgres/`), não Prisma migrations ([database.md](database.md)).
 
 ## Módulos do backend
@@ -72,8 +84,9 @@ Cada módulo vive em `apps/api/src/<modulo>` e expõe apenas uma API pública. *
 ### Iniciais
 | Módulo | Responsabilidade |
 |---|---|
-| `auth` | Autenticação e emissão do contexto autenticado (tenant, usuário, filial, dispositivo). |
-| `tenants` | Ciclo de vida do tenant (cliente SaaS). |
+| `auth` | Autenticação e emissão do contexto autenticado (tenant, usuário, sessão, dispositivo). Implementado no M2: senha Argon2id, login por código público (`POST /auth/login`), refresh/logout por cookie HttpOnly, tokens, sessões, guards, troca/reset de senha, lockout. |
+| `authorization` | Permissões efetivas (`AuthorizationService`) e `PermissionGuard` (M2). |
+| `tenants` | Ciclo de vida do tenant (cliente SaaS). Hoje: provisionamento idempotente das roles padrão (M2.11). |
 | `companies` | Empresa do tenant. |
 | `branches` | Filiais da empresa. |
 | `users` | Funcionários, matrícula (única por tenant), vínculo com filiais. |

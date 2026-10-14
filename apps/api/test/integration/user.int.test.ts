@@ -115,18 +115,25 @@ describe("User (PostgreSQL)", () => {
   });
 
   describe("employee_number", () => {
-    it("persists the employee number exactly, without imposing a numeric format", async () => {
+    it("persists a normalized employee number exactly, leading zeros included, without a numeric format", async () => {
       const tenant = await newTenant();
-      const user = await newUser(tenant.id, { employeeNumber: "MOR-0042a" });
+      const user = await newUser(tenant.id, { employeeNumber: "MOR-0042A" });
+      const zeros = await newUser(tenant.id, { employeeNumber: "007" });
 
-      const [row] = await prisma.$queryRaw<{ employeeNumber: string }[]>`
-        SELECT employee_number AS "employeeNumber" FROM users WHERE id = ${user.id}::uuid`;
-      expect(row?.employeeNumber).toBe("MOR-0042a");
+      const rows = await prisma.$queryRaw<{ employeeNumber: string }[]>`
+        SELECT employee_number AS "employeeNumber" FROM users WHERE id IN (${user.id}::uuid, ${zeros.id}::uuid) ORDER BY 1`;
+      expect(rows.map((r) => r.employeeNumber)).toEqual(["007", "MOR-0042A"]);
     });
 
     it.each([
       ["empty", ""],
       ["only spaces", "   "],
+      ["lower case (not normalized)", "mor-0042a"],
+      ["surrounded by spaces (not trimmed)", " 1001 "],
+      ["with an inner space", "10 01"],
+      ["with a character outside [A-Z0-9._-]", "10/01"],
+      ["non-ASCII", "AÇÃO"],
+      ["longer than 32 characters", "X".repeat(33)],
     ])("rejects an employee number that is %s", async (_, employeeNumber) => {
       const tenant = await newTenant();
 

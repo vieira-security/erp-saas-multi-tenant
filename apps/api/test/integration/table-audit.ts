@@ -7,6 +7,22 @@ export const TOOLING_TABLES: readonly string[] = ["_prisma_migrations"];
 /** Legitimate global tables (no tenant_id). Adding one here is an explicit, reviewed decision. */
 export const GLOBAL_TABLES: readonly string[] = ["permissions"];
 
+/** Every Prisma model and its table. A new model must be reviewed here, in the audits and in MODEL_SCOPE (src/tenancy). */
+export const MODEL_TABLES: Readonly<Record<string, string>> = {
+  Tenant: "tenants",
+  Company: "companies",
+  Branch: "branches",
+  User: "users",
+  UserBranchAccess: "user_branch_access",
+  Role: "roles",
+  Permission: "permissions",
+  RolePermission: "role_permissions",
+  UserRole: "user_roles",
+  Device: "devices",
+  Session: "sessions",
+  AuditLog: "audit_logs",
+};
+
 export type TableKind = "root" | "tooling" | "global" | "tenant";
 
 type Queryable = Pick<PrismaClient, "$queryRaw">;
@@ -653,7 +669,8 @@ export const MANUAL_CHECK_CONSTRAINTS: Readonly<Record<string, string>> = {
   "roles.roles_name_check": "CHECK ((btrim(name) <> ''::text))",
   "sessions.sessions_expires_at_check": "CHECK ((expires_at > created_at))",
   "sessions.sessions_refresh_token_hash_check": "CHECK ((btrim(refresh_token_hash) <> ''::text))",
-  "users.users_employee_number_check": "CHECK ((btrim(employee_number) <> ''::text))",
+  "users.users_employee_number_check": "CHECK ((employee_number ~ '^[A-Z0-9._-]{1,32}$'::text))",
+  "tenants.tenants_login_code_check": "CHECK ((login_code ~ '^[A-Z0-9][A-Z0-9-]{2,30}[A-Z0-9]$'::text))",
   "users.users_failed_login_attempts_check": "CHECK ((failed_login_attempts >= 0))",
   "users.users_name_check": "CHECK ((btrim(name) <> ''::text))",
   "users.users_password_hash_check": "CHECK ((btrim(password_hash) <> ''::text))",
