@@ -89,7 +89,7 @@ describe("Role (PostgreSQL)", () => {
       const custom = await newRole(tenant.id, { code: "caixa-noturno", name: "Caixa noturno" });
 
       const rows = await prisma.$queryRaw<{ code: string }[]>`
-        SELECT code FROM roles WHERE tenant_id = ${tenant.id}::uuid ORDER BY code`;
+        SELECT code FROM roles WHERE tenant_id = ${tenant.id}::uuid ORDER BY code COLLATE "C"`;
       expect(rows.map((r) => r.code)).toEqual(["OWNER", "caixa-noturno"]);
       expect(custom.code).toBe("caixa-noturno");
     });
