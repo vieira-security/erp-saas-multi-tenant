@@ -57,7 +57,7 @@ Filial/unidade física. Pertence a uma Company **e** ao mesmo Tenant dessa Compa
 | `updated_at` | `timestamptz(3)` | não | mantido pelo Prisma (`@updatedAt`) |
 
 - Índices: `(tenant_id, company_id)` (também atende a FK composta), `(tenant_id, status)` e as uniques `(tenant_id, code)`, `(tenant_id, cnpj)` e `(tenant_id, id)` (alvo da FK composta de UserBranchAccess, criada no M1.6). Sem índice isolado em `tenant_id`: todos os compostos começam por ele.
-- `code` é único por tenant (não por company): duas companies do mesmo tenant não repetem código. A unique compara o texto exato; a camada de aplicação (futura) normalizará o código com **trim + uppercase** antes de gravar, de modo que `morumbi ` e `MORUMBI` não coexistam. A API (M3) normaliza com trim + uppercase e valida `^[A-Z0-9][A-Z0-9_-]{0,31}$` (default técnico); o banco segue sem regra de formato.
+- `code` é único por tenant (não por company): duas companies do mesmo tenant não repetem código. A unique compara o texto exato; a camada de aplicação (futura) normalizará o código com **trim + uppercase** antes de gravar, de modo que `morumbi ` e `MORUMBI` não coexistam. A API (M3) normaliza com trim + uppercase e valida `^[A-Z0-9][A-Z0-9_-]{0,31}$` (formato confirmado como decisão de produto no M3); o banco segue sem regra de formato.
 - CNPJ nulo: a unique usa o padrão `NULLS DISTINCT` do PostgreSQL, logo várias branches sem CNPJ são aceitas e CNPJ preenchido não se repete no tenant. Não é globalmente único. O banco não compara com o CNPJ da Company; a API (M3) exige a mesma raiz (8 primeiros caracteres) da Company.
 - Remoção física de Tenant ou Company com Branch falha (`RESTRICT`); sem cascade e sem soft delete.
 
