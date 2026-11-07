@@ -654,10 +654,10 @@ export async function partialIndexViolations(db: Queryable): Promise<string[]> {
 export const MANUAL_CHECK_CONSTRAINTS: Readonly<Record<string, string>> = {
   "audit_logs.audit_logs_action_check": "CHECK ((action ~ '^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$'::text))",
   "audit_logs.audit_logs_resource_type_check": "CHECK ((resource_type ~ '^[a-z][a-z0-9_]*$'::text))",
-  "branches.branches_cnpj_check": "CHECK (((cnpj IS NULL) OR (cnpj ~ '^[0-9]{14}$'::text)))",
+  "branches.branches_cnpj_check": "CHECK (((cnpj IS NULL) OR (cnpj ~ '^[0-9A-Z]{12}[0-9]{2}$'::text)))",
   "branches.branches_code_check": "CHECK ((btrim(code) <> ''::text))",
   "branches.branches_name_check": "CHECK ((btrim(name) <> ''::text))",
-  "companies.companies_cnpj_check": "CHECK ((cnpj ~ '^[0-9]{14}$'::text))",
+  "companies.companies_cnpj_check": "CHECK ((cnpj ~ '^[0-9A-Z]{12}[0-9]{2}$'::text))",
   "companies.companies_legal_name_check": "CHECK ((btrim(legal_name) <> ''::text))",
   "companies.companies_trade_name_check": "CHECK ((btrim(trade_name) <> ''::text))",
   "devices.devices_device_key_check": "CHECK ((btrim(device_key) <> ''::text))",

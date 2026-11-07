@@ -280,10 +280,21 @@ describe("Branch (PostgreSQL)", () => {
       expect(row?.cnpj).toBe("00123456000270");
     });
 
+    it("persists an alphanumeric CNPJ (Receita Federal format since 07/2026)", async () => {
+      const company = await newTenantWithCompany();
+      const branch = await newBranch(company.tenantId, company.id, { cnpj: "12ABC34501DE35" });
+      await rawInsert({ tenantId: company.tenantId, companyId: company.id, code: "ALFA", cnpj: "00000000E08G12" });
+
+      expect(branch.cnpj).toBe("12ABC34501DE35");
+      expect(await prisma.branch.count({ where: { tenantId: company.tenantId, cnpj: "00000000E08G12" } })).toBe(1);
+    });
+
     it.each([
       ["empty", ""],
       ["with punctuation", "11.222.333/0002-62"],
-      ["with letters", "1122233300026A"],
+      ["with a letter in the check digits", "1122233300026A"],
+    ["with lowercase letters", "12abc34501de35"],
+    ["with a non-ASCII letter", "12ÁBC34501DE35"],
       ["with spaces", "11222333 00262"],
       ["too short", "1122233300026"],
       ["too long", "112223330002621"],

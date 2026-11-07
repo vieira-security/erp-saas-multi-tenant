@@ -154,10 +154,21 @@ describe("Company (PostgreSQL)", () => {
     expect(await prisma.company.count({ where: { tenantId: tenant.id } })).toBe(0);
   });
 
+  it("accepts an alphanumeric CNPJ (Receita Federal format since 07/2026)", async () => {
+    const tenant = await newTenant();
+    const company = await newCompany(tenant.id, { cnpj: "12ABC34501DE35" });
+    await rawInsert({ tenantId: tenant.id, cnpj: "00000000E08G12" });
+
+    expect(company.cnpj).toBe("12ABC34501DE35");
+    expect(await prisma.company.count({ where: { tenantId: tenant.id } })).toBe(2);
+  });
+
   it.each([
     ["empty", ""],
     ["with punctuation", "11.222.333/0001-81"],
-    ["with letters", "1122233300018A"],
+    ["with a letter in the check digits", "1122233300018A"],
+    ["with lowercase letters", "12abc34501de35"],
+    ["with a non-ASCII letter", "12ÁBC34501DE35"],
     ["with spaces", "11222333 00181"],
     ["too short", "1122233300018"],
     ["too long", "112223330001811"],

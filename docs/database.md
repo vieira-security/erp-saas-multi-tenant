@@ -29,14 +29,14 @@ Empresa de um tenant. Relação **Tenant 1 → N Company**; o MVP começa com um
 | `tenant_id` | `uuid` | não | FK `tenants.id`, `ON DELETE RESTRICT ON UPDATE RESTRICT` |
 | `legal_name` | `text` | não | CHECK `btrim(legal_name) <> ''` |
 | `trade_name` | `text` | não | CHECK `btrim(trade_name) <> ''` |
-| `cnpj` | `text` | não | somente dígitos; CHECK `cnpj ~ '^[0-9]{14}$'`; `UNIQUE (tenant_id, cnpj)` |
+| `cnpj` | `text` | não | sem máscara, maiúsculo, numérico ou alfanumérico (M3); CHECK `cnpj ~ '^[0-9A-Z]{12}[0-9]{2}$'`; `UNIQUE (tenant_id, cnpj)` |
 | `status` | enum `company_status` | não | `ACTIVE`, `INACTIVE`; sem default |
 | `timezone` | `text` | não | nome IANA (ex.: `America/Sao_Paulo`); **não validado no banco** |
 | `created_at` | `timestamptz(3)` | não | default `CURRENT_TIMESTAMP` |
 | `updated_at` | `timestamptz(3)` | não | mantido pelo Prisma (`@updatedAt`) |
 
 - Índices: `(tenant_id, status)`, a unique `(tenant_id, cnpj)` e a unique `(tenant_id, id)` (alvo da FK composta de Branch, criada na migration de Branch). O índice isolado `(tenant_id)` (`companies_tenant_id_idx`) foi **removido no M1.14.3**: era redundante, pois os três índices acima começam por `tenant_id` e cobrem a FK para `tenants` e as consultas por tenant.
-- CNPJ não é globalmente único nesta etapa; dígitos verificadores **não** são validados (nem no banco nem na aplicação).
+- CNPJ não é globalmente único. **Formato (M3, migration `20261107000000_allow_alphanumeric_cnpj`):** 12 caracteres `[0-9A-Z]` + 2 dígitos verificadores numéricos, cobrindo o CNPJ alfanumérico emitido pela Receita Federal desde 31/07/2026 (IN RFB 2.229/2024) e o numérico (superconjunto: nenhum dado existente muda). Os dígitos verificadores (módulo 11, valor = ASCII − 48) são validados **só na aplicação** (`apps/api/src/organization/validation/cnpj.ts`), que também remove a máscara e passa para maiúsculo. Imutável pela API depois de criado.
 - Os CHECKs de nome rejeitam vazio e somente espaços (`btrim` remove apenas o caractere espaço).
 - Remoção física de um Tenant com Company falha (FK `RESTRICT`); sem cascade e sem soft delete.
 
@@ -50,15 +50,15 @@ Filial/unidade física. Pertence a uma Company **e** ao mesmo Tenant dessa Compa
 | `company_id` | `uuid` | não | FK composta `(tenant_id, company_id)` → `companies(tenant_id, id)` (`RESTRICT`) |
 | `name` | `text` | não | CHECK `btrim(name) <> ''` |
 | `code` | `text` | não | código operacional (ex.: `MORUMBI`); CHECK `btrim(code) <> ''`; `UNIQUE (tenant_id, code)`; sem regra de formato/caixa no banco |
-| `cnpj` | `text` | sim | CHECK `cnpj IS NULL OR cnpj ~ '^[0-9]{14}$'`; `UNIQUE (tenant_id, cnpj)` |
+| `cnpj` | `text` | sim | CHECK `cnpj IS NULL OR cnpj ~ '^[0-9A-Z]{12}[0-9]{2}$'` (M3, mesmo formato da Company); `UNIQUE (tenant_id, cnpj)` |
 | `status` | enum `branch_status` | não | `ACTIVE`, `INACTIVE`; sem default |
 | `timezone` | `text` | não | nome IANA; **não validado no banco** |
 | `created_at` | `timestamptz(3)` | não | default `CURRENT_TIMESTAMP` |
 | `updated_at` | `timestamptz(3)` | não | mantido pelo Prisma (`@updatedAt`) |
 
 - Índices: `(tenant_id, company_id)` (também atende a FK composta), `(tenant_id, status)` e as uniques `(tenant_id, code)`, `(tenant_id, cnpj)` e `(tenant_id, id)` (alvo da FK composta de UserBranchAccess, criada no M1.6). Sem índice isolado em `tenant_id`: todos os compostos começam por ele.
-- `code` é único por tenant (não por company): duas companies do mesmo tenant não repetem código. A unique compara o texto exato; a camada de aplicação (futura) normalizará o código com **trim + uppercase** antes de gravar, de modo que `morumbi ` e `MORUMBI` não coexistam. Nada disso é imposto no banco hoje.
-- CNPJ nulo: a unique usa o padrão `NULLS DISTINCT` do PostgreSQL, logo várias branches sem CNPJ são aceitas e CNPJ preenchido não se repete no tenant. Não é globalmente único e não é comparado com o CNPJ da Company.
+- `code` é único por tenant (não por company): duas companies do mesmo tenant não repetem código. A unique compara o texto exato; a camada de aplicação (futura) normalizará o código com **trim + uppercase** antes de gravar, de modo que `morumbi ` e `MORUMBI` não coexistam. A API (M3) normaliza com trim + uppercase e valida `^[A-Z0-9][A-Z0-9_-]{0,31}$` (default técnico); o banco segue sem regra de formato.
+- CNPJ nulo: a unique usa o padrão `NULLS DISTINCT` do PostgreSQL, logo várias branches sem CNPJ são aceitas e CNPJ preenchido não se repete no tenant. Não é globalmente único. O banco não compara com o CNPJ da Company; a API (M3) exige a mesma raiz (8 primeiros caracteres) da Company.
 - Remoção física de Tenant ou Company com Branch falha (`RESTRICT`); sem cascade e sem soft delete.
 
 ### Integridade Tenant/Company (padrão para entidades filhas)
