@@ -229,8 +229,13 @@ export class ProductService {
   }
 }
 
-/** Busca do contrato: nome contém `q` (sem diferenciar maiúsculas) OU código exatamente igual (normalizado). */
+/**
+ * Busca do contrato: nome contém `q` (sem diferenciar maiúsculas) OU código exatamente igual (normalizado).
+ * `contains` vira ILIKE e o Prisma NÃO escapa os curingas: `%`, `_` e `\` do usuário são escapados aqui (o escape padrão
+ * do LIKE no PostgreSQL é `\`), senão `q=%` listaria tudo.
+ */
 function searchFilter(q: string): Prisma.ProductWhereInput[] {
   const code = q.toUpperCase();
-  return [{ name: { contains: q, mode: "insensitive" } }, ...(BRANCH_CODE.test(code) ? [{ code }] : [])];
+  const literal = q.replace(/[\\%_]/g, (char) => `\\${char}`);
+  return [{ name: { contains: literal, mode: "insensitive" } }, ...(BRANCH_CODE.test(code) ? [{ code }] : [])];
 }
