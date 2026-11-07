@@ -39,7 +39,7 @@ Registro único dos pontos em aberto. Resolver antes de implementar o módulo af
 - ~~Índice `companies(tenant_id)` redundante~~ **Resolvido no M1.14.3** (migration `20261002130000_drop_redundant_company_tenant_index`).
 - ~~Imutabilidade de `tenant_id` não imposta por completo~~ **Resolvido no M1.14.1:** `tenant_id` é imutável no banco para toda entidade editável de tenant (trigger por tabela + `forbid_tenant_id_change()`); `audit_logs` é coberta pelo append-only. Risco residual: o trigger é `UPDATE OF tenant_id` (não pega um eventual trigger futuro que altere `NEW.tenant_id` sem a coluna no `SET`) e o dono dos objetos/identidade admin podem desabilitar triggers (a aplicação, como `erp_app`, não pode desde o M1.14.2b).
 - **CNPJ de Branch x Company:** **M3:** a API exige a mesma raiz (8 primeiros caracteres) da Company e valida os dígitos verificadores. Continuam sem regra: unicidade entre as tabelas `companies` e `branches` (a filial pode repetir o CNPJ da empresa) e imposição no banco. A validação ficou em `apps/api` (não em `packages/validation`) porque os packages não têm build de runtime ([api.md](api.md)).
-- **Branch.timezone e Branch.code:** **M3:** a API valida timezone IANA e normaliza `code` (trim + uppercase, `^[A-Z0-9][A-Z0-9_-]{0,31}$`, default técnico). O banco não impõe nenhum dos dois: escrita fora da API ainda pode gravar `morumbi`. Avaliar CHECK de formato/unique por `upper(code)` se houver outra via de escrita.
+- **Branch.timezone e Branch.code:** **M3:** a API valida timezone IANA e normaliza `code` (trim + uppercase, `^[A-Z0-9][A-Z0-9_-]{0,31}$`, decisão de produto confirmada). O banco não impõe nenhum dos dois: escrita fora da API ainda pode gravar `morumbi`. Avaliar CHECK de formato/unique por `upper(code)` se houver outra via de escrita.
 - ~~**Roles por filial:** roles/permissions por filial e sua relação com o acesso à filial ainda serão modeladas~~ **Resolvido estruturalmente no M1.10:** `user_roles.branch_id` (NULL = tenant inteiro) exige `UserBranchAccess` por FK composta. A semântica de resolução fica para o M2 (ver "Pendências da autorização").
 - **Roles padrão:** `OWNER`, `MANAGER`, `ATTENDANT`, `KITCHEN` não são reservados no banco (uma role customizada pode usar o código se ele estiver livre no tenant) e não há provisionamento ainda. Definir no provisionamento do Tenant: criação das quatro roles, se os códigos são reservados e quais regras protegem roles `is_system` (edição, arquivamento).
 - **Constantes de códigos de role:** não foram criadas em `packages/contracts`. **Estratégia de consumo decidida no M3** ([api.md](api.md)): `apps/api` só usa `import type` de `@erp/*` (lint); build de runtime dos packages fica para quando houver necessidade concreta.
@@ -155,10 +155,10 @@ Nenhuma. Banco limpo e caminho incremental produzem o mesmo catálogo; isolament
 6. `GET /me/branches` lista só filial ACTIVE de empresa ACTIVE com acesso.
 7. Filial sem `timezone` informado herda o da Company.
 
-**DECISION REQUIRED (implementado de forma conservadora, fácil de afrouxar):**
-1. Desativar Company com filial ACTIVE é recusado (409 `company_has_active_branches`); criar/ativar filial em Company INACTIVE é recusado (409 `company_inactive`). Alternativa: desativar em cascata.
+**Decisões de produto confirmadas (07/11/2026):**
+1. Desativar Company com filial ACTIVE é recusado (409 `company_has_active_branches`); criar/ativar filial em Company INACTIVE é recusado (409 `company_inactive`). Sem cascata.
 2. Conceder acesso a filial INACTIVE é recusado (409 `branch_inactive`); acessos existentes de filial desativada são mantidos.
-3. Formato de `Branch.code` (`^[A-Z0-9][A-Z0-9_-]{0,31}$`) é default técnico, sem regra de negócio fornecida.
+3. Formato de `Branch.code`: trim + maiúsculo, `^[A-Z0-9][A-Z0-9_-]{0,31}$`.
 
 **Pendente / fora do M3:**
 - Auditoria (`audit_logs`) das alterações de organização e de acesso a filiais: catálogo de ações ainda em aberto (#8); nada é gravado hoje.

@@ -1,7 +1,7 @@
 /**
  * Código operacional da filial: trim + maiúsculo, depois `^[A-Z0-9][A-Z0-9_-]{0,31}$` (mesmo valor de
- * `BRANCH_CODE_PATTERN` em `@erp/contracts`; um teste compara os dois). Default técnico: não há regra de negócio
- * fornecida além de "normalizar com trim + uppercase" (docs/database.md).
+ * `BRANCH_CODE_PATTERN` em `@erp/contracts`; um teste compara os dois). Formato confirmado como decisão de produto no M3
+ * (docs/open-questions.md).
  */
 export const BRANCH_CODE = /^[A-Z0-9][A-Z0-9_-]{0,31}$/;
 
