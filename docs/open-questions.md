@@ -32,17 +32,17 @@ Registro único dos pontos em aberto. Resolver antes de implementar o módulo af
 - **RLS + Prisma + pool:** a RLS exige contexto por transação/conexão, que o Prisma não faz nativamente; adiar a RLS não deve levar a um schema que a impeça (#7).
 - **UUIDv7:** revela o instante de criação; aceitável para IDs internos, mas avaliar em IDs expostos a terceiros. Gerado só pelo Prisma Client: SQL bruto/ferramentas externas precisam informar o `id` (PostgreSQL < 18 não tem `uuidv7()` nativo).
 - **Fuso da sessão x `@prisma/adapter-pg`:** o adapter presume sessão em UTC; `createPrismaClient` fixa `TimeZone=UTC` via parâmetro de startup. Poolers que rejeitam parâmetros de startup (ex.: PgBouncer em modo transação, RDS Proxy) exigirão outra forma de garantir UTC — validar antes de adotar pooler ([database.md](database.md)).
-- **Company.timezone sem validação:** o banco aceita qualquer texto (sem lista própria de fusos, por decisão). Um valor inválido só falhará quando usado (ex.: `AT TIME ZONE`); a validação IANA deve entrar na camada de aplicação junto com o primeiro endpoint/serviço de Company.
-- **CNPJ:** só formato (14 dígitos) é garantido; dígitos verificadores e unicidade global ficam para etapa posterior.
+- ~~**Company.timezone sem validação**~~ **Resolvido na aplicação no M3:** a API só grava identificadores IANA canônicos do ICU do Node (aliases normalizados, offsets e `Etc/GMT±N` rejeitados). O banco continua aceitando qualquer texto; escrita fora da API (SQL, seed) não é validada.
+- **CNPJ:** ~~só formato (14 dígitos)~~ **M3:** formato numérico **e alfanumérico** (Receita Federal, desde 31/07/2026) no banco (`^[0-9A-Z]{12}[0-9]{2}$`) e dígitos verificadores na API. Unicidade global continua fora de escopo (único por tenant).
 - **CHECKs, funções e triggers fora do schema Prisma:** não aparecem em `migrate diff`; dependem de testes explícitos de catálogo e de cuidado em migrations futuras ([database.md](database.md)).
 - **PostgreSQL 17 x 18:** a versão de validação é **PostgreSQL 17.x**. Num PostgreSQL 18 parte da suíte falha sem relação com o schema: a mensagem de violação de FK `RESTRICT` mudou (`violates RESTRICT setting of foreign key constraint`) e `pg_constraint` passou a listar constraints `NOT NULL` (quebra os testes que comparam a lista completa de constraints). A compatibilidade com o 18 deve ser revisada em tarefa separada, sem migrar o projeto agora. Diretriz: testes não devem depender do texto exato de mensagens de erro do PostgreSQL quando houver alternativa estrutural melhor (SQLSTATE, nome da constraint, consulta ao catálogo filtrando por `contype`). O servidor de teste também deve usar encoding `UTF8` (um cluster `WIN1252` quebra os testes de CNPJ com dígitos não ASCII).
 - ~~Índice `companies(tenant_id)` redundante~~ **Resolvido no M1.14.3** (migration `20261002130000_drop_redundant_company_tenant_index`).
 - ~~Imutabilidade de `tenant_id` não imposta por completo~~ **Resolvido no M1.14.1:** `tenant_id` é imutável no banco para toda entidade editável de tenant (trigger por tabela + `forbid_tenant_id_change()`); `audit_logs` é coberta pelo append-only. Risco residual: o trigger é `UPDATE OF tenant_id` (não pega um eventual trigger futuro que altere `NEW.tenant_id` sem a coluna no `SET`) e o dono dos objetos/identidade admin podem desabilitar triggers (a aplicação, como `erp_app`, não pode desde o M1.14.2b).
-- **CNPJ de Branch x Company:** não há relação validada entre o CNPJ da filial e o da empresa (raiz/matriz), nem unicidade entre as duas tabelas. Validação completa (dígitos verificadores, raiz) será de `packages/validation`.
-- **Branch.timezone e Branch.code:** timezone sem validação IANA no banco (validação na aplicação); code sem normalização, então `MORUMBI` e `morumbi` são códigos distintos até a aplicação aplicar trim + uppercase.
+- **CNPJ de Branch x Company:** **M3:** a API exige a mesma raiz (8 primeiros caracteres) da Company e valida os dígitos verificadores. Continuam sem regra: unicidade entre as tabelas `companies` e `branches` (a filial pode repetir o CNPJ da empresa) e imposição no banco. A validação ficou em `apps/api` (não em `packages/validation`) porque os packages não têm build de runtime ([api.md](api.md)).
+- **Branch.timezone e Branch.code:** **M3:** a API valida timezone IANA e normaliza `code` (trim + uppercase, `^[A-Z0-9][A-Z0-9_-]{0,31}$`, default técnico). O banco não impõe nenhum dos dois: escrita fora da API ainda pode gravar `morumbi`. Avaliar CHECK de formato/unique por `upper(code)` se houver outra via de escrita.
 - ~~**Roles por filial:** roles/permissions por filial e sua relação com o acesso à filial ainda serão modeladas~~ **Resolvido estruturalmente no M1.10:** `user_roles.branch_id` (NULL = tenant inteiro) exige `UserBranchAccess` por FK composta. A semântica de resolução fica para o M2 (ver "Pendências da autorização").
 - **Roles padrão:** `OWNER`, `MANAGER`, `ATTENDANT`, `KITCHEN` não são reservados no banco (uma role customizada pode usar o código se ele estiver livre no tenant) e não há provisionamento ainda. Definir no provisionamento do Tenant: criação das quatro roles, se os códigos são reservados e quais regras protegem roles `is_system` (edição, arquivamento).
-- **Constantes de códigos de role:** não foram criadas em `packages/contracts` porque os packages ainda não têm estratégia de build/consumo pela api; decidir junto com o primeiro uso compartilhado.
+- **Constantes de códigos de role:** não foram criadas em `packages/contracts`. **Estratégia de consumo decidida no M3** ([api.md](api.md)): `apps/api` só usa `import type` de `@erp/*` (lint); build de runtime dos packages fica para quando houver necessidade concreta.
 - **Catálogo de permissões:** o seed não remove permissões que saírem do catálogo (remoção/renomeação exigirá migração dedicada considerando RolePermission). Execução do seed no pipeline de deploy ainda não definida (#18). Nomes do catálogo inicial são provisórios até os módulos correspondentes existirem.
 
 - **Worker x tenant:** jobs assíncronos também precisam de tenant context explícito, inclusive os disparados por n8n via API.
@@ -142,3 +142,25 @@ Nenhuma. Banco limpo e caminho incremental produzem o mesmo catálogo; isolament
 - Regra opcional de lint para `import()` dinâmico do client gerado (pendência 2 do M1.14).
 - Política para permissão removida/renomeada do catálogo e execução do seed no pipeline (#18).
 - Demais TBDs de produto/negócio (#2, #3, #4, #8, #10–#20) seguem bloqueando apenas os módulos indicados na tabela.
+
+## M3 — Organização, Company e Branch
+**Implementado:** contratos HTTP em `packages/contracts`; módulo `organization` na API (organização = tenant atual, companies, branches, `GET /me/branches`, acesso de usuários a filiais); validação de CNPJ numérico/alfanumérico, raiz Branch x Company, timezone IANA e código de filial; migration `20261107000000_allow_alphanumeric_cnpj`.
+
+**Decisões técnicas tomadas no M3 (reverter exige nova decisão):**
+1. Recurso de outro tenant responde 404 (igual a inexistente); id de rota fora do formato UUID também é 404.
+2. Corpo e query estritos: campo desconhecido (inclusive `tenantId`) = 400 `unknown_field`.
+3. CNPJ da Company e `companyId` da filial são imutáveis pela API (correção de CNPJ exige fluxo próprio, ainda não definido).
+4. `branch.read`/`branch.manage` são avaliadas no escopo do **tenant** (cadastro de filiais é administração da organização); operações dentro de uma filial (pedidos, caixa) usarão escopo de filial.
+5. Conceder/revogar acesso a filial exige `user.manage` na filial alvo (ver [security.md](security.md)).
+6. `GET /me/branches` lista só filial ACTIVE de empresa ACTIVE com acesso.
+7. Filial sem `timezone` informado herda o da Company.
+
+**DECISION REQUIRED (implementado de forma conservadora, fácil de afrouxar):**
+1. Desativar Company com filial ACTIVE é recusado (409 `company_has_active_branches`); criar/ativar filial em Company INACTIVE é recusado (409 `company_inactive`). Alternativa: desativar em cascata.
+2. Conceder acesso a filial INACTIVE é recusado (409 `branch_inactive`); acessos existentes de filial desativada são mantidos.
+3. Formato de `Branch.code` (`^[A-Z0-9][A-Z0-9_-]{0,31}$`) é default técnico, sem regra de negócio fornecida.
+
+**Pendente / fora do M3:**
+- Auditoria (`audit_logs`) das alterações de organização e de acesso a filiais: catálogo de ações ainda em aberto (#8); nada é gravado hoje.
+- Atribuição de roles por endpoint (com a regra de não conceder autoridade acima da própria) e administração de usuários.
+- Validação de CNPJ no banco (DV) e unicidade de CNPJ entre `companies` e `branches`.
