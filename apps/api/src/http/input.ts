@@ -7,7 +7,14 @@ import { ValidationFailedError } from "./api-error.js";
  * `ValidationFailedError` (400). O resultado só contém campos declarados e presentes.
  */
 
-export type Parsed<T> = { ok: true; value: T } | { ok: false; issue: ValidationIssueCode };
+/**
+ * Resultado de um parser. Valores compostos (objeto/lista aninhados) podem devolver vários problemas em `issues`, com
+ * `field` RELATIVO ao campo (`[0].name`, `.options`); `parseInput` prefixa com o nome do campo (`optionGroups[0].name`).
+ */
+export type Parsed<T> =
+  | { ok: true; value: T }
+  | { ok: false; issue: ValidationIssueCode }
+  | { ok: false; issues: readonly ValidationIssue[] };
 export type Parser<T> = (raw: unknown) => Parsed<T>;
 
 interface FieldSpec<T> {
@@ -52,6 +59,7 @@ export function parseInput<S extends Spec>(input: unknown, spec: S, part: "body"
     }
     const result = field.parse(raw);
     if (result.ok) out[key] = result.value;
+    else if ("issues" in result) issues.push(...result.issues.map((sub) => ({ field: `${key}${sub.field}`, issue: sub.issue })));
     else issues.push({ field: key, issue: result.issue });
   }
   if (issues.length > 0) throw new ValidationFailedError(issues);
@@ -100,5 +108,53 @@ export function queryInt(max: number): Parser<number> {
     const value = Number(raw);
     if (value < 1 || value > max) return { ok: false, issue: "invalid_value" };
     return { ok: true, value };
+  };
+}
+
+/** Inteiro JSON (`number`, sem fração) entre `min` e `max`; fora da faixa = `invalid_value`. */
+export function int(min: number, max: number): Parser<number> {
+  return (raw) => {
+    if (typeof raw !== "number" || !Number.isInteger(raw)) return { ok: false, issue: "invalid_type" };
+    if (raw < min || raw > max) return { ok: false, issue: "invalid_value" };
+    return { ok: true, value: raw };
+  };
+}
+
+export const bool: Parser<boolean> = (raw) => (typeof raw === "boolean" ? { ok: true, value: raw } : { ok: false, issue: "invalid_type" });
+
+/**
+ * Objeto aninhado validado com a mesma regra estrita de `parseInput` (campo desconhecido = `unknown_field`). Os problemas
+ * voltam com caminho relativo (`.name`), para o campo pai prefixar.
+ */
+export function nested<S extends Spec>(spec: S): Parser<Output<S>> {
+  return (raw) => {
+    if (!isPlainObject(raw)) return { ok: false, issue: "invalid_type" };
+    try {
+      return { ok: true, value: parseInput(raw, spec) };
+    } catch (error) {
+      if (!(error instanceof ValidationFailedError)) throw error;
+      return { ok: false, issues: error.details.map((d) => ({ field: `.${d.field}`, issue: d.issue })) };
+    }
+  };
+}
+
+/**
+ * Lista JSON com `min..max` itens (`too_few`/`too_many`), cada item validado por `item`. Problemas dos itens voltam como
+ * `[i]` ou `[i].campo`; todos são reunidos.
+ */
+export function list<T>(item: Parser<T>, min: number, max: number): Parser<T[]> {
+  return (raw) => {
+    if (!Array.isArray(raw)) return { ok: false, issue: "invalid_type" };
+    if (raw.length < min) return { ok: false, issue: "too_few" };
+    if (raw.length > max) return { ok: false, issue: "too_many" };
+    const values: T[] = [];
+    const issues: ValidationIssue[] = [];
+    raw.forEach((element: unknown, index) => {
+      const result = item(element);
+      if (result.ok) values.push(result.value);
+      else if ("issues" in result) issues.push(...result.issues.map((sub) => ({ field: `[${index}]${sub.field}`, issue: sub.issue })));
+      else issues.push({ field: `[${index}]`, issue: result.issue });
+    });
+    return issues.length > 0 ? { ok: false, issues } : { ok: true, value: values };
   };
 }

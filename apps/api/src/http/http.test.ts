@@ -1,7 +1,7 @@
 import { API_ERROR_CODES, PAGE_SIZE_DEFAULT as CONTRACT_DEFAULT, PAGE_SIZE_MAX as CONTRACT_MAX } from "@erp/contracts";
 import { describe, expect, it } from "vitest";
 import { ValidationFailedError } from "./api-error.js";
-import { checked, nullable, oneOf, optional, parseInput, queryInt, required, text, uuid } from "./input.js";
+import { bool, checked, int, list, nested, nullable, oneOf, optional, parseInput, queryInt, required, text, uuid } from "./input.js";
 import { PAGE_SIZE_DEFAULT, PAGE_SIZE_MAX, pageQuerySpec, pageRequest, toPage } from "./paging.js";
 
 function issuesOf(fn: () => unknown): unknown {
@@ -94,5 +94,38 @@ describe("paging", () => {
 
   it("only uses error codes published in the contract", () => {
     expect(API_ERROR_CODES).toContain("validation_failed");
+  });
+});
+
+describe("composite parsers (M4)", () => {
+  it("int accepts only JSON integers within range", () => {
+    const parse = int(0, 10);
+    expect(parse(0)).toEqual({ ok: true, value: 0 });
+    expect(parse(10)).toEqual({ ok: true, value: 10 });
+    expect(parse(11)).toEqual({ ok: false, issue: "invalid_value" });
+    expect(parse(-1)).toEqual({ ok: false, issue: "invalid_value" });
+    for (const raw of [1.5, "1", null, Number.NaN, Number.POSITIVE_INFINITY]) expect(parse(raw)).toEqual({ ok: false, issue: "invalid_type" });
+  });
+
+  it("bool accepts only true/false", () => {
+    expect(bool(true)).toEqual({ ok: true, value: true });
+    expect(bool(false)).toEqual({ ok: true, value: false });
+    for (const raw of ["true", 1, 0, null]) expect(bool(raw)).toEqual({ ok: false, issue: "invalid_type" });
+  });
+
+  it("nested objects and lists report every issue with its path, prefixed by the parent field", () => {
+    const spec = { items: required(list(nested({ name: required(text(3)) }), 1, 2)) };
+    expect(parseInput({ items: [{ name: " ab " }] }, spec)).toEqual({ items: [{ name: "ab" }] });
+    expect(issuesOf(() => parseInput({ items: [{ name: "long" }, { x: 1 }] }, spec))).toEqual([
+      { field: "items[0].name", issue: "too_long" },
+      { field: "items[1].x", issue: "unknown_field" },
+      { field: "items[1].name", issue: "required" },
+    ]);
+    expect(issuesOf(() => parseInput({ items: [] }, spec))).toEqual([{ field: "items", issue: "too_few" }]);
+    expect(issuesOf(() => parseInput({ items: [{ name: "a" }, { name: "b" }, { name: "c" }] }, spec))).toEqual([{ field: "items", issue: "too_many" }]);
+    expect(issuesOf(() => parseInput({ items: [[]] }, spec))).toEqual([{ field: "items[0]", issue: "invalid_type" }]);
+    expect(issuesOf(() => parseInput({ items: "x" }, spec))).toEqual([{ field: "items", issue: "invalid_type" }]);
+    const proto = JSON.parse('{"items":[{"name":"a","__proto__":{"x":1}}]}') as unknown;
+    expect(issuesOf(() => parseInput(proto, spec))).toEqual([{ field: "items[0].__proto__", issue: "unknown_field" }]);
   });
 });
