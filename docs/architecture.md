@@ -25,12 +25,12 @@ Rust **não** faz parte do planejamento atual; só poderá ser reconsiderado por
 | `apps/web` | Next.js 16, React 19, Tailwind, Vitest, ESLint `core-web-vitals` | PWA-first (PDV e backoffice) |
 | `apps/api` | NestJS 12, Prisma ORM 7.10 (CLI + client + `adapter-pg`), os 12 models do Core M1 ([database.md](database.md)), Auth/autorização runtime do M2 (`argon2`, `jose`), health endpoint, testes de boot isolados, testes de integração com PostgreSQL | Backend modular monolith |
 | `apps/worker` | Node/TS mínimo, sem filas | Tarefas assíncronas |
-| `packages/contracts` | vazio | Contratos compartilhados (DTOs/eventos) |
+| `packages/contracts` | contratos HTTP do M3 (organização, companies, branches, acesso a filiais, erros, paginação) | Contratos compartilhados (DTOs/eventos); a API importa só tipos ([api.md](api.md)) |
 | `packages/validation` | vazio | Validação compartilhada |
 | `packages/config` | vazio | Configuração compartilhada |
 | `packages/ui` | vazio | Componentes de UI compartilhados |
 
-Os packages ainda não têm responsabilidade implementada.
+Os packages não têm build: exportam TypeScript direto. `apps/api` só pode usar `import type` deles (lint), ver [api.md](api.md).
 
 ## Visão de contexto
 ```mermaid
@@ -144,4 +144,4 @@ Provedor **TBD**. A arquitetura deve prever uma abstração conceitual semelhant
 AWS ECS/Fargate, RDS PostgreSQL, Redis, SQS, S3, Secrets Manager, CloudWatch. Nada implementado. Os scripts de `infrastructure/postgres/` são compatíveis com RDS (sem superusuário real, sem `rds_superuser` para a aplicação, sem extensão nem acesso ao sistema operacional).
 
 ## Documentos relacionados
-[database](database.md) · [security](security.md) · [offline-edge](offline-edge.md) · [printing](printing.md) · [fiscal](fiscal.md) · [testing-strategy](testing-strategy.md) · [deployment](deployment.md) · [open-questions](open-questions.md)
+[api](api.md) · [database](database.md) · [security](security.md) · [offline-edge](offline-edge.md) · [printing](printing.md) · [fiscal](fiscal.md) · [testing-strategy](testing-strategy.md) · [deployment](deployment.md) · [open-questions](open-questions.md)
