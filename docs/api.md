@@ -23,3 +23,13 @@ campos e códigos de erro de cada módulo estão nos comentários dos próprios 
   por criação.
 - Datas ISO 8601 UTC; IDs UUID.
 - Status (`ACTIVE`/`INACTIVE`) muda só por ações dedicadas (`POST .../activate|deactivate`), idempotentes.
+
+## Convenções acrescentadas no M4
+- **Campos aninhados em `details`:** `field` é o caminho do campo (`optionGroups[0].options[1].priceDelta`, `optionGroups[2].options`).
+  Objetos aninhados seguem a mesma regra estrita (campo desconhecido = `unknown_field`). Listas: `too_few`/`too_many`.
+- **Dinheiro (`Money`):** string decimal em reais com ponto (`"12.50"`). Requests aceitam `"12"`, `"12.5"`, `"12.50"` (até
+  `"9999999999.99"`); number, expoente, sinal, vírgula ou mais de 2 casas = `invalid_money`. Respostas sempre com 2 casas.
+- **Inteiros** (`sortOrder`, `minChoices`...): number JSON inteiro; fração ou string = `invalid_type`, fora da faixa = `invalid_value`.
+- **Escopo de filial na URL** (`/branches/:branchId/...`): sem acesso à filial, filial de outro tenant ou inexistente = 403
+  `forbidden` (o guard decide antes de qualquer consulta ao recurso); recursos do tenant fora da filial seguem 404.
+- **Busca textual** (`q`): "contém", sem diferenciar maiúsculas; `%`, `_` e `\` são literais (sem curingas).

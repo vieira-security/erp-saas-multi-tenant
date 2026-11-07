@@ -171,3 +171,18 @@ Nenhuma. Banco limpo e caminho incremental produzem o mesmo catálogo; isolament
 3. Variações, adicionais e combos como grupos de opções (mín/máx escolhas; opção com acréscimo de preço; combo = opção vinculada a outro produto).
 4. Imagens adiadas até existir armazenamento (S3).
 Contratos em `packages/contracts/src/products.ts`.
+
+**Implementado (backend):** migration `20261108000000_create_product_catalog` (5 tabelas, ver [database.md](database.md)); grants em `03-runtime-grants.sql`; módulo `products` na API com todas as rotas do contrato.
+
+**Defaults técnicos do M4 (revisar com o produto; reverter não exige migration):**
+1. Cardápio: grupo **opcional** que fica sem opções (todas vinculadas a produto inativo/indisponível) é omitido, e `maxChoices` é limitado ao número de opções restantes (mantém `maxChoices ≤ nº de opções` também no cardápio). Grupo obrigatório abaixo de `minChoices` omite o produto (regra do contrato).
+2. Listagem de produtos (`GET /products`) segue a ordem geral do contrato (criação crescente); categorias e cardápio usam `sortOrder`, depois criação, depois `id`.
+3. `DELETE /branches/:branchId/product-settings/:productId` responde 204 também para produto inexistente/de outro tenant (idempotente; nada é apagado fora do tenant).
+4. Busca `q`: nome contém (ILIKE, curingas escapados) ou código exato normalizado. A comparação sem maiúsculas de letras não ASCII depende do `LC_CTYPE` do banco (não há ordenação por texto).
+5. Substituir grupos atualiza `products.updated_at` (os grupos fazem parte do `ProductDto`).
+
+**Pendente / fora do M4:**
+- **DECISION REQUIRED:** cardápio e ajustes de filial **INACTIVE** (ou de empresa INACTIVE) continuam acessíveis para quem tem `UserBranchAccess` — o guard verifica acesso, não status. Definir se o PDV deve receber 409/403 nesse caso.
+- Auditoria (`audit_logs`) das alterações de catálogo, preço e disponibilidade: catálogo de ações ainda em aberto (#8); nada é gravado.
+- Campos fiscais do produto (NCM, CFOP, CEST, origem, tributação): M9. Imagens: com S3.
+- Pedidos (M5+) devem copiar nome/preço/opções no item: grupos e opções são apagados na substituição em bloco.

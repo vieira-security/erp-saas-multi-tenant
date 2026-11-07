@@ -1,7 +1,7 @@
 # Banco de dados
 
 ## Estado atual
-PostgreSQL via Prisma. Models: `Tenant` (tabela `tenants`, migration `20261002000000_create_tenants`), `Company` (tabela `companies`, migration `20261002010000_create_companies`), `Branch` (tabela `branches`, migration `20261002020000_create_branches`), `User` (tabela `users`, migration `20261002030000_create_users`), `UserBranchAccess` (tabela `user_branch_access`, migration `20261002040000_create_user_branch_access`), `Role` (tabela `roles`, migration `20261002050000_create_roles`), `Permission` (tabela global `permissions`, migration `20261002060000_create_permissions`), `RolePermission` (tabela `role_permissions`, migration `20261002070000_create_role_permissions`), `UserRole` (tabela `user_roles`, migration `20261002080000_create_user_roles`), `Device` (tabela `devices`, migration `20261002090000_create_devices`), `Session` (tabela `sessions`, migration `20261002100000_create_sessions`) e `AuditLog` (tabela `audit_logs`, migrations `20261002110000_create_audit_logs` e `20261002111000_make_audit_logs_append_only`). A imutabilidade de `tenant_id` é imposta pela migration `20261002120000_make_tenant_id_immutable` (M1.14.1); o bloqueio de `TRUNCATE` em `audit_logs`, pela `20261002121000_forbid_audit_logs_truncate` (M1.14.2a); a remoção do índice redundante `companies_tenant_id_idx`, pela `20261002130000_drop_redundant_company_tenant_index` (M1.14.3). No M2: `tenants.login_code` pela `20261012000000_add_tenant_login_code` e o formato normalizado de `users.employee_number` pela `20261012010000_enforce_employee_number_format`. A URL de conexão vem de `DATABASE_URL` (lida em `apps/api/prisma.config.ts`), nunca do código. Identidades e privilégios do PostgreSQL (`erp_migrator`/`erp_app`, M1.14.2b): seção "Identidades e privilégios do PostgreSQL" abaixo.
+PostgreSQL via Prisma. Models: `Tenant` (tabela `tenants`, migration `20261002000000_create_tenants`), `Company` (tabela `companies`, migration `20261002010000_create_companies`), `Branch` (tabela `branches`, migration `20261002020000_create_branches`), `User` (tabela `users`, migration `20261002030000_create_users`), `UserBranchAccess` (tabela `user_branch_access`, migration `20261002040000_create_user_branch_access`), `Role` (tabela `roles`, migration `20261002050000_create_roles`), `Permission` (tabela global `permissions`, migration `20261002060000_create_permissions`), `RolePermission` (tabela `role_permissions`, migration `20261002070000_create_role_permissions`), `UserRole` (tabela `user_roles`, migration `20261002080000_create_user_roles`), `Device` (tabela `devices`, migration `20261002090000_create_devices`), `Session` (tabela `sessions`, migration `20261002100000_create_sessions`) e `AuditLog` (tabela `audit_logs`, migrations `20261002110000_create_audit_logs` e `20261002111000_make_audit_logs_append_only`). A imutabilidade de `tenant_id` é imposta pela migration `20261002120000_make_tenant_id_immutable` (M1.14.1); o bloqueio de `TRUNCATE` em `audit_logs`, pela `20261002121000_forbid_audit_logs_truncate` (M1.14.2a); a remoção do índice redundante `companies_tenant_id_idx`, pela `20261002130000_drop_redundant_company_tenant_index` (M1.14.3). No M2: `tenants.login_code` pela `20261012000000_add_tenant_login_code` e o formato normalizado de `users.employee_number` pela `20261012010000_enforce_employee_number_format`. No M3: CNPJ alfanumérico pela `20261107000000_allow_alphanumeric_cnpj`. No M4: catálogo de produtos (`ProductCategory`, `Product`, `ProductOptionGroup`, `ProductOption`, `BranchProductSetting`) pela `20261108000000_create_product_catalog` (seção "Catálogo de produtos (M4)"). A URL de conexão vem de `DATABASE_URL` (lida em `apps/api/prisma.config.ts`), nunca do código. Identidades e privilégios do PostgreSQL (`erp_migrator`/`erp_app`, M1.14.2b): seção "Identidades e privilégios do PostgreSQL" abaixo.
 
 ## Tenant
 Raiz do multi-tenancy; por isso **não** possui `tenant_id`.
@@ -276,6 +276,23 @@ Trilha histórica **append-only** de eventos relevantes do tenant: segurança, a
 - **Remoção com `RESTRICT`:** User, Branch, Device e Tenant referenciados por um log não podem ser apagados (coerente com a política de desativação e com "auditoria nunca é apagada fisicamente"); também não mudam de tenant (`ON UPDATE RESTRICT`).
 - Retenção, particionamento, arquivamento e LGPD de `ip_address`/`metadata` ainda serão definidos.
 
+## Catálogo de produtos (M4)
+Cardápio **único por tenant**; cada filial só desliga o produto e/ou sobrescreve o preço. Variação, adicional e combo são **grupos de opções** do produto. Migration `20261108000000_create_product_catalog`. Todas as tabelas são de tenant (`tenant_id uuid NOT NULL`, FK direta para `tenants`, UUIDv7, `created_at`/`updated_at` `timestamptz(3)`, trigger `<tabela>_tenant_id_immutable`), com FKs compostas `(tenant_id, x_id)` `ON DELETE/UPDATE RESTRICT` (sem CASCADE). Campos fiscais (NCM, CFOP, CEST, origem, tributação) **não** estão aqui: entram no M9.
+
+| Tabela | Colunas principais | FKs compostas | Uniques / índices | CHECKs |
+|---|---|---|---|---|
+| `product_categories` | `name`, `sort_order int` (default 0), `status product_category_status` | — | `(tenant_id, id)` (alvo de `products`); `(tenant_id, status)` | `btrim(name) <> ''`; `sort_order` 0..9999 |
+| `products` | `category_id` (nulo), `name`, `description` (nulo), `code` (nulo), `base_price numeric(12,2)`, `sort_order`, `status product_status` | `(tenant_id, category_id)` → `product_categories` (`MATCH SIMPLE`: nulo = sem categoria) | `(tenant_id, code)` (NULLS DISTINCT); `(tenant_id, id)` (alvo de grupos, combo e ajustes); `(tenant_id, status)`; `(tenant_id, category_id)` | nome não vazio; descrição nula ou não vazia; `code` nulo ou `^[A-Z0-9][A-Z0-9_-]{0,31}$` (formato de `branches.code`); `base_price >= 0`; `sort_order` 0..9999 |
+| `product_option_groups` | `product_id`, `name`, `min_choices`, `max_choices`, `sort_order` | `(tenant_id, product_id)` → `products` | `(tenant_id, product_id, sort_order)` (ordem única; cobre a FK); `(tenant_id, product_id, id)` (alvo da FK das opções) | nome; `min_choices >= 0`; `max_choices >= 1`; `min_choices <= max_choices`; `sort_order` 0..9999 |
+| `product_options` | `product_id`, `group_id`, `name`, `price_delta numeric(12,2)`, `linked_product_id` (nulo = opção simples), `sort_order` | `(tenant_id, product_id, group_id)` → `product_option_groups(tenant_id, product_id, id)`; `(tenant_id, linked_product_id)` → `products` (`MATCH SIMPLE`) | `(tenant_id, product_id, group_id, sort_order)` (ordem única; cobre a FK do grupo); `(tenant_id, linked_product_id)` | nome; `price_delta >= 0`; `sort_order` 0..9999; `linked_product_id IS NULL OR linked_product_id <> product_id` |
+| `branch_product_settings` | `branch_id`, `product_id`, `available boolean`, `price numeric(12,2)` (nulo = preço base) | `(tenant_id, branch_id)` → `branches`; `(tenant_id, product_id)` → `products` | `(tenant_id, branch_id, product_id)` (um ajuste por produto/filial; cobre a FK da filial); `(tenant_id, product_id)` | `price IS NULL OR price >= 0` |
+
+- **`product_options.product_id`** é cópia do produto do grupo, **garantida pela FK composta** `(tenant_id, product_id, group_id)` → `product_option_groups(tenant_id, product_id, id)`: não diverge. Serve para o CHECK de auto-vínculo (opção não vincula o próprio produto, sem trigger) e para a substituição em bloco por produto.
+- **Dinheiro:** `numeric(12,2)` em reais (máximo `9999999999.99`; um 11º dígito inteiro estoura em vez de arredondar). Nunca float; na API é string decimal (`Money`).
+- **Sem exclusão de categoria/produto:** só `status` (`ACTIVE`/`INACTIVE`). Grupos e opções **são apagados e recriados** em bloco (`PUT .../option-groups`), por isso têm `DELETE` e não `UPDATE` em runtime. Pedidos futuros guardam cópia de nome/preço e não podem depender dessas linhas.
+- **Regras que dependem de outras linhas ficam na aplicação** (`apps/api/src/products`): `max_choices <=` nº de opções do grupo; combo não aninha combo (produto vinculado sem grupos; produto vinculado por outro não recebe grupos); produto vinculado `ACTIVE` no momento do vínculo. A corrida entre vincular e dar grupos é serializada com `SELECT ... FOR UPDATE` das linhas de `products` envolvidas, em ordem de `id` (`product-lock.ts`).
+- **Ajuste por filial:** ausência de linha = disponível com o preço base. Linha só é criada por upsert e removida para "voltar ao padrão".
+
 ## Identidades e privilégios do PostgreSQL (M1.14.2b)
 Duas identidades, criadas fora das Prisma migrations por scripts de infraestrutura em [`infrastructure/postgres/`](../infrastructure/postgres/README.md) (sem senha no git):
 
@@ -295,6 +312,9 @@ Duas identidades, criadas fora das Prisma migrations por scripts de infraestrutu
 | `user_branch_access`, `role_permissions`, `user_roles` | `SELECT`, `INSERT`, `DELETE` | vínculos: delete + create; sem `UPDATE` e sem `TRUNCATE` |
 | `permissions` | `SELECT` | catálogo global; escrita só pelo deploy (seed como `erp_migrator`) |
 | `audit_logs` | `SELECT`, `INSERT` | append-only também por privilégio; sem `UPDATE`/`DELETE`/`TRUNCATE` |
+| `product_categories`, `products` (M4) | `SELECT`, `INSERT`, `UPDATE` | cadastro mestre; sem `DELETE` (só status) e sem `TRUNCATE` |
+| `product_option_groups`, `product_options` (M4) | `SELECT`, `INSERT`, `DELETE` | substituídos em bloco (delete + insert); sem `UPDATE` e sem `TRUNCATE` |
+| `branch_product_settings` (M4) | `SELECT`, `INSERT`, `UPDATE`, `DELETE` | upsert do ajuste e `DELETE` para voltar ao padrão; sem `TRUNCATE` |
 | `_prisma_migrations` | nenhum | ferramenta de migration |
 
 Nenhuma tabela tem `REFERENCES` ou `TRIGGER` para `erp_app`; nenhuma tem grant por coluna; `PUBLIC` não tem privilégio em tabela alguma.
@@ -353,12 +373,13 @@ Regras: relações cross-tenant devem ser **bloqueadas no banco** sempre que pos
 - tenant → **global declarada**: FK simples permitida (ex.: `role_permissions.permission_id → permissions.id`);
 - global/raiz/ferramenta → tenant ou raiz: proibido; qualquer FK → `_prisma_migrations`: proibido.
 
-Não há exceção genérica: uma FK simples só é aceita se o alvo estiver em `GLOBAL_TABLES`. Sondas provam que FK simples tenant → tenant é rejeitada, tenant → global declarada é aceita, a mesma FK para uma tabela não declarada é rejeitada e uma tabela global não pode apontar para dado de tenant. Toda FK composta precisa ter `tenant_id` `NOT NULL` (com `MATCH SIMPLE`, um `tenant_id` nulo desligaria a verificação); as únicas FKs compostas com coluna anulável são os vínculos opcionais declarados explicitamente no teste: `branch_id` de `user_roles` e de `devices`, `device_id` de `sessions`, e `user_id`, `branch_id` e `device_id` de `audit_logs`.
+Não há exceção genérica: uma FK simples só é aceita se o alvo estiver em `GLOBAL_TABLES`. Sondas provam que FK simples tenant → tenant é rejeitada, tenant → global declarada é aceita, a mesma FK para uma tabela não declarada é rejeitada e uma tabela global não pode apontar para dado de tenant. Toda FK composta precisa ter `tenant_id` `NOT NULL` (com `MATCH SIMPLE`, um `tenant_id` nulo desligaria a verificação); as únicas FKs compostas com coluna anulável são os vínculos opcionais declarados explicitamente no teste: `branch_id` de `user_roles` e de `devices`, `device_id` de `sessions`, e `user_id`, `branch_id` e `device_id` de `audit_logs`; no M4, `products.category_id` e `product_options.linked_product_id`.
 
 ### Validações que ficam fora do banco
 - **CNPJ completo** (dígitos verificadores; raiz do CNPJ da Branch x Company): responsabilidade futura de `packages/validation`. O banco garante só o formato (14 dígitos) e a unicidade por tenant.
 - **Timezone IANA** (Company e Branch): validado na camada de aplicação; o banco guarda texto obrigatório, sem lista própria.
-- **Branch.code**: normalização trim + uppercase na aplicação.
+- **Branch.code** e **Product.code**: normalização trim + uppercase na aplicação (o banco valida o formato de `products.code`).
+- **Catálogo (M4)**: `max_choices` ≤ nº de opções, combo não aninha combo e produto vinculado `ACTIVE` (seção "Catálogo de produtos (M4)").
 
 ## Índices e constraints físicos (M1.14.3)
 O **catálogo do PostgreSQL é a fonte de verdade** do schema físico; o schema Prisma não representa tudo. Inventário do M1 (50 índices antes do M1.14.3, 49 depois, contando `_prisma_migrations_pkey`; todos B-tree; 24 FKs; 21 CHECKs; 2 índices parciais; 2 funções; 11 triggers; nenhum event trigger):
@@ -367,6 +388,7 @@ O **catálogo do PostgreSQL é a fonte de verdade** do schema físico; o schema 
 - **Uniques auxiliares que continuam:** `UNIQUE (tenant_id, id)` em `companies`, `branches`, `users`, `roles` e `devices` parecem redundantes com a PK, mas são o alvo das FKs compostas multi-tenant (Branch→Company; UserBranchAccess/AuditLog/Device→Branch; UserBranchAccess/UserRole/Session/AuditLog→User; RolePermission/UserRole→Role; Session/AuditLog→Device). `user_branch_access (tenant_id, user_id, branch_id)` é também alvo da FK de UserRole. A auditoria exige que toda `UNIQUE (tenant_id, id)` seja usada por ao menos uma FK.
 - **Cobertura de FKs:** todas as 24 FKs têm, na tabela filha, um índice B-tree comum (não parcial, sem expressão) cujo prefixo esquerdo são as colunas da FK na mesma ordem; assim o `RESTRICT` ao apagar/alterar o pai não varre a filha. Nenhuma exceção (`FK_COVERAGE_EXCEPTIONS` vazio).
 - **Índices globais aprovados** (não começam por `tenant_id`): `permissions_code_key`, `permissions_module_idx` (catálogo global), `role_permissions_permission_id_idx` (FK para o catálogo global) e `sessions_refresh_token_hash_key` (unicidade global). Todo o resto começa por `tenant_id` (exceto PKs).
+- **Depois do M4:** 35 FKs (todas `RESTRICT`, todas cobertas), 39 CHECKs, 16 triggers, 2 funções. Novos alvos `UNIQUE (tenant_id, id)`: `product_categories` (Product→Category) e `products` (Group/Option combo/BranchProductSetting→Product); `product_option_groups (tenant_id, product_id, id)` é o alvo da FK das opções.
 - **AuditLog:** os cinco índices começam por `tenant_id` e cobrem as FKs para users/branches/devices; mantidos. Sem GIN em `metadata` nem índice em `action`.
 - **Regra para índices futuros:** não adicionar índice sem necessidade estrutural (cobrir FK, impor unicidade, regra de negócio) ou workload real medido em ambiente representativo. `pg_stat_user_indexes` e `EXPLAIN` com fixtures de teste não justificam criar nem remover índice. Toda FK nova precisa de índice cobrindo suas colunas na tabela filha (a auditoria falha sem ele) e tabela de tenant mantém `tenant_id` como primeira coluna.
 
@@ -374,9 +396,9 @@ O **catálogo do PostgreSQL é a fonte de verdade** do schema físico; o schema 
 
 | Garantia | Onde é protegida |
 |---|---|
-| 21 CHECKs manuais | `MANUAL_CHECK_CONSTRAINTS` (schema-hardening) + listas exatas por tabela (migration) |
+| CHECKs manuais (21 no M1; 39 após o M4) | `MANUAL_CHECK_CONSTRAINTS` (schema-hardening) + listas exatas por tabela (migration) |
 | Índices parciais `user_roles_tenant_scope_key` / `user_roles_branch_scope_key` | `MANUAL_PARTIAL_INDEXES` (colunas, ordem, unicidade, B-tree, predicado) + migration |
-| Funções `forbid_audit_log_mutation()`, `forbid_tenant_id_change()` e 11 triggers | inventário de funções/triggers (migration), auditoria de imutabilidade e append-only (org-integrity, audit-log) |
+| Funções `forbid_audit_log_mutation()`, `forbid_tenant_id_change()` e triggers (11 no M1; 16 após o M4) | inventário de funções/triggers (migration), auditoria de imutabilidade e append-only (org-integrity, audit-log) |
 | Event triggers | nenhum existe; o inventário de funções/triggers falharia com função nova |
 | Privilégios/ACL de tabelas, funções e schema; default privileges | `runtimePrivilegeViolations`, `privilegeModelViolations` (runtime-privileges) |
 | Ownership | `ownershipViolations` (runtime-privileges) |
@@ -386,7 +408,7 @@ O **catálogo do PostgreSQL é a fonte de verdade** do schema físico; o schema 
 ## CHECK constraints, índices parciais, funções e triggers
 O schema Prisma não representa CHECKs nem índices únicos parciais (`user_roles`): eles são escritos à mão na migration. Consequências:
 - `prisma migrate diff`/`migrate dev` **não** os geram nem os removem, e o teste de drift **não** os detecta; por isso o teste de migration verifica cada CHECK explicitamente.
-- O mesmo vale para **funções e triggers** (hoje `forbid_audit_log_mutation()` + `audit_logs_append_only` + `audit_logs_no_truncate` e `forbid_tenant_id_change()` + os 9 `<tabela>_tenant_id_immutable`): confirmado nas checagens negativas do M1.13.1, M1.14.1 e M1.14.2a que o teste de drift passa mesmo sem o trigger. Por isso há testes de catálogo obrigatórios: inventário fail-closed explícito de funções de `public` e de triggers não internos (`migration.int.test.ts`), a auditoria de imutabilidade de `tenant_id` (`org-integrity.int.test.ts`) e, em `audit-log.int.test.ts`, existência, tabela, eventos, `BEFORE`, nível (linha para UPDATE/DELETE, statement para TRUNCATE), habilitação (`tgenabled = 'O'`), definição exata e ausência de outros triggers em `audit_logs`. Trigger ou função nova exige atualizar o inventário.
+- O mesmo vale para **funções e triggers** (hoje `forbid_audit_log_mutation()` + `audit_logs_append_only` + `audit_logs_no_truncate` e `forbid_tenant_id_change()` + os 14 `<tabela>_tenant_id_immutable`, 5 deles do M4): confirmado nas checagens negativas do M1.13.1, M1.14.1 e M1.14.2a que o teste de drift passa mesmo sem o trigger. Por isso há testes de catálogo obrigatórios: inventário fail-closed explícito de funções de `public` e de triggers não internos (`migration.int.test.ts`), a auditoria de imutabilidade de `tenant_id` (`org-integrity.int.test.ts`) e, em `audit-log.int.test.ts`, existência, tabela, eventos, `BEFORE`, nível (linha para UPDATE/DELETE, statement para TRUNCATE), habilitação (`tgenabled = 'O'`), definição exata e ausência de outros triggers em `audit_logs`. Trigger ou função nova exige atualizar o inventário.
 - Ao recriar ou alterar a tabela em migration futura, os CHECKs precisam ser mantidos manualmente.
 - O schema registra em comentário quais CHECKs existem em cada model.
 
@@ -411,7 +433,7 @@ O schema Prisma não representa CHECKs nem índices únicos parciais (`user_role
 | Tema | Decisão |
 |---|---|
 | IDs | UUIDv7 para IDs principais (offline, Edge, sync, idempotência). Gerado pelo Prisma Client via `@default(uuid(7))`, coluna `@db.Uuid` (tipo `uuid`). Sem default no banco: inserts fora do Prisma (SQL bruto, outras ferramentas) precisam informar o `id`. |
-| Dinheiro | `numeric`, nunca float. Precisão/escala: **TBD**. |
+| Dinheiro | `numeric(12,2)` em reais, nunca float (decidido em 07/11/2026; M4). Na API: string decimal com 2 casas. |
 | Tempo | `timestamptz(3)` (precisão de ms, igual ao `Date` do JS), armazenado em UTC. |
 | Remoção | **Sem soft delete universal.** Estratégia por entidade: **TBD**. |
 | Imutáveis | Vendas, pagamentos, fiscal e auditoria **nunca** são apagados fisicamente. `audit_logs` é append-only (UPDATE, DELETE e TRUNCATE bloqueados por trigger no PostgreSQL). |
