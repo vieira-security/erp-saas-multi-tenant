@@ -29,6 +29,9 @@ export const API_ERROR_CODES = [
   "branch_cnpj_already_exists",
   "branch_inactive",
   "branch_access_in_use",
+  // M4
+  "product_code_already_exists",
+  "linked_product_invalid",
 ] as const;
 
 export type ApiErrorCode = (typeof API_ERROR_CODES)[number];
@@ -45,6 +48,12 @@ export const VALIDATION_ISSUE_CODES = [
   "invalid_timezone",
   "cnpj_root_mismatch",
   "unknown_field",
+  // M4
+  "invalid_money",
+  "min_greater_than_max",
+  "max_greater_than_options",
+  "too_many",
+  "too_few",
 ] as const;
 
 export type ValidationIssueCode = (typeof VALIDATION_ISSUE_CODES)[number];

@@ -5,7 +5,7 @@ Registro único dos pontos em aberto. Resolver antes de implementar o módulo af
 | # | Tema | Documento | Bloqueia |
 |---|---|---|---|
 | 1 | ~~Geração de UUIDv7~~ **Resolvido:** Prisma `@default(uuid(7))`, coluna `uuid` (M1.1) | database | — |
-| 2 | Precisão/escala de `numeric` monetário | database | products/payments |
+| 2 | ~~Precisão/escala de `numeric` monetário~~ **Decidido (07/11/2026):** `numeric(12,2)` em reais; na API, string decimal com 2 casas (`Money` em `packages/contracts`) | database | — |
 | 3 | Estratégia de remoção por entidade (sem soft delete universal). Já definido: Company sem soft delete, desativação via `status = INACTIVE`, FK Tenant→Company `RESTRICT`; Branch igual (sem soft delete, `INACTIVE`, FKs `RESTRICT`). Em aberto: demais entidades e se Tenant pode ser apagado fisicamente | database | primeiros models |
 | 4 | Desenho de idempotency keys (escopo, retenção) | database/offline-edge | offline-sync/orders |
 | 5 | ~~Autenticação, sessões, transporte, TTLs~~ **resolvido no M2** ([security.md](security.md)); resta a expiração/autenticação offline do PDV | security | PDV offline |
@@ -164,3 +164,10 @@ Nenhuma. Banco limpo e caminho incremental produzem o mesmo catálogo; isolament
 - Auditoria (`audit_logs`) das alterações de organização e de acesso a filiais: catálogo de ações ainda em aberto (#8); nada é gravado hoje.
 - Atribuição de roles por endpoint (com a regra de não conceder autoridade acima da própria) e administração de usuários.
 - Validação de CNPJ no banco (DV) e unicidade de CNPJ entre `companies` e `branches`.
+
+## M4 — Produtos e cardápio (decisões de produto de 07/11/2026)
+1. Dinheiro em `numeric(12,2)` (reais, 2 casas); API usa string decimal `"12.50"`, nunca number.
+2. Cardápio único por tenant; cada filial pode desligar o produto e/ou sobrescrever o preço base.
+3. Variações, adicionais e combos como grupos de opções (mín/máx escolhas; opção com acréscimo de preço; combo = opção vinculada a outro produto).
+4. Imagens adiadas até existir armazenamento (S3).
+Contratos em `packages/contracts/src/products.ts`.

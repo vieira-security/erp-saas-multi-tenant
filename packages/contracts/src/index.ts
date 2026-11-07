@@ -5,3 +5,4 @@ export * from "./organization.js";
 export * from "./companies.js";
 export * from "./branches.js";
 export * from "./branch-access.js";
+export * from "./products.js";
