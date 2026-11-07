@@ -23,6 +23,16 @@ GRANT SELECT, INSERT, UPDATE ON tenants, companies, branches, users, roles, devi
 -- Tabelas de vínculo: alteradas por delete + create, nunca por update.
 GRANT SELECT, INSERT, DELETE ON user_branch_access, role_permissions, user_roles TO erp_app;
 
+-- M4, catálogo de produtos (cadastro mestre): sem DELETE (categoria/produto só mudam de status; pedidos futuros
+-- guardam cópia de nome/preço), sem TRUNCATE.
+GRANT SELECT, INSERT, UPDATE ON product_categories, products TO erp_app;
+
+-- M4, grupos e opções de um produto: substituídos em bloco (DELETE + INSERT na mesma transação), nunca por UPDATE.
+GRANT SELECT, INSERT, DELETE ON product_option_groups, product_options TO erp_app;
+
+-- M4, ajuste do produto na filial: upsert (INSERT/UPDATE) e "voltar ao padrão" apaga a linha (DELETE idempotente).
+GRANT SELECT, INSERT, UPDATE, DELETE ON branch_product_settings TO erp_app;
+
 -- Catálogo técnico global: mantido pelo deploy (seed como erp_migrator); somente leitura em runtime.
 GRANT SELECT ON permissions TO erp_app;
 

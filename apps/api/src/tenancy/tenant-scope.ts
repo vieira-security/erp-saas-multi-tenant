@@ -23,6 +23,11 @@ export const MODEL_SCOPE = {
   Device: "tenant",
   Session: "tenant",
   AuditLog: "tenant",
+  ProductCategory: "tenant",
+  Product: "tenant",
+  ProductOptionGroup: "tenant",
+  ProductOption: "tenant",
+  BranchProductSetting: "tenant",
 } as const satisfies Record<Prisma.ModelName, ModelScope>;
 
 /** Input de escopo: quem chama nunca informa o tenant (nem `tenantId`, nem a relação `tenant`). */
