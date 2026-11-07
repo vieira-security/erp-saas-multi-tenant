@@ -34,3 +34,18 @@ O setup de integração (`apps/api/test/integration/global-setup.ts`) executa es
 ## Fronteira
 
 Estes scripts não protegem contra a própria identidade admin nem contra o dono dos objetos (`erp_migrator`), que pode desabilitar triggers ou alterar funções. A proteção é: a aplicação roda como `erp_app`, que não é dona de nada nem membro de `erp_migrator`, e a credencial de `erp_migrator` fica restrita ao pipeline de deploy.
+
+## Ambiente local com Docker Compose
+
+O `docker-compose.yml` da raiz sobe dois servidores PostgreSQL 17 (UTF8), publicados só em `127.0.0.1`:
+
+| Serviço | Porta | Uso |
+|---|---|---|
+| `postgres-dev` | 5432 | Desenvolvimento local da API; dados persistem no volume `erp_postgres_dev`. Para rodar a API, aplique os scripts 01/02/03 e as migrations conforme a ordem acima. |
+| `postgres-test` | 5433 | Servidor **dedicado** aos testes de integração; roda em `tmpfs` e é zerado a cada subida. Não use para desenvolvimento. |
+
+1. Copie `.env.example` para `.env` na raiz e preencha `POSTGRES_DEV_PASSWORD` e `POSTGRES_TEST_PASSWORD` com valores aleatórios.
+2. `docker compose up -d` e confira com `docker compose ps` (ambos `healthy`).
+3. Testes de integração: `TEST_DATABASE_URL=postgresql://postgres:<POSTGRES_TEST_PASSWORD>@127.0.0.1:5433/postgres`.
+
+O gate oficial roda nesta imagem (`postgres:17` oficial), não em distribuições derivadas (ex.: Supabase).

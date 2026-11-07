@@ -1,0 +1,39 @@
+# PostgreSQL 17 local para a dupla. Senhas vêm do .env da raiz (nunca versionado).
+# postgres-dev: dados persistentes para rodar a API localmente.
+# postgres-test: servidor DEDICADO aos testes de integração; tmpfs zera a cada subida.
+services:
+  postgres-dev:
+    image: postgres:17.11
+    container_name: erp-postgres-dev
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_DEV_PASSWORD:?defina POSTGRES_DEV_PASSWORD no .env}
+      POSTGRES_DB: erp
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - erp_postgres_dev:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d erp"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  postgres-test:
+    image: postgres:17.11
+    container_name: erp-postgres-test
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_TEST_PASSWORD:?defina POSTGRES_TEST_PASSWORD no .env}
+    ports:
+      - "127.0.0.1:5433:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  erp_postgres_dev:
