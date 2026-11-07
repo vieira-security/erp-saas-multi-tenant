@@ -39,6 +39,7 @@ describe("migrations on a clean PostgreSQL database", () => {
       { name: "20261002130000_drop_redundant_company_tenant_index", finished: true, rolledBack: false },
       { name: "20261012000000_add_tenant_login_code", finished: true, rolledBack: false },
       { name: "20261012010000_enforce_employee_number_format", finished: true, rolledBack: false },
+      { name: "20261107000000_allow_alphanumeric_cnpj", finished: true, rolledBack: false },
     ]);
   });
 
@@ -133,7 +134,7 @@ describe("migrations on a clean PostgreSQL database", () => {
       SELECT conname AS name, pg_get_constraintdef(oid) AS definition
       FROM pg_constraint WHERE conrelid = 'public.companies'::regclass ORDER BY conname`;
     expect(constraints).toEqual([
-      { name: "companies_cnpj_check", definition: "CHECK ((cnpj ~ '^[0-9]{14}$'::text))" },
+      { name: "companies_cnpj_check", definition: "CHECK ((cnpj ~ '^[0-9A-Z]{12}[0-9]{2}$'::text))" },
       { name: "companies_legal_name_check", definition: "CHECK ((btrim(legal_name) <> ''::text))" },
       { name: "companies_pkey", definition: "PRIMARY KEY (id)" },
       {
@@ -190,7 +191,7 @@ describe("migrations on a clean PostgreSQL database", () => {
       SELECT conname AS name, pg_get_constraintdef(oid) AS definition
       FROM pg_constraint WHERE conrelid = 'public.branches'::regclass ORDER BY conname`;
     expect(constraints).toEqual([
-      { name: "branches_cnpj_check", definition: "CHECK (((cnpj IS NULL) OR (cnpj ~ '^[0-9]{14}$'::text)))" },
+      { name: "branches_cnpj_check", definition: "CHECK (((cnpj IS NULL) OR (cnpj ~ '^[0-9A-Z]{12}[0-9]{2}$'::text)))" },
       { name: "branches_code_check", definition: "CHECK ((btrim(code) <> ''::text))" },
       { name: "branches_name_check", definition: "CHECK ((btrim(name) <> ''::text))" },
       { name: "branches_pkey", definition: "PRIMARY KEY (id)" },

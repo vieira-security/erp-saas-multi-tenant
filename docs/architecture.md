@@ -87,9 +87,8 @@ Cada módulo vive em `apps/api/src/<modulo>` e expõe apenas uma API pública. *
 | `auth` | Autenticação e emissão do contexto autenticado (tenant, usuário, sessão, dispositivo). Implementado no M2: senha Argon2id, login por código público (`POST /auth/login`), refresh/logout por cookie HttpOnly, tokens, sessões, guards, troca/reset de senha, lockout. |
 | `authorization` | Permissões efetivas (`AuthorizationService`) e `PermissionGuard` (M2). |
 | `tenants` | Ciclo de vida do tenant (cliente SaaS). Hoje: provisionamento idempotente das roles padrão (M2.11). |
-| `companies` | Empresa do tenant. |
-| `branches` | Filiais da empresa. |
-| `users` | Funcionários, matrícula (única por tenant), vínculo com filiais. |
+| `organization` | M3: aplicação/HTTP de organização (o próprio tenant), companies, branches e acesso de usuários a filiais (`UserBranchAccess`); validação de CNPJ, timezone IANA e código de filial. Agrupa o que antes estava previsto como `companies`/`branches` porque as regras cruzam as duas entidades (raiz do CNPJ, filial ativa só sob empresa ativa). `companies/company.repository.ts` (M2.1) continua sendo o repository de Company. Contratos em `packages/contracts`, convenções em [api.md](api.md). |
+| `users` | Funcionários, matrícula (única por tenant). O vínculo com filiais é exposto pelo módulo `organization` (M3). |
 | `roles` | Papéis. |
 | `permissions` | Permissões e verificação de acesso. |
 | `devices` | Dispositivos (PDV, agente de impressão, futuro Edge). |
@@ -105,7 +104,8 @@ flowchart TD
   subgraph Iniciais
     auth --> users
     auth --> tenants
-    tenants --> companies --> branches
+    tenants --> organization
+    organization --> users
     users --> roles --> permissions
     devices
     audit

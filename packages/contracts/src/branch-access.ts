@@ -11,6 +11,8 @@ import type { BranchSummaryDto } from "./branches.js";
  *
  * "Na filial" = quem concede/revoga precisa ter `user.manage` e acesso àquela filial: ninguém distribui acesso a uma
  * filial onde não pode operar. Sem acesso (ou filial inexistente/de outro tenant) -> 403 forbidden.
+ * Também 403 se o usuário alvo tiver, em qualquer role, permissão que o ator não tem nessa filial (ex.: MANAGER não
+ * concede nem revoga acesso de um OWNER).
  * Sem corpo nos requests.
  */
 export interface BranchAccessDto {

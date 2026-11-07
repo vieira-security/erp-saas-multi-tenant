@@ -34,7 +34,8 @@ export default tseslint.config(
   // (o import de valor passa no typecheck e quebra em runtime). Repete as regras do Prisma: flat config substitui a regra.
   {
     files: ["apps/api/**/*.ts"],
-    ignores: ["apps/api/src/database/create-prisma-client.ts"],
+    // Testes rodam no Vitest (transpila os packages): podem importar valores, ex. para comparar com a implementação da API.
+    ignores: ["apps/api/src/database/create-prisma-client.ts", "apps/api/**/*.test.ts"],
     rules: {
       "@typescript-eslint/no-restricted-imports": [
         "error",
