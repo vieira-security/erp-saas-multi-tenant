@@ -393,6 +393,29 @@ describe("M3 organization APIs over HTTP (PostgreSQL, as erp_app)", () => {
       expect(await owner.userBranchAccess.count({ where: { userId: target.userId } })).toBe(1);
     });
 
+    it("nobody administers the access of a user with more authority (MANAGER cannot grant or revoke an OWNER)", async () => {
+      const boss = await actor(orgA, "OWNER", [orgA.branchId]);
+      const noAccessBoss = await actor(orgA, "OWNER");
+      expect(await call("A:MANAGER", `/users/${noAccessBoss.userId}/branch-access/${orgA.branchId}`, { method: "PUT" })).toEqual({
+        status: 403,
+        body: { error: "forbidden" },
+      });
+      expect(await call("A:MANAGER", `/users/${boss.userId}/branch-access/${orgA.branchId}`, { method: "DELETE" })).toEqual({
+        status: 403,
+        body: { error: "forbidden" },
+      });
+      // A branch-scoped role counts too: KITCHEN tenant-wide + OWNER only in MAIN is still above MANAGER.
+      const scopedBoss = await actor(orgA, "KITCHEN", [orgA.branchId]);
+      await owner.userRole.create({ data: { tenantId: orgA.tenantId, userId: scopedBoss.userId, roleId: await roleId(orgA, "OWNER"), branchId: orgA.branchId } });
+      expect((await call("A:MANAGER", `/users/${scopedBoss.userId}/branch-access/${orgA.branchId}`, { method: "DELETE" })).status).toBe(403);
+      expect(await owner.userBranchAccess.count({ where: { userId: { in: [boss.userId, scopedBoss.userId] } } })).toBe(2);
+      expect(await owner.userBranchAccess.count({ where: { userId: noAccessBoss.userId } })).toBe(0);
+      // Equal or lower authority is fine, including the OWNER managing another OWNER.
+      expect((await call("A:OWNER", `/users/${noAccessBoss.userId}/branch-access/${orgA.branchId}`, { method: "PUT" })).status).toBe(201);
+      const cook = await actor(orgA, "KITCHEN");
+      expect((await call("A:MANAGER", `/users/${cook.userId}/branch-access/${orgA.branchId}`, { method: "PUT" })).status).toBe(201);
+    });
+
     it("unknown or foreign users are 404; inactive branches cannot receive new access", async () => {
       for (const userId of [actors["B:OWNER"]!.userId, randomUUID(), "nope"]) {
         expect(await call("A:OWNER", `/users/${userId}/branch-access/${orgA.branchId}`, { method: "PUT" }), userId).toEqual({ status: 404, body: { error: "not_found" } });

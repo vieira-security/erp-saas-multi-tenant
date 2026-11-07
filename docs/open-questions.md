@@ -151,7 +151,7 @@ Nenhuma. Banco limpo e caminho incremental produzem o mesmo catálogo; isolament
 2. Corpo e query estritos: campo desconhecido (inclusive `tenantId`) = 400 `unknown_field`.
 3. CNPJ da Company e `companyId` da filial são imutáveis pela API (correção de CNPJ exige fluxo próprio, ainda não definido).
 4. `branch.read`/`branch.manage` são avaliadas no escopo do **tenant** (cadastro de filiais é administração da organização); operações dentro de uma filial (pedidos, caixa) usarão escopo de filial.
-5. Conceder/revogar acesso a filial exige `user.manage` na filial alvo (ver [security.md](security.md)).
+5. Conceder/revogar acesso a filial exige `user.manage` na filial alvo e que o usuário alvo não tenha permissão que o ator não tenha nessa filial (ver [security.md](security.md)). Adicionado na auditoria final do M3.
 6. `GET /me/branches` lista só filial ACTIVE de empresa ACTIVE com acesso.
 7. Filial sem `timezone` informado herda o da Company.
 

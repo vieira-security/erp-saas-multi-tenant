@@ -44,7 +44,10 @@ export interface CreateCompanyRequest {
    * (`invalid_cnpj`). Único por tenant. Imutável depois de criado.
    */
   readonly cnpj: string;
-  /** Identificador IANA. Offsets fixos (`-03:00`, `GMT-3`) são rejeitados (`invalid_timezone`). */
+  /**
+   * Identificador IANA. Offsets fixos (`-03:00`, `GMT-3`, `Etc/GMT+3`) são rejeitados (`invalid_timezone`). Aliases são
+   * gravados no nome canônico (`Brazil/East` -> `America/Sao_Paulo`; `Etc/UTC` -> `UTC`).
+   */
   readonly timezone: string;
 }
 
