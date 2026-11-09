@@ -48,6 +48,11 @@ describe("schema hardening (PostgreSQL catalog)", () => {
           "audit_logs_tenant_id_resource_type_resource_id_created_at_idx",
           "audit_logs_tenant_id_user_id_created_at_idx",
         ],
+        branch_product_settings: [
+          "branch_product_settings_pkey",
+          "branch_product_settings_tenant_id_branch_id_product_id_key",
+          "branch_product_settings_tenant_id_product_id_idx",
+        ],
         branches: [
           "branches_pkey",
           "branches_tenant_id_cnpj_key",
@@ -65,6 +70,24 @@ describe("schema hardening (PostgreSQL catalog)", () => {
           "devices_tenant_id_status_idx",
         ],
         permissions: ["permissions_code_key", "permissions_module_idx", "permissions_pkey"],
+        product_categories: ["product_categories_pkey", "product_categories_tenant_id_id_key", "product_categories_tenant_id_status_idx"],
+        product_option_groups: [
+          "product_option_groups_pkey",
+          "product_option_groups_tenant_id_product_id_id_key",
+          "product_option_groups_tenant_id_product_id_sort_order_key",
+        ],
+        product_options: [
+          "product_options_pkey",
+          "product_options_tenant_id_linked_product_id_idx",
+          "product_options_tenant_id_product_id_group_id_sort_order_key",
+        ],
+        products: [
+          "products_pkey",
+          "products_tenant_id_category_id_idx",
+          "products_tenant_id_code_key",
+          "products_tenant_id_id_key",
+          "products_tenant_id_status_idx",
+        ],
         role_permissions: ["role_permissions_permission_id_idx", "role_permissions_pkey", "role_permissions_tenant_id_role_id_permission_id_key"],
         roles: ["roles_pkey", "roles_tenant_id_code_key", "roles_tenant_id_id_key", "roles_tenant_id_status_idx"],
         sessions: ["sessions_pkey", "sessions_refresh_token_hash_key", "sessions_tenant_id_device_id_idx", "sessions_tenant_id_user_id_idx"],
@@ -168,9 +191,26 @@ describe("schema hardening (PostgreSQL catalog)", () => {
         WHERE con.contype = 'f' AND i.relname LIKE '%\\_tenant\\_id\\_id\\_key'
         GROUP BY i.relname ORDER BY 1`;
       expect(rows).toEqual([
-        { index: "branches_tenant_id_id_key", fks: ["audit_logs_tenant_id_branch_id_fkey", "devices_tenant_id_branch_id_fkey", "user_branch_access_tenant_id_branch_id_fkey"] },
+        {
+          index: "branches_tenant_id_id_key",
+          fks: [
+            "audit_logs_tenant_id_branch_id_fkey",
+            "branch_product_settings_tenant_id_branch_id_fkey",
+            "devices_tenant_id_branch_id_fkey",
+            "user_branch_access_tenant_id_branch_id_fkey",
+          ],
+        },
         { index: "companies_tenant_id_id_key", fks: ["branches_tenant_id_company_id_fkey"] },
         { index: "devices_tenant_id_id_key", fks: ["audit_logs_tenant_id_device_id_fkey", "sessions_tenant_id_device_id_fkey"] },
+        { index: "product_categories_tenant_id_id_key", fks: ["products_tenant_id_category_id_fkey"] },
+        {
+          index: "products_tenant_id_id_key",
+          fks: [
+            "branch_product_settings_tenant_id_product_id_fkey",
+            "product_option_groups_tenant_id_product_id_fkey",
+            "product_options_tenant_id_linked_product_id_fkey",
+          ],
+        },
         { index: "roles_tenant_id_id_key", fks: ["role_permissions_tenant_id_role_id_fkey", "user_roles_tenant_id_role_id_fkey"] },
         {
           index: "users_tenant_id_id_key",
@@ -223,7 +263,7 @@ describe("schema hardening (PostgreSQL catalog)", () => {
 
   describe("manual CHECK constraints", () => {
     it("pins every CHECK of the schema with its exact definition", async () => {
-      expect(Object.keys(MANUAL_CHECK_CONSTRAINTS)).toHaveLength(22);
+      expect(Object.keys(MANUAL_CHECK_CONSTRAINTS)).toHaveLength(39);
       expect(await checkConstraintViolations(prisma)).toEqual([]);
     });
 

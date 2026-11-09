@@ -40,6 +40,7 @@ describe("migrations on a clean PostgreSQL database", () => {
       { name: "20261012000000_add_tenant_login_code", finished: true, rolledBack: false },
       { name: "20261012010000_enforce_employee_number_format", finished: true, rolledBack: false },
       { name: "20261107000000_allow_alphanumeric_cnpj", finished: true, rolledBack: false },
+      { name: "20261108000000_create_product_catalog", finished: true, rolledBack: false },
     ]);
   });
 
@@ -50,10 +51,15 @@ describe("migrations on a clean PostgreSQL database", () => {
     expect(tables.map((t) => t.name)).toEqual([
       "_prisma_migrations",
       "audit_logs",
+      "branch_product_settings",
       "branches",
       "companies",
       "devices",
       "permissions",
+      "product_categories",
+      "product_option_groups",
+      "product_options",
+      "products",
       "role_permissions",
       "roles",
       "sessions",
@@ -727,9 +733,14 @@ describe("migrations on a clean PostgreSQL database", () => {
     expect(triggers).toEqual([
       { table: "audit_logs", name: "audit_logs_append_only" },
       { table: "audit_logs", name: "audit_logs_no_truncate" },
+      { table: "branch_product_settings", name: "branch_product_settings_tenant_id_immutable" },
       { table: "branches", name: "branches_tenant_id_immutable" },
       { table: "companies", name: "companies_tenant_id_immutable" },
       { table: "devices", name: "devices_tenant_id_immutable" },
+      { table: "product_categories", name: "product_categories_tenant_id_immutable" },
+      { table: "product_option_groups", name: "product_option_groups_tenant_id_immutable" },
+      { table: "product_options", name: "product_options_tenant_id_immutable" },
+      { table: "products", name: "products_tenant_id_immutable" },
       { table: "role_permissions", name: "role_permissions_tenant_id_immutable" },
       { table: "roles", name: "roles_tenant_id_immutable" },
       { table: "sessions", name: "sessions_tenant_id_immutable" },

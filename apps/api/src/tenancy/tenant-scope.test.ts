@@ -45,7 +45,10 @@ describe("TenantScope", () => {
     expect(byScope("root")).toEqual(["Tenant"]);
     expect(byScope("global")).toEqual(["Permission"]);
     expect(byScope("tenant")).toEqual(
-      ["AuditLog", "Branch", "Company", "Device", "Role", "RolePermission", "Session", "User", "UserBranchAccess", "UserRole"],
+      [
+        "AuditLog", "Branch", "BranchProductSetting", "Company", "Device", "Product", "ProductCategory", "ProductOption",
+        "ProductOptionGroup", "Role", "RolePermission", "Session", "User", "UserBranchAccess", "UserRole",
+      ],
     );
   });
 });

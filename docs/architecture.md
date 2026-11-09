@@ -88,6 +88,7 @@ Cada módulo vive em `apps/api/src/<modulo>` e expõe apenas uma API pública. *
 | `authorization` | Permissões efetivas (`AuthorizationService`) e `PermissionGuard` (M2). |
 | `tenants` | Ciclo de vida do tenant (cliente SaaS). Hoje: provisionamento idempotente das roles padrão (M2.11). |
 | `organization` | M3: aplicação/HTTP de organização (o próprio tenant), companies, branches e acesso de usuários a filiais (`UserBranchAccess`); validação de CNPJ, timezone IANA e código de filial. Agrupa o que antes estava previsto como `companies`/`branches` porque as regras cruzam as duas entidades (raiz do CNPJ, filial ativa só sob empresa ativa). `companies/company.repository.ts` (M2.1) continua sendo o repository de Company. Contratos em `packages/contracts`, convenções em [api.md](api.md). |
+| `products` | M4: categorias, produtos (cardápio único por tenant), grupos de opções (variação/adicional/combo, substituídos em bloco), ajustes por filial (disponibilidade/preço) e cardápio da filial para o PDV (`GET /branches/:branchId/menu`, montado em memória por função pura). Catálogo em escopo de tenant (`product.read`/`product.manage`); rotas `/branches/:branchId/...` em escopo de filial. Regras de combo protegidas por trava de linhas (`product-lock.ts`). Sem campos fiscais (M9) nem imagens. |
 | `users` | Funcionários, matrícula (única por tenant). O vínculo com filiais é exposto pelo módulo `organization` (M3). |
 | `roles` | Papéis. |
 | `permissions` | Permissões e verificação de acesso. |
@@ -95,7 +96,7 @@ Cada módulo vive em `apps/api/src/<modulo>` e expõe apenas uma API pública. *
 | `audit` | Trilha de auditoria (não apagável fisicamente). |
 
 ### Posteriores
-`products`, `orders`, `payments`, `cash-register`, `printing`, `offline-sync`, `fiscal`, `subscriptions`, `admin`.
+`orders`, `payments`, `cash-register`, `printing`, `offline-sync`, `fiscal`, `subscriptions`, `admin`.
 
 Fronteiras detalhadas (ex.: roles x permissions; orders x payments x cash-register): **TBD**, definidas antes de cada módulo.
 
@@ -109,9 +110,9 @@ flowchart TD
     users --> roles --> permissions
     devices
     audit
+    products
   end
   subgraph Posteriores
-    products
     orders --> products
     orders --> payments --> cash-register
     orders --> printing

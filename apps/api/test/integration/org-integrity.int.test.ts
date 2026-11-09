@@ -49,10 +49,15 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
       expect(kinds).toEqual({
         _prisma_migrations: "tooling",
         audit_logs: "tenant",
+        branch_product_settings: "tenant",
         branches: "tenant",
         companies: "tenant",
         devices: "tenant",
         permissions: "global",
+        product_categories: "tenant",
+        product_option_groups: "tenant",
+        product_options: "tenant",
+        products: "tenant",
         role_permissions: "tenant",
         roles: "tenant",
         sessions: "tenant",
@@ -100,9 +105,14 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
     it("covers every tenant-scoped table", async () => {
       expect(await tenantScopedTables(prisma)).toEqual([
         "audit_logs",
+        "branch_product_settings",
         "branches",
         "companies",
         "devices",
+        "product_categories",
+        "product_option_groups",
+        "product_options",
+        "products",
         "role_permissions",
         "roles",
         "sessions",
@@ -182,6 +192,18 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
           definition: "FOREIGN KEY (tenant_id, user_id) REFERENCES users(tenant_id, id) ON UPDATE RESTRICT ON DELETE RESTRICT",
         },
         {
+          name: "branch_product_settings_tenant_id_branch_id_fkey",
+          definition: "FOREIGN KEY (tenant_id, branch_id) REFERENCES branches(tenant_id, id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+        },
+        {
+          name: "branch_product_settings_tenant_id_fkey",
+          definition: "FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+        },
+        {
+          name: "branch_product_settings_tenant_id_product_id_fkey",
+          definition: "FOREIGN KEY (tenant_id, product_id) REFERENCES products(tenant_id, id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+        },
+        {
           name: "branches_tenant_id_company_id_fkey",
           definition:
             "FOREIGN KEY (tenant_id, company_id) REFERENCES companies(tenant_id, id) ON UPDATE RESTRICT ON DELETE RESTRICT",
@@ -201,6 +223,38 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
         },
         {
           name: "devices_tenant_id_fkey",
+          definition: "FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+        },
+        {
+          name: "product_categories_tenant_id_fkey",
+          definition: "FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+        },
+        {
+          name: "product_option_groups_tenant_id_fkey",
+          definition: "FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+        },
+        {
+          name: "product_option_groups_tenant_id_product_id_fkey",
+          definition: "FOREIGN KEY (tenant_id, product_id) REFERENCES products(tenant_id, id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+        },
+        {
+          name: "product_options_tenant_id_fkey",
+          definition: "FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+        },
+        {
+          name: "product_options_tenant_id_linked_product_id_fkey",
+          definition: "FOREIGN KEY (tenant_id, linked_product_id) REFERENCES products(tenant_id, id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+        },
+        {
+          name: "product_options_tenant_id_product_id_group_id_fkey",
+          definition: "FOREIGN KEY (tenant_id, product_id, group_id) REFERENCES product_option_groups(tenant_id, product_id, id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+        },
+        {
+          name: "products_tenant_id_category_id_fkey",
+          definition: "FOREIGN KEY (tenant_id, category_id) REFERENCES product_categories(tenant_id, id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+        },
+        {
+          name: "products_tenant_id_fkey",
           definition: "FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON UPDATE RESTRICT ON DELETE RESTRICT",
         },
         {
@@ -334,8 +388,14 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
         ["audit_logs_tenant_id_branch_id_fkey", "tenant -> tenant"],
         ["audit_logs_tenant_id_device_id_fkey", "tenant -> tenant"],
         ["audit_logs_tenant_id_user_id_fkey", "tenant -> tenant"],
+        ["branch_product_settings_tenant_id_branch_id_fkey", "tenant -> tenant"],
+        ["branch_product_settings_tenant_id_product_id_fkey", "tenant -> tenant"],
         ["branches_tenant_id_company_id_fkey", "tenant -> tenant"],
         ["devices_tenant_id_branch_id_fkey", "tenant -> tenant"],
+        ["product_option_groups_tenant_id_product_id_fkey", "tenant -> tenant"],
+        ["product_options_tenant_id_linked_product_id_fkey", "tenant -> tenant"],
+        ["product_options_tenant_id_product_id_group_id_fkey", "tenant -> tenant"],
+        ["products_tenant_id_category_id_fkey", "tenant -> tenant"],
         ["role_permissions_permission_id_fkey", "tenant -> global"],
         ["role_permissions_tenant_id_role_id_fkey", "tenant -> tenant"],
         ["sessions_tenant_id_device_id_fkey", "tenant -> tenant"],
@@ -360,12 +420,15 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
         ORDER BY con.conname`;
 
       for (const row of rows) expect(row.nullableColumns, row.name).not.toContain("tenant_id");
-      // Composite FKs with a nullable column: only the optional user/branch/device links (MATCH SIMPLE, NULL = none).
+      // Composite FKs with a nullable column: only the optional user/branch/device links and the optional M4 category
+      // and combo links (MATCH SIMPLE, NULL = none).
       expect(rows.filter((r) => r.nullableColumns.length > 0)).toEqual([
         { name: "audit_logs_tenant_id_branch_id_fkey", match: "s", nullableColumns: ["branch_id"] },
         { name: "audit_logs_tenant_id_device_id_fkey", match: "s", nullableColumns: ["device_id"] },
         { name: "audit_logs_tenant_id_user_id_fkey", match: "s", nullableColumns: ["user_id"] },
         { name: "devices_tenant_id_branch_id_fkey", match: "s", nullableColumns: ["branch_id"] },
+        { name: "product_options_tenant_id_linked_product_id_fkey", match: "s", nullableColumns: ["linked_product_id"] },
+        { name: "products_tenant_id_category_id_fkey", match: "s", nullableColumns: ["category_id"] },
         { name: "sessions_tenant_id_device_id_fkey", match: "s", nullableColumns: ["device_id"] },
         { name: "user_roles_tenant_id_user_id_branch_id_fkey", match: "s", nullableColumns: ["branch_id"] },
       ]);
@@ -458,9 +521,14 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
         ORDER BY c.relname`;
 
       expect(editable).toEqual([
+        "branch_product_settings",
         "branches",
         "companies",
         "devices",
+        "product_categories",
+        "product_option_groups",
+        "product_options",
+        "products",
         "role_permissions",
         "roles",
         "sessions",

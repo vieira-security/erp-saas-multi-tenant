@@ -53,6 +53,9 @@ const EDITABLE_TENANT_TABLES = [
   "sessions",
 ] as const;
 
+/** M4 tables (tenant-scoped); their row-level checks live in tenant-immutability and product-catalog tests. */
+const M4_TENANT_TABLES = ["product_categories", "products", "product_option_groups", "product_options", "branch_product_settings"] as const;
+
 interface Rejection {
   code: string;
   message: string;
@@ -144,6 +147,7 @@ describe("M1 final gate (PostgreSQL)", () => {
         tenants: "root",
         permissions: "global",
         ...Object.fromEntries(EDITABLE_TENANT_TABLES.map((t) => [t, "tenant"])),
+        ...Object.fromEntries(M4_TENANT_TABLES.map((t) => [t, "tenant"])),
         audit_logs: "tenant",
       });
     });
@@ -170,7 +174,7 @@ describe("M1 final gate (PostgreSQL)", () => {
       const [row] = await owner.$queryRaw<{ total: number; restrict: number }[]>`
         SELECT count(*)::int AS total, count(*) FILTER (WHERE confupdtype = 'r' AND confdeltype = 'r')::int AS restrict
         FROM pg_constraint WHERE contype = 'f' AND connamespace = 'public'::regnamespace`;
-      expect(row).toEqual({ total: 24, restrict: 24 });
+      expect(row).toEqual({ total: 35, restrict: 35 });
     });
   });
 

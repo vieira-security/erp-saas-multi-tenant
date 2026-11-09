@@ -5,6 +5,8 @@ import {
   CompanyStatus,
   DeviceStatus,
   DeviceType,
+  ProductCategoryStatus,
+  ProductStatus,
   RoleStatus,
   TenantStatus,
   UserStatus,
@@ -27,6 +29,12 @@ const EDITABLE_TENANT_TABLES = [
   "user_roles",
   "devices",
   "sessions",
+  // M4
+  "product_categories",
+  "products",
+  "product_option_groups",
+  "product_options",
+  "branch_product_settings",
 ] as const;
 type EditableTable = (typeof EDITABLE_TENANT_TABLES)[number];
 
@@ -65,6 +73,19 @@ describe("tenant_id immutability (PostgreSQL)", () => {
     const session = await prisma.session.create({
       data: { tenantId: tenant.id, userId: user.id, deviceId: device.id, refreshTokenHash: `h1$${randomUUID()}`, expiresAt: new Date(Date.now() + 3_600_000) },
     });
+    const category = await prisma.productCategory.create({ data: { tenantId: tenant.id, name: "Lanches", status: ProductCategoryStatus.ACTIVE } });
+    const product = await prisma.product.create({
+      data: { tenantId: tenant.id, categoryId: category.id, name: "X-Burger", basePrice: "25.00", status: ProductStatus.ACTIVE },
+    });
+    const group = await prisma.productOptionGroup.create({
+      data: { tenantId: tenant.id, productId: product.id, name: "Tamanho", minChoices: 1, maxChoices: 1, sortOrder: 0 },
+    });
+    const option = await prisma.productOption.create({
+      data: { tenantId: tenant.id, productId: product.id, groupId: group.id, name: "G", priceDelta: "4.00", sortOrder: 0 },
+    });
+    const setting = await prisma.branchProductSetting.create({
+      data: { tenantId: tenant.id, branchId: branch.id, productId: product.id, available: true, price: "27.00" },
+    });
     const ids: Record<EditableTable, string> = {
       companies: company.id,
       branches: branch.id,
@@ -75,6 +96,11 @@ describe("tenant_id immutability (PostgreSQL)", () => {
       user_roles: userRole.id,
       devices: device.id,
       sessions: session.id,
+      product_categories: category.id,
+      products: product.id,
+      product_option_groups: group.id,
+      product_options: option.id,
+      branch_product_settings: setting.id,
     };
     return { tenantId: tenant.id, company, branch, user, role, device, session, ids };
   }

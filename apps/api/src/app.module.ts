@@ -5,7 +5,8 @@ import { TenantsModule } from "./tenants/tenants.module.js";
 import { DatabaseModule } from "./database/database.module.js";
 import { HealthController } from "./health.controller.js";
 import { OrganizationModule } from "./organization/organization.module.js";
+import { ProductsModule } from "./products/products.module.js";
 import { TenancyModule } from "./tenancy/tenancy.module.js";
 
-@Module({ imports: [TenancyModule, DatabaseModule, AuthorizationModule, AuthModule, TenantsModule, OrganizationModule], controllers: [HealthController] })
+@Module({ imports: [TenancyModule, DatabaseModule, AuthorizationModule, AuthModule, TenantsModule, OrganizationModule, ProductsModule], controllers: [HealthController] })
 export class AppModule {}
