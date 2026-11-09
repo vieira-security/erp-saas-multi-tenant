@@ -32,6 +32,11 @@ export const API_ERROR_CODES = [
   // M4
   "product_code_already_exists",
   "linked_product_invalid",
+  // M5
+  "order_not_editable",
+  "order_invalid_transition",
+  "order_empty",
+  "order_item_unavailable",
 ] as const;
 
 export type ApiErrorCode = (typeof API_ERROR_CODES)[number];
@@ -54,6 +59,9 @@ export const VALIDATION_ISSUE_CODES = [
   "max_greater_than_options",
   "too_many",
   "too_few",
+  // M5
+  "unavailable",
+  "invalid_choices",
 ] as const;
 
 export type ValidationIssueCode = (typeof VALIDATION_ISSUE_CODES)[number];
@@ -64,7 +72,7 @@ export interface ValidationIssue {
   readonly issue: ValidationIssueCode;
 }
 
-/** Corpo de toda resposta de erro (4xx). `details` só aparece em `validation_failed`. */
+/** Corpo de toda resposta de erro (4xx). `details` só aparece em `validation_failed` e em `order_item_unavailable` (M5). */
 export interface ApiErrorResponse {
   readonly error: ApiErrorCode;
   readonly details?: readonly ValidationIssue[];
