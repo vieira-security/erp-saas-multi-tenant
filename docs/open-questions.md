@@ -241,3 +241,19 @@ Contratos em `packages/contracts/src/cash.ts` e mudanças em `orders.ts`.
 - **Merge:** este backend foi aberto contra `feat/m6-contracts`; ao fazer merge do #17, apagar a branch `feat/m6-contracts` (ou trocar a base do PR do backend para `develop`) antes do merge do backend.
 
 **Auditoria final do M6 (09/11/2026):** estorno em dinheiro passou a exigir dinheiro esperado suficiente no caixa de quem cancela (409 `insufficient_cash`, como a sangria). Antes, um estorno maior que o caixa do gerente deixava o esperado negativo: o GET do caixa respondia 500 e o caixa não fechava mais.
+
+## Gestão de funcionários e `GET /roles` (10/11/2026)
+
+**DECISION REQUIRED:**
+1. **Autoridade igual (gerente × gerente).** A regra aprovada compara permissões ("nunca acima da própria"). Com a matriz padrão, a role MANAGER tem exatamente as permissões do gerente, então hoje o gerente **pode** atribuir MANAGER, tirar MANAGER de outro gerente e desativar/resetar outro gerente. O prompt da entrega esperava o contrário ("gerente não atribui MANAGER", "não remove MANAGER de outro gerente"), mas isso não decorre da regra escrita. Opções: (a) manter a regra por permissões (atual); (b) roles e alvos com `user.manage` só podem ser geridos por quem tem também `role.manage` (o dono, pela matriz padrão); (c) exigir autoridade **estritamente** maior (impede também o dono de criar outro dono e trava a transferência de propriedade). A regra vive só em `AuthorityService`; mudar é local. O teste marcado `[DECISION REQUIRED]` fixa o comportamento atual.
+2. **Role `ARCHIVED`.** Existe no banco, não no contrato (`ROLE_STATUSES` = `ACTIVE | INACTIVE`). `GET /users/:userId` e `GET /roles` mostram `ARCHIVED` como `INACTIVE` (não concede permissão em nenhum dos dois). Alternativas: esconder as arquivadas ou incluir `ARCHIVED` no contrato.
+
+**Respondido nesta entrega:**
+- **Janela do access token depois de desativar/resetar:** não existe. O AuthGuard relê a sessão (`revoked_at`) e o status do usuário a cada request; o access token antigo falha no request seguinte.
+
+**Defaults técnicos (revisar):**
+- O reset administrativo usa o evento já existente `auth.password.reset` (ator + alvo) em vez de criar `user.password_reset`.
+- A revogação de sessões na desativação usa o motivo novo `user_disabled` em `auth.sessions.revoked`.
+- "Proprietário" = role com código `OWNER` atribuída no tenant inteiro (sem exigir `is_system`); OWNER escopada a filial não conta.
+- Corrida residual: um caixa aberto pelo alvo **depois** da checagem de caixa aberto e antes do commit da desativação não é detectado (a abertura de caixa não trava a linha do usuário). A sessão do alvo é revogada no mesmo commit, então ele não opera mais; o caixa fica OPEN para quem tem `cash.close` fechar.
+- O M6 permite que quem tem `cash.close` feche o caixa de outro operador (o prompt dizia "só o próprio operador fecha"); a regra 409 `user_has_open_cash_session` vale do mesmo jeito.
