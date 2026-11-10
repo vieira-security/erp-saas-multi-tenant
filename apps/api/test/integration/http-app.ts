@@ -26,13 +26,21 @@ export interface HttpApp {
  * The real AppModule (global AuthGuard, interceptor, filter, PermissionGuard) listening on a random local port, with the
  * runtime PrismaClient (erp_app) and a test AuthConfig injected instead of the environment.
  */
-export async function startHttpApp(prisma: PrismaClient, config: AuthConfig, controllers: Type[] = [], providers: Type[] = []): Promise<HttpApp> {
-  const moduleRef = await Test.createTestingModule({ imports: [AppModule], controllers, providers })
+export async function startHttpApp(
+  prisma: PrismaClient,
+  config: AuthConfig,
+  controllers: Type[] = [],
+  providers: Type[] = [],
+  /** Extra provider overrides (e.g. the CLOCK of the M5 tests). */
+  overrides: readonly { provide: unknown; useValue: unknown }[] = [],
+): Promise<HttpApp> {
+  let builder = Test.createTestingModule({ imports: [AppModule], controllers, providers })
     .overrideProvider(PRISMA_CLIENT)
     .useValue(prisma)
     .overrideProvider(AUTH_CONFIG)
-    .useValue(config)
-    .compile();
+    .useValue(config);
+  for (const o of overrides) builder = builder.overrideProvider(o.provide).useValue(o.useValue);
+  const moduleRef = await builder.compile();
   const app = moduleRef.createNestApplication({ logger: false });
   await app.listen(0, "127.0.0.1");
   const { port } = app.getHttpServer().address() as AddressInfo;
