@@ -109,7 +109,7 @@ export class OrderService {
   async confirm(branchId: string, orderId: string, payments: readonly PaymentValue[]): Promise<OrderDto> {
     const tenantId = this.scope.tenantId();
     const { userId } = this.auth.require();
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx): Promise<OrderDto | "payment_total_mismatch"> => {
       const order = await this.lock(tx, branchId, orderId);
       if (nextStatus(order.status, "confirm") === null) throw new ConflictError("order_invalid_transition");
       const stored = await tx.orderItem.findMany({
@@ -131,8 +131,15 @@ export class OrderService {
         note: item.note,
       }));
       const priced = await this.price(tx, branchId, items, "confirm");
-      // A soma tem que bater com o total RECALCULADO; senão nada é gravado e o pedido segue EDITING.
-      if (!paymentsMatchTotal(payments, priced.total)) throw new ConflictError("payment_total_mismatch");
+      // A soma tem que bater com o total RECALCULADO. Divergência: nada financeiro é gravado e o pedido segue EDITING, mas o
+      // rascunho é atualizado com os preços vigentes (itens + total) para que o GET devolva o total a pagar — contrato
+      // ConfirmOrderRequest ("reenviar com o total devolvido em GET"); default técnico documentado em open-questions.md.
+      if (!paymentsMatchTotal(payments, priced.total)) {
+        await this.deleteItems(tx, orderId);
+        await this.writeItems(tx, orderId, priced.items);
+        await tx.order.update({ where: this.scope.where({ id: orderId }), data: { total: priced.total } });
+        return "payment_total_mismatch";
+      }
       const now = this.clock.now();
       const day = businessDate(now, branch.timezone);
       const number = await nextOrderNumber(tx, tenantId, branchId, day, uuidV7(now.getTime()));
@@ -162,6 +169,8 @@ export class OrderService {
       });
       return this.load(tx, branchId, orderId);
     });
+    if (result === "payment_total_mismatch") throw new ConflictError("payment_total_mismatch");
+    return result;
   }
 
   /** start/ready/deliver: trava, valida a transição (repetir = 409) e grava o timestamp do novo estado. */
