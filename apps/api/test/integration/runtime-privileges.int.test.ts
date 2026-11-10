@@ -50,10 +50,14 @@ describe("PostgreSQL privilege model (catalog audit)", () => {
       expect(RUNTIME_TABLE_PRIVILEGES).toEqual({
         _prisma_migrations: [],
         audit_logs: ["SELECT", "INSERT"],
+        branch_order_counters: ["SELECT", "INSERT", "UPDATE"],
         branch_product_settings: ["SELECT", "INSERT", "UPDATE", "DELETE"],
         branches: ["SELECT", "INSERT", "UPDATE"],
         companies: ["SELECT", "INSERT", "UPDATE"],
         devices: ["SELECT", "INSERT", "UPDATE"],
+        order_item_options: ["SELECT", "INSERT", "DELETE"],
+        order_items: ["SELECT", "INSERT", "DELETE"],
+        orders: ["SELECT", "INSERT", "UPDATE"],
         permissions: ["SELECT"],
         product_categories: ["SELECT", "INSERT", "UPDATE"],
         product_option_groups: ["SELECT", "INSERT", "DELETE"],
@@ -82,9 +86,9 @@ describe("PostgreSQL privilege model (catalog audit)", () => {
           FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public'
         ) o GROUP BY kind, owner ORDER BY kind`;
       expect(owners).toEqual([
-        { kind: "enum", owner: roles.migrator, count: 9 },
-        { kind: "function", owner: roles.migrator, count: 2 },
-        { kind: "table", owner: roles.migrator, count: 18 },
+        { kind: "enum", owner: roles.migrator, count: 10 },
+        { kind: "function", owner: roles.migrator, count: 4 },
+        { kind: "table", owner: roles.migrator, count: 22 },
       ]);
       // Triggers have no owner of their own: they belong to their table, hence to the migrator.
       const [schema] = await owner.$queryRaw<{ owner: string }[]>`
@@ -111,6 +115,8 @@ describe("PostgreSQL privilege model (catalog audit)", () => {
         FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public' ORDER BY 1`;
       expect(rows).toEqual([
         { name: "forbid_audit_log_mutation", acl: `{${roles.migrator}=X/${roles.migrator}}`, app: false },
+        { name: "forbid_order_line_change_unless_editing", acl: `{${roles.migrator}=X/${roles.migrator}}`, app: false },
+        { name: "forbid_order_mutation_after_confirmation", acl: `{${roles.migrator}=X/${roles.migrator}}`, app: false },
         { name: "forbid_tenant_id_change", acl: `{${roles.migrator}=X/${roles.migrator}}`, app: false },
       ]);
       const defaults = await owner.$queryRaw<{ objtype: string; acl: string }[]>`

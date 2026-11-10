@@ -186,3 +186,40 @@ Contratos em `packages/contracts/src/products.ts`.
 - Auditoria (`audit_logs`) das alterações de catálogo, preço e disponibilidade: catálogo de ações ainda em aberto (#8); nada é gravado.
 - Campos fiscais do produto (NCM, CFOP, CEST, origem, tributação): M9. Imagens: com S3.
 - Pedidos (M5+) devem copiar nome/preço/opções no item: grupos e opções são apagados na substituição em bloco.
+
+## M5 — Pedidos do PDV (decisões de produto de 09/11/2026)
+1. Só atendimento de balcão com senha (sem mesa/comanda aberta, delivery ou cadastro de cliente).
+2. Número do pedido por filial, reiniciando todo dia no fuso da filial; atribuído na confirmação.
+3. Cancelamento: rascunho por quem criou (ou `order.cancel`); confirmado só com `order.cancel` e motivo obrigatório; entregue não cancela no M5 (estorno no M6).
+4. Sem descontos no M5.
+5. (Decidido no M4) Filial ou empresa INACTIVE não abre nem confirma pedido; cardápio e ajustes continuam acessíveis.
+
+**Defaults técnicos do contrato (revisar):** transições de preparo/pronto/entrega usam `order.create` (KITCHEN só tem `order.read`; permissão própria da cozinha fica para o M7); itens são cópias do cardápio e preços são recalculados na confirmação; até 100 itens, quantidade 1–99, observação até 140 caracteres.
+Contratos em `packages/contracts/src/orders.ts`.
+
+**Implementado (backend):** migration `20261109000000_create_orders` (4 tabelas, triggers de imutabilidade de venda; ver [database.md](database.md)); grants em `03-runtime-grants.sql`; módulo `orders` com todas as rotas do contrato.
+
+**Defaults técnicos do M5 (revisar com o produto):**
+1. Total acima de `numeric(12,2)` = 400 `validation_failed` em `items` (`invalid_value`), também na confirmação (sem código próprio no contrato).
+2. Cancelamento de pedido confirmado sem permissão é checado ANTES do motivo: atendente sem `order.cancel` recebe 403 mesmo sem motivo.
+3. Substituir itens não exige filial/empresa ACTIVE (só abrir e confirmar exigem, conforme a decisão); o rascunho de filial desativada fica parado até reativar ou cancelar.
+4. Validar/confirmar itens monta o cardápio inteiro da filial (mesma regra do `GET /menu`): simples e sem duplicação; para catálogos muito grandes, otimizar depois carregando só os produtos do pedido.
+5. `created_at` vem do banco; o relógio injetável cobre `business_date` e os timestamps de estado.
+
+**Pendente / fora do M5:**
+- Auditoria (`audit_logs`) de criação, confirmação e cancelamento: catálogo de ações ainda em aberto (#8); nada é gravado.
+- Permissão própria da cozinha (start/ready/deliver hoje usam `order.create`): M7.
+- Pagamento e estorno (M6), fiscal (M9), idempotency key do PDV offline (#4).
+- `TRUNCATE` em `orders`/itens não tem trigger próprio (só a falta de privilégio de `erp_app` impede); avaliar guarda como a de `audit_logs`.
+
+## M6 — Caixa e pagamentos (decisões de produto de 09/11/2026)
+1. PIX e cartão por registro manual (maquininha/PIX da loja); integração PSP/TEF fica para depois. Dinheiro com troco.
+2. Pedido de balcão pago antes de confirmar: a confirmação recebe os pagamentos (split permitido) e exige soma = total recalculado.
+3. Um caixa por operador na filial; pagamentos caem no caixa aberto de quem confirma; sem caixa aberto não confirma.
+4. O operador fecha o próprio caixa (`cash.open` basta); `cash.close` fecha o de qualquer um. Matriz de roles inalterada.
+5. Fechamento com o valor esperado visível; qualquer diferença exige justificativa.
+6. Sangria e suprimento só com `cash.close` (OWNER/MANAGER) e motivo.
+7. Cancelar pedido pago gera estorno total, só com `order.cancel` e motivo, inclusive pedido entregue (muda a regra do M5).
+
+**Defaults técnicos do contrato (revisar):** estorno em dinheiro sai do caixa aberto de quem cancela; estorno de PIX/cartão é registrado como devolução manual na maquininha; quem não tem `cash.close` só vê os próprios caixas; até 10 pagamentos por pedido; sangria maior que o dinheiro esperado é recusada.
+Contratos em `packages/contracts/src/cash.ts` e mudanças em `orders.ts`.

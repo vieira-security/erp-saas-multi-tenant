@@ -11,5 +11,7 @@ import { BranchProductsController, ProductCategoriesController, ProductsControll
 @Module({
   controllers: [ProductCategoriesController, ProductsController, BranchProductsController],
   providers: [CategoryService, ProductService, BranchProductService],
+  // M5: pedidos usam o mesmo cardápio da filial para validar e precificar itens (sem duplicar regras).
+  exports: [BranchProductService],
 })
 export class ProductsModule {}

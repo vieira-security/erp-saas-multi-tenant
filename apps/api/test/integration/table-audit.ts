@@ -26,6 +26,10 @@ export const MODEL_TABLES: Readonly<Record<string, string>> = {
   ProductOptionGroup: "product_option_groups",
   ProductOption: "product_options",
   BranchProductSetting: "branch_product_settings",
+  Order: "orders",
+  OrderItem: "order_items",
+  OrderItemOption: "order_item_options",
+  BranchOrderCounter: "branch_order_counters",
 };
 
 export type TableKind = "root" | "tooling" | "global" | "tenant";
@@ -332,10 +336,14 @@ export const TABLE_PRIVILEGES: readonly TablePrivilege[] = ["SELECT", "INSERT", 
 export const RUNTIME_TABLE_PRIVILEGES: Readonly<Record<string, readonly TablePrivilege[]>> = {
   _prisma_migrations: [],
   audit_logs: ["SELECT", "INSERT"],
+  branch_order_counters: ["SELECT", "INSERT", "UPDATE"],
   branch_product_settings: ["SELECT", "INSERT", "UPDATE", "DELETE"],
   branches: ["SELECT", "INSERT", "UPDATE"],
   companies: ["SELECT", "INSERT", "UPDATE"],
   devices: ["SELECT", "INSERT", "UPDATE"],
+  order_item_options: ["SELECT", "INSERT", "DELETE"],
+  order_items: ["SELECT", "INSERT", "DELETE"],
+  orders: ["SELECT", "INSERT", "UPDATE"],
   permissions: ["SELECT"],
   product_categories: ["SELECT", "INSERT", "UPDATE"],
   product_option_groups: ["SELECT", "INSERT", "DELETE"],
@@ -692,6 +700,24 @@ export const MANUAL_CHECK_CONSTRAINTS: Readonly<Record<string, string>> = {
   "products.products_description_check": "CHECK (((description IS NULL) OR (btrim(description) <> ''::text)))",
   "products.products_name_check": "CHECK ((btrim(name) <> ''::text))",
   "products.products_sort_order_check": "CHECK (((sort_order >= 0) AND (sort_order <= 9999)))",
+  "branch_order_counters.branch_order_counters_last_number_check": "CHECK ((last_number >= 1))",
+  "order_item_options.order_item_options_group_name_check": "CHECK ((btrim(group_name) <> ''::text))",
+  "order_item_options.order_item_options_name_check": "CHECK ((btrim(name) <> ''::text))",
+  "order_item_options.order_item_options_price_delta_check": "CHECK ((price_delta >= (0)::numeric))",
+  "order_item_options.order_item_options_sort_order_check": "CHECK (((sort_order >= 0) AND (sort_order <= 999)))",
+  "order_items.order_items_line_total_check": "CHECK ((line_total = (unit_price * (quantity)::numeric)))",
+  "order_items.order_items_note_check": "CHECK (((note IS NULL) OR ((btrim(note) <> ''::text) AND (char_length(note) <= 140))))",
+  "order_items.order_items_product_code_check": "CHECK (((product_code IS NULL) OR (product_code ~ '^[A-Z0-9][A-Z0-9_-]{0,31}$'::text)))",
+  "order_items.order_items_product_name_check": "CHECK ((btrim(product_name) <> ''::text))",
+  "order_items.order_items_quantity_check": "CHECK (((quantity >= 1) AND (quantity <= 99)))",
+  "order_items.order_items_sort_order_check": "CHECK (((sort_order >= 0) AND (sort_order <= 99)))",
+  "order_items.order_items_unit_price_check": "CHECK ((unit_price >= (0)::numeric))",
+  "orders.orders_cancel_reason_check": "CHECK (((cancel_reason IS NULL) OR ((btrim(cancel_reason) <> ''::text) AND (char_length(cancel_reason) <= 200))))",
+  "orders.orders_cancellation_check": "CHECK ((((status = 'CANCELLED'::order_status) = (cancelled_by IS NOT NULL)) AND ((status = 'CANCELLED'::order_status) OR (cancel_reason IS NULL)) AND ((status <> 'CANCELLED'::order_status) OR (confirmed_at IS NULL) OR (cancel_reason IS NOT NULL))))",
+  "orders.orders_confirmation_check": "CHECK ((((number IS NULL) = (business_date IS NULL)) AND ((number IS NULL) = (confirmed_at IS NULL))))",
+  "orders.orders_number_check": "CHECK (((number IS NULL) OR (number >= 1)))",
+  "orders.orders_status_check": "CHECK (\nCASE status\n    WHEN 'EDITING'::order_status THEN ((confirmed_at IS NULL) AND (preparing_at IS NULL) AND (ready_at IS NULL) AND (delivered_at IS NULL) AND (cancelled_at IS NULL))\n    WHEN 'CONFIRMED'::order_status THEN ((confirmed_at IS NOT NULL) AND (preparing_at IS NULL) AND (ready_at IS NULL) AND (delivered_at IS NULL) AND (cancelled_at IS NULL))\n    WHEN 'PREPARING'::order_status THEN ((confirmed_at IS NOT NULL) AND (preparing_at IS NOT NULL) AND (ready_at IS NULL) AND (delivered_at IS NULL) AND (cancelled_at IS NULL))\n    WHEN 'READY'::order_status THEN ((confirmed_at IS NOT NULL) AND (preparing_at IS NOT NULL) AND (ready_at IS NOT NULL) AND (delivered_at IS NULL) AND (cancelled_at IS NULL))\n    WHEN 'DELIVERED'::order_status THEN ((confirmed_at IS NOT NULL) AND (preparing_at IS NOT NULL) AND (ready_at IS NOT NULL) AND (delivered_at IS NOT NULL) AND (cancelled_at IS NULL))\n    WHEN 'CANCELLED'::order_status THEN ((cancelled_at IS NOT NULL) AND (delivered_at IS NULL) AND ((preparing_at IS NULL) OR (confirmed_at IS NOT NULL)) AND ((ready_at IS NULL) OR (preparing_at IS NOT NULL)))\n    ELSE false\nEND)",
+  "orders.orders_total_check": "CHECK ((total >= (0)::numeric))",
   "roles.roles_code_check": "CHECK ((btrim(code) <> ''::text))",
   "roles.roles_name_check": "CHECK ((btrim(name) <> ''::text))",
   "sessions.sessions_expires_at_check": "CHECK ((expires_at > created_at))",
@@ -719,6 +745,45 @@ export async function checkConstraintViolations(db: Queryable): Promise<string[]
     else if (actual.definition !== definition) violations.push(`${key}: differs from the approved definition`);
   }
   for (const r of rows.filter((row) => !(row.key in MANUAL_CHECK_CONSTRAINTS))) violations.push(`${r.key}: unexpected CHECK`);
+  return violations;
+}
+
+/**
+ * Sale immutability (M5): tenant tables of a sale carry, besides the generic tenant_id trigger, exactly these extra
+ * triggers. Pinned: name, table, BEFORE, row level, events (INSERT/UPDATE/DELETE), no column list, enabled and function.
+ * The functions may be used only by the triggers listed here. Adding/removing one is an explicit, reviewed decision.
+ */
+export const SALE_IMMUTABILITY_TRIGGERS: Readonly<Record<string, { table: string; fn: string; events: readonly ("INSERT" | "UPDATE" | "DELETE")[] }>> = {
+  orders_immutable_after_confirmation: { table: "orders", fn: "forbid_order_mutation_after_confirmation", events: ["UPDATE", "DELETE"] },
+  order_items_editing_only: { table: "order_items", fn: "forbid_order_line_change_unless_editing", events: ["INSERT", "UPDATE", "DELETE"] },
+  order_item_options_editing_only: { table: "order_item_options", fn: "forbid_order_line_change_unless_editing", events: ["INSERT", "UPDATE", "DELETE"] },
+};
+
+export async function saleImmutabilityViolations(db: Queryable): Promise<string[]> {
+  const triggers = await listTriggers(db);
+  const functions = new Set(Object.values(SALE_IMMUTABILITY_TRIGGERS).map((t) => t.fn));
+  const violations: string[] = [];
+  for (const [name, expected] of Object.entries(SALE_IMMUTABILITY_TRIGGERS)) {
+    const t = triggers.find((x) => x.name === name);
+    if (!t) {
+      violations.push(`${expected.table}: missing sale immutability trigger ${name}`);
+      continue;
+    }
+    const events = [t.onInsert && "INSERT", t.onUpdate && "UPDATE", t.onDelete && "DELETE"].filter(Boolean).join(",");
+    const ok =
+      t.table === expected.table &&
+      t.fn === expected.fn &&
+      t.enabled === "O" &&
+      t.before &&
+      t.row &&
+      !t.onTruncate &&
+      t.columns.length === 0 &&
+      events === expected.events.join(",");
+    if (!ok) violations.push(`${expected.table}: ${name} must be an enabled BEFORE ${expected.events.join(" OR ")} row trigger calling ${expected.fn}()`);
+  }
+  for (const t of triggers.filter((x) => functions.has(x.fn) && !(x.name in SALE_IMMUTABILITY_TRIGGERS))) {
+    violations.push(`${t.table}: ${t.fn}() used by unexpected trigger ${t.name}`);
+  }
   return violations;
 }
 

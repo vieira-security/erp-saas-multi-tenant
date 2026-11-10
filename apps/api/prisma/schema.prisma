@@ -53,6 +53,10 @@ model Tenant {
   productOptionGroups   ProductOptionGroup[]
   productOptions        ProductOption[]
   branchProductSettings BranchProductSetting[]
+  orders                Order[]
+  orderItems            OrderItem[]
+  orderItemOptions      OrderItemOption[]
+  branchOrderCounters   BranchOrderCounter[]
 
   @@map("tenants")
 }
@@ -112,6 +116,8 @@ model Branch {
   devices         Device[]
   auditLogs       AuditLog[]
   productSettings BranchProductSetting[]
+  orders          Order[]
+  orderCounters   BranchOrderCounter[]
 
   @@unique([tenantId, code])
   // NULLS DISTINCT (padrão do PostgreSQL): várias branches sem CNPJ são permitidas.
@@ -153,6 +159,8 @@ model User {
   branchAccesses      UserBranchAccess[]
   roles               UserRole[]
   sessions            Session[]
+  ordersCreated       Order[]            @relation("OrderCreatedBy")
+  ordersCancelled     Order[]            @relation("OrderCancelledBy")
   auditLogs           AuditLog[]
 
   @@unique([tenantId, employeeNumber])
@@ -440,6 +448,7 @@ model Product {
   optionGroups   ProductOptionGroup[]
   linkedBy       ProductOption[]        @relation("ProductOptionLinkedProduct")
   branchSettings BranchProductSetting[]
+  orderItems     OrderItem[]
 
   // NULLS DISTINCT (padrão do PostgreSQL): vários produtos sem código são permitidos.
   @@unique([tenantId, code])
@@ -522,4 +531,137 @@ model BranchProductSetting {
   @@unique([tenantId, branchId, productId])
   @@index([tenantId, productId])
   @@map("branch_product_settings")
+}
+
+// ── M5: pedidos do PDV (balcão com senha) ───────────────────────────────────────────────────────────────────────────
+// Vendas nunca são apagadas fisicamente. Itens e opções são CÓPIAS (snapshot) do cardápio no momento do pedido.
+// Imutabilidade imposta também no banco (migration 20261109000000): itens/opções só mudam com o pedido EDITING; depois
+// da confirmação, só status, timestamps de estado e dados de cancelamento mudam, e só em transições válidas; DELETE em
+// orders é sempre rejeitado. Pagamento (M6) e fiscal (M9) ficam fora.
+
+enum OrderStatus {
+  EDITING
+  CONFIRMED
+  PREPARING
+  READY
+  DELIVERED
+  CANCELLED
+
+  @@map("order_status")
+}
+
+// CHECKs (fora do PSL, migration 20261109000000): number >= 1; total >= 0; number/business_date/confirmed_at nulos
+// juntos; timestamps coerentes com o status; dados de cancelamento só quando CANCELLED, motivo obrigatório se o pedido
+// já tinha sido confirmado; cancel_reason não vazio e <= 200.
+model Order {
+  id           String      @id @default(uuid(7)) @db.Uuid
+  tenantId     String      @map("tenant_id") @db.Uuid
+  branchId     String      @map("branch_id") @db.Uuid
+  status       OrderStatus
+  // Número do dia na filial; atribuído na confirmação (contador branch_order_counters).
+  number       Int?
+  // Dia de operação no fuso da filial (branches.timezone) em que o número foi atribuído.
+  businessDate DateTime?   @map("business_date") @db.Date
+  total        Decimal     @db.Decimal(12, 2)
+  createdBy    String      @map("created_by") @db.Uuid
+  confirmedAt  DateTime?   @map("confirmed_at") @db.Timestamptz(3)
+  preparingAt  DateTime?   @map("preparing_at") @db.Timestamptz(3)
+  readyAt      DateTime?   @map("ready_at") @db.Timestamptz(3)
+  deliveredAt  DateTime?   @map("delivered_at") @db.Timestamptz(3)
+  cancelledAt  DateTime?   @map("cancelled_at") @db.Timestamptz(3)
+  cancelledBy  String?     @map("cancelled_by") @db.Uuid
+  cancelReason String?     @map("cancel_reason")
+  createdAt    DateTime    @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt    DateTime    @updatedAt @map("updated_at") @db.Timestamptz(3)
+  tenant       Tenant      @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  branch       Branch      @relation(fields: [tenantId, branchId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  creator      User        @relation("OrderCreatedBy", fields: [tenantId, createdBy], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  // FK composta MATCH SIMPLE: verificada só quando cancelled_by não é NULL.
+  canceller    User?       @relation("OrderCancelledBy", fields: [tenantId, cancelledBy], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  items        OrderItem[]
+
+  // Alvo da FK composta de OrderItem.
+  @@unique([tenantId, id])
+  // Número único por filial e dia (NULLs não colidem: rascunhos não têm número). Também atende filtros por dia.
+  @@unique([tenantId, branchId, businessDate, number])
+  // Listagem da filial (mais recentes primeiro); também atende a FK composta da filial.
+  @@index([tenantId, branchId, createdAt(sort: Desc)])
+  @@index([tenantId, branchId, status])
+  @@index([tenantId, createdBy])
+  @@index([tenantId, cancelledBy])
+  @@map("orders")
+}
+
+// Item do pedido (snapshot). product_id é referência histórica com FK (produtos nunca são apagados).
+// CHECKs (fora do PSL, migration 20261109000000): quantity 1..99; unit_price >= 0; line_total = unit_price * quantity;
+// product_name não vazio; product_code nulo ou no formato de products.code; note nula ou não vazia e <= 140;
+// sort_order 0..99.
+model OrderItem {
+  id          String            @id @default(uuid(7)) @db.Uuid
+  tenantId    String            @map("tenant_id") @db.Uuid
+  orderId     String            @map("order_id") @db.Uuid
+  productId   String            @map("product_id") @db.Uuid
+  productName String            @map("product_name")
+  productCode String?           @map("product_code")
+  quantity    Int
+  unitPrice   Decimal           @map("unit_price") @db.Decimal(12, 2)
+  lineTotal   Decimal           @map("line_total") @db.Decimal(12, 2)
+  note        String?
+  sortOrder   Int               @map("sort_order")
+  createdAt   DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime          @updatedAt @map("updated_at") @db.Timestamptz(3)
+  tenant      Tenant            @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  order       Order             @relation(fields: [tenantId, orderId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  product     Product           @relation(fields: [tenantId, productId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  options     OrderItemOption[]
+
+  // Ordem única no pedido; também atende a FK composta do pedido.
+  @@unique([tenantId, orderId, sortOrder])
+  // Alvo da FK composta de OrderItemOption.
+  @@unique([tenantId, id])
+  @@index([tenantId, productId])
+  @@map("order_items")
+}
+
+// Opção escolhida num item (snapshot). option_id e linked_product_id são referências HISTÓRICAS sem FK: opções são
+// apagadas na substituição de grupos do M4, e o vínculo de combo é só cópia do cardápio.
+// CHECKs (fora do PSL, migration 20261109000000): group_name e name não vazios; price_delta >= 0; sort_order 0..999.
+model OrderItemOption {
+  id              String    @id @default(uuid(7)) @db.Uuid
+  tenantId        String    @map("tenant_id") @db.Uuid
+  orderItemId     String    @map("order_item_id") @db.Uuid
+  optionId        String    @map("option_id") @db.Uuid
+  groupName       String    @map("group_name")
+  name            String
+  priceDelta      Decimal   @map("price_delta") @db.Decimal(12, 2)
+  linkedProductId String?   @map("linked_product_id") @db.Uuid
+  sortOrder       Int       @map("sort_order")
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt       DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+  tenant          Tenant    @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  orderItem       OrderItem @relation(fields: [tenantId, orderItemId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+
+  // Ordem única no item; também atende a FK composta do item.
+  @@unique([tenantId, orderItemId, sortOrder])
+  // Cada opção no máximo uma vez por item.
+  @@unique([tenantId, orderItemId, optionId])
+  @@map("order_item_options")
+}
+
+// Contador do número do pedido por filial e dia de operação. Incrementado atomicamente na confirmação
+// (INSERT ... ON CONFLICT DO UPDATE ... RETURNING). CHECK (migration 20261109000000): last_number >= 1.
+model BranchOrderCounter {
+  id           String   @id @default(uuid(7)) @db.Uuid
+  tenantId     String   @map("tenant_id") @db.Uuid
+  branchId     String   @map("branch_id") @db.Uuid
+  businessDate DateTime @map("business_date") @db.Date
+  lastNumber   Int      @map("last_number")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+  tenant       Tenant   @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  branch       Branch   @relation(fields: [tenantId, branchId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+
+  // Um contador por filial e dia; também atende a FK composta da filial.
+  @@unique([tenantId, branchId, businessDate])
+  @@map("branch_order_counters")
 }
