@@ -428,6 +428,27 @@ describe("M6 cash and payments over HTTP (PostgreSQL, as erp_app)", () => {
       expect((await session(attendant, s.cashMain, attendantSession.id)).expectedCash).toBe("132.50"); // sale stays in the seller's session
     });
 
+    // Auditoria M6: o estorno em dinheiro sai do caixa de QUEM CANCELA, não do caixa da venda. Sem esta trava o esperado
+    // desse caixa ficava negativo, o GET do caixa respondia 500 e o caixa nunca mais fechava.
+    it("a cash refund larger than the canceller's cash is 409 insufficient_cash and nothing changes", async () => {
+      const s = await shop("Estorno sem saldo");
+      const attendant = client(s.actors.attendant);
+      const manager = client(s.actors.manager);
+      await open(attendant, s.cashMain);
+      const order = await paidOrder(s, attendant, [cashPay("32.50", "50.00")]);
+      const managerSession = await open(manager, s.cashMain, "10.00");
+      expect(await manager.post(`${s.main}/${order.id}/cancel`, { reason: "devolução" })).toEqual(conflict("insufficient_cash"));
+      expect(await owner.order.findUniqueOrThrow({ where: { id: order.id } })).toMatchObject({ status: "CONFIRMED", cancelledAt: null });
+      expect(await owner.refund.count({ where: { orderId: order.id } })).toBe(0);
+      const after = await manager.get(`${s.cashMain}/${managerSession.id}`);
+      expect(after).toMatchObject({ status: 200, body: { expectedCash: "10.00" } });
+      // Com suprimento suficiente o mesmo estorno passa, e o caixa continua fechável.
+      expect((await manager.post(`${s.cashMain}/${managerSession.id}/movements`, { type: "SUPPLY", amount: "22.50", reason: "troco" })).status).toBe(201);
+      expect(await manager.post(`${s.main}/${order.id}/cancel`, { reason: "devolução" })).toMatchObject({ status: 200, body: { status: "CANCELLED" } });
+      expect((await session(manager, s.cashMain, managerSession.id)).expectedCash).toBe("0.00");
+      expect(await manager.post(`${s.cashMain}/${managerSession.id}/close`, { countedCash: "0.00" })).toMatchObject({ status: 200, body: { status: "CLOSED" } });
+    });
+
     it("the author attendant cannot refund a paid order (403); reason required (400)", async () => {
       const s = await shop("Atendente não estorna");
       const attendant = client(s.actors.attendant);

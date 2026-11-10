@@ -239,3 +239,5 @@ Contratos em `packages/contracts/src/cash.ts` e mudanças em `orders.ts`.
 - PSP/TEF (PIX e cartão integrados), conciliação de maquininha, estorno parcial, troca de forma de pagamento.
 - Fiscal (M9). Relatórios de caixa (fora do contrato).
 - **Merge:** este backend foi aberto contra `feat/m6-contracts`; ao fazer merge do #17, apagar a branch `feat/m6-contracts` (ou trocar a base do PR do backend para `develop`) antes do merge do backend.
+
+**Auditoria final do M6 (09/11/2026):** estorno em dinheiro passou a exigir dinheiro esperado suficiente no caixa de quem cancela (409 `insufficient_cash`, como a sangria). Antes, um estorno maior que o caixa do gerente deixava o esperado negativo: o GET do caixa respondia 500 e o caixa não fechava mais.

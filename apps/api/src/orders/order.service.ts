@@ -3,6 +3,7 @@ import type { OrderDto, OrderStatus, OrderSummaryDto, Page } from "@erp/contract
 import { AuthContextService } from "../auth/context/auth-context.js";
 import { PermissionDeniedError } from "../auth/errors.js";
 import { AuthorizationService, branchScope } from "../authorization/authorization.service.js";
+import { loadSessionSummary } from "../cash/cash-ledger.js";
 import { lockOpenSessionOf } from "../cash/cash-lock.js";
 import { changeOf, paymentsMatchTotal } from "../cash/cash-math.js";
 import type { PaymentValue } from "../cash/validation.js";
@@ -11,6 +12,7 @@ import { PRISMA_CLIENT } from "../database/database.module.js";
 import { uuidV7 } from "../database/uuid-v7.js";
 import { OrderStatus as DbStatus, type Prisma, type PrismaClient } from "../generated/prisma/client.js";
 import { ConflictError, ConflictWithDetailsError, NotFoundError, ValidationFailedError } from "../http/api-error.js";
+import { moneyToCents, toMoney } from "../http/money.js";
 import { toPage, type PageRequest } from "../http/paging.js";
 import { BranchProductService } from "../products/branch-product.service.js";
 import { TenantScope } from "../tenancy/tenant-scope.js";
@@ -205,6 +207,13 @@ export class OrderService {
       if (paid.length > 0) {
         const cashSession = paid.some((p) => p.method === "CASH") ? await lockOpenSessionOf(tx, this.scope.tenantId(), branchId, userId) : null;
         if (paid.some((p) => p.method === "CASH") && !cashSession) throw new ConflictError("cash_session_required");
+        if (cashSession) {
+          // O estorno em dinheiro sai do caixa de QUEM CANCELA (não do caixa da venda): precisa caber no dinheiro dele,
+          // como a sangria. Sem isso o esperado ficaria negativo e o caixa não fecharia. Caixa já travado FOR UPDATE.
+          const cashRefund = paid.filter((p) => p.method === "CASH").reduce((total, p) => total + moneyToCents(toMoney(p.amount)), 0n);
+          const { expectedCashCents } = await loadSessionSummary(tx, this.scope, branchId, cashSession.id);
+          if (cashRefund > expectedCashCents) throw new ConflictError("insufficient_cash");
+        }
         // Estornos gravados antes de sair do estado confirmado (o trigger só aceita estorno durante o cancelamento).
         await tx.refund.createMany({
           data: paid.map((p) =>

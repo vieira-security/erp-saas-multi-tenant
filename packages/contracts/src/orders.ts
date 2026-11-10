@@ -50,7 +50,8 @@ import type { Money } from "./products.js";
  *        EDITING: quem criou (com `order.create`) OU quem tem `order.cancel`; motivo opcional.
  *        CONFIRMED/PREPARING/READY/DELIVERED (M6): `order.cancel` na filial; `reason` obrigatório
  *        (`validation_failed`/`required`); estorna todos os pagamentos. Estorno em dinheiro exige caixa aberto de quem
- *        cancela (409 `cash_session_required`). Sem permissão para o caso -> 403. CANCELLED -> 409 order_invalid_transition.
+ *        cancela (409 `cash_session_required`) com dinheiro esperado suficiente (409 `insufficient_cash`; ex.: fazer
+ *        suprimento antes). Sem permissão para o caso -> 403. CANCELLED -> 409 order_invalid_transition.
  *
  * As transições start/ready/deliver usam `order.create` no M5 (a role KITCHEN só tem `order.read`). Permissão própria
  * da cozinha é decisão do M7 (Kitchen Display).
@@ -126,7 +127,9 @@ export interface OrderDto extends OrderSummaryDto {
 
 /**
  * M6: pagamento na confirmação. Lista vazia só quando o total é `"0.00"`. Soma dos `amount` ≠ total recalculado ->
- * 409 `payment_total_mismatch` (o pedido continua EDITING; reenviar com o total devolvido em GET). Formato inválido ->
+ * 409 `payment_total_mismatch`: o pedido continua EDITING, SEM número e SEM pagamento gravado, mas os itens e o total do
+ * rascunho JÁ SÃO ATUALIZADOS com os preços vigentes (é o único erro da confirmação que deixa efeito). Releia o pedido
+ * (GET) e reenvie os pagamentos com o total novo. Formato inválido ->
  * 400 com caminho (`payments[1].receivedAmount`).
  */
 export interface ConfirmOrderRequest {

@@ -36,7 +36,8 @@ export function summarizeSession(ledger: SessionLedger): SessionSummary {
   const supplies = sum(ledger.movements.filter((m) => m.type === "SUPPLY"));
   const withdrawals = sum(ledger.movements.filter((m) => m.type === "WITHDRAWAL"));
   const expected = moneyToCents(ledger.openingAmount) + supplies - withdrawals + net("CASH");
-  // As travas (sangria ≤ esperado; estorno só de pagamento existente) mantêm o esperado ≥ 0; negativo seria bug.
+  // As travas mantêm o esperado ≥ 0: sangria ≤ esperado e estorno em dinheiro ≤ esperado do caixa de QUEM CANCELA (que
+  // não é o caixa da venda). Negativo seria bug.
   if (expected < 0n) throw new Error("expected cash cannot be negative");
   return {
     expectedCash: centsToMoney(expected),

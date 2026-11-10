@@ -11,9 +11,10 @@ import { moneyToCents, toMoney } from "../http/money.js";
 import { toPage, type PageRequest } from "../http/paging.js";
 import { lockBranchAndCompany } from "../orders/order-lock.js";
 import { isUniqueViolation } from "../organization/prisma-errors.js";
+import { loadSessionSummary } from "./cash-ledger.js";
 import { TenantScope } from "../tenancy/tenant-scope.js";
 import { lockSession } from "./cash-lock.js";
-import { closingDifference, summarizeSession, type SessionSummary } from "./cash-math.js";
+import { closingDifference, type SessionSummary } from "./cash-math.js";
 
 type Tx = Prisma.TransactionClient;
 
@@ -149,23 +150,9 @@ export class CashService {
     return (await this.authorization.getEffectivePermissions(userId, branchScope(branchId))).has(permission);
   }
 
-  /** Três leituras do caixa (pagamentos, estornos lançados nele, movimentos) e a conta em centavos. */
-  private async summarize(db: Tx | PrismaClient, branchId: string, sessionId: string): Promise<SessionSummary & { openingAmount: Money }> {
-    const where = this.scope.where({ branchId, cashSessionId: sessionId });
-    const session = await db.cashSession.findFirstOrThrow({ where: this.scope.where({ id: sessionId, branchId }), select: { openingAmount: true } });
-    const [payments, refunds, movements] = [
-      await db.payment.findMany({ where, select: { method: true, amount: true } }),
-      await db.refund.findMany({ where, select: { method: true, amount: true } }),
-      await db.cashMovement.findMany({ where, select: { type: true, amount: true } }),
-    ];
-    const openingAmount = toMoney(session.openingAmount);
-    const summary = summarizeSession({
-      openingAmount,
-      payments: payments.map((p) => ({ method: p.method, amount: toMoney(p.amount) })),
-      refunds: refunds.map((r) => ({ method: r.method, amount: toMoney(r.amount) })),
-      movements: movements.map((m) => ({ type: m.type, amount: toMoney(m.amount) })),
-    });
-    return { ...summary, openingAmount };
+  /** Razão e conta do caixa (cash-ledger.ts, compartilhado com o estorno do módulo `orders`). */
+  private summarize(db: Tx | PrismaClient, branchId: string, sessionId: string): Promise<SessionSummary & { openingAmount: Money }> {
+    return loadSessionSummary(db, this.scope, branchId, sessionId);
   }
 
   private async detail(db: Tx | PrismaClient, branchId: string, sessionId: string): Promise<CashSessionDto> {

@@ -15,7 +15,8 @@ import type { Money } from "./products.js";
  * - Fechamento com o valor esperado VISÍVEL. Qualquer diferença (contado ≠ esperado) exige justificativa.
  * - Sangria (retirada) e suprimento (reforço de troco): só `cash.close` (OWNER/MANAGER), com motivo.
  * - Cancelar pedido pago gera ESTORNO TOTAL; só quem tem `order.cancel`, com motivo; vale também para pedido entregue.
- *   Estorno em dinheiro sai do caixa aberto de quem cancelou (sem caixa aberto -> 409 `cash_session_required`); estorno de
+ *   Estorno em dinheiro sai do caixa aberto de quem cancelou (sem caixa aberto -> 409 `cash_session_required`; sem dinheiro
+ *   esperado suficiente nesse caixa -> 409 `insufficient_cash`, como na sangria); estorno de
  *   PIX/cartão é registrado como "a devolver na maquininha" e não mexe no dinheiro do caixa.
  *
  * Valor esperado em DINHEIRO de um caixa =
