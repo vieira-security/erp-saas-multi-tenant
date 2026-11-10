@@ -1,5 +1,6 @@
-import type { OrderDto, OrderItemDto, OrderSummaryDto } from "@erp/contracts";
-import type { Order, OrderItem, OrderItemOption } from "../generated/prisma/client.js";
+import type { OrderDto, OrderItemDto, OrderSummaryDto, PaymentDto, RefundDto } from "@erp/contracts";
+import { sumMoney } from "../cash/cash-math.js";
+import type { Order, OrderItem, OrderItemOption, Payment, Refund } from "../generated/prisma/client.js";
 import { toMoney } from "../http/money.js";
 import { fromDateColumn } from "./business-date.js";
 
@@ -10,12 +11,15 @@ export const ORDER_DETAIL_INCLUDE = {
   items: { include: { options: true } },
   creator: { select: { id: true, name: true } },
   canceller: { select: { id: true, name: true } },
+  // M6: pagamentos com o estorno de cada um (no máximo um), na mesma leitura.
+  payments: { include: { refund: true } },
 } as const;
 
 export type OrderWithDetail = Order & {
   items: (OrderItem & { options: OrderItemOption[] })[];
   creator: { id: string; name: string };
   canceller: { id: string; name: string } | null;
+  payments: (Payment & { refund: Refund | null })[];
 };
 
 function iso(value: Date | null): string | null {
@@ -52,7 +56,30 @@ function toItemDto(item: OrderItem & { options: OrderItemOption[] }): OrderItemD
   };
 }
 
+/** Criação, depois id (pagamentos do mesmo pedido são gravados juntos na confirmação). */
+function byCreation<T extends { createdAt: Date; id: string }>(a: T, b: T): number {
+  return a.createdAt.getTime() - b.createdAt.getTime() || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+}
+
+function toPaymentDto(p: Payment): PaymentDto {
+  return {
+    id: p.id,
+    method: p.method,
+    amount: toMoney(p.amount),
+    receivedAmount: p.receivedAmount === null ? null : toMoney(p.receivedAmount),
+    change: toMoney(p.change),
+    reference: p.reference,
+    cashSessionId: p.cashSessionId,
+    createdAt: p.createdAt.toISOString(),
+  };
+}
+
+function toRefundDto(r: Refund): RefundDto {
+  return { id: r.id, paymentId: r.paymentId, method: r.method, amount: toMoney(r.amount), cashSessionId: r.cashSessionId, createdAt: r.createdAt.toISOString() };
+}
+
 export function toOrderDto(order: OrderWithDetail): OrderDto {
+  const payments = [...order.payments].sort(byCreation);
   return {
     ...toOrderSummaryDto({ ...order, _count: { items: order.items.length } }),
     items: [...order.items].sort((a, b) => a.sortOrder - b.sortOrder).map(toItemDto),
@@ -63,9 +90,8 @@ export function toOrderDto(order: OrderWithDetail): OrderDto {
     cancelledAt: iso(order.cancelledAt),
     cancelledBy: order.canceller ? { userId: order.canceller.id, name: order.canceller.name } : null,
     cancelReason: order.cancelReason,
-    // M6 (contrato em cash.ts): ainda sem tabelas de pagamento; o backend do M6 preenche estes campos.
-    payments: [],
-    refunds: [],
-    changeGiven: "0.00",
+    payments: payments.map(toPaymentDto),
+    refunds: payments.flatMap((p) => (p.refund ? [p.refund] : [])).sort(byCreation).map(toRefundDto),
+    changeGiven: sumMoney(payments.map((p) => toMoney(p.change))),
   };
 }
