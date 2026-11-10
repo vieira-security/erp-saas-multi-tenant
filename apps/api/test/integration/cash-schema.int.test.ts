@@ -260,13 +260,17 @@ describe("Cash and payments schema (PostgreSQL)", () => {
       }
     });
 
-    it("TRUNCATE is rejected on every financial and sales table, also for the owner", async () => {
-      for (const table of ["payments", "refunds", "cash_movements", "cash_sessions"]) {
-        await expect(owner.$executeRawUnsafe(`TRUNCATE "${table}" CASCADE`), table).rejects.toThrow(APPEND_ONLY);
+    it("TRUNCATE is rejected by the guard functions, also for the owner", async () => {
+      // Only tables that no FK references, without CASCADE: each locks ONE table, so it cannot deadlock with the other
+      // test files running in parallel (TRUNCATE ... CASCADE on orders locks a chain of tables and did deadlock).
+      // They exercise both guard functions; the BEFORE TRUNCATE triggers of the referenced tables (payments,
+      // cash_sessions, orders, order_items) are pinned by the catalog audit below (statement level, enabled, function).
+      for (const table of ["refunds", "cash_movements"]) {
+        await expect(owner.$executeRawUnsafe(`TRUNCATE "${table}"`), table).rejects.toThrow(APPEND_ONLY);
       }
-      for (const table of ["orders", "order_items", "order_item_options"]) {
-        await expect(owner.$executeRawUnsafe(`TRUNCATE "${table}" CASCADE`), table).rejects.toThrow(/sales are never deleted/);
-      }
+      await expect(owner.$executeRawUnsafe(`TRUNCATE "order_item_options"`)).rejects.toThrow(/sales are never deleted/);
+      const guarded = Object.entries(SALE_IMMUTABILITY_TRIGGERS).filter(([, t]) => t.events.includes("TRUNCATE")).map(([, t]) => t.table).sort();
+      expect(guarded).toEqual(["cash_movements", "cash_sessions", "order_item_options", "order_items", "orders", "payments", "refunds"]);
       await expect(app.$executeRawUnsafe(`TRUNCATE "payments"`)).rejects.toThrow(/permission denied/);
     });
 
