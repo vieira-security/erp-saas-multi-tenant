@@ -5,6 +5,7 @@ import {
   CompanyStatus,
   DeviceStatus,
   DeviceType,
+  OrderStatus,
   ProductCategoryStatus,
   ProductStatus,
   RoleStatus,
@@ -35,6 +36,11 @@ const EDITABLE_TENANT_TABLES = [
   "product_option_groups",
   "product_options",
   "branch_product_settings",
+  // M5 (the fixture order is EDITING, so the sale immutability triggers let same-tenant updates through)
+  "orders",
+  "order_items",
+  "order_item_options",
+  "branch_order_counters",
 ] as const;
 type EditableTable = (typeof EDITABLE_TENANT_TABLES)[number];
 
@@ -86,6 +92,18 @@ describe("tenant_id immutability (PostgreSQL)", () => {
     const setting = await prisma.branchProductSetting.create({
       data: { tenantId: tenant.id, branchId: branch.id, productId: product.id, available: true, price: "27.00" },
     });
+    const order = await prisma.order.create({
+      data: { tenantId: tenant.id, branchId: branch.id, status: OrderStatus.EDITING, total: "25.00", createdBy: user.id },
+    });
+    const orderItem = await prisma.orderItem.create({
+      data: { tenantId: tenant.id, orderId: order.id, productId: product.id, productName: "X-Burger", quantity: 1, unitPrice: "25.00", lineTotal: "25.00", sortOrder: 0 },
+    });
+    const orderItemOption = await prisma.orderItemOption.create({
+      data: { tenantId: tenant.id, orderItemId: orderItem.id, optionId: option.id, groupName: "Tamanho", name: "G", priceDelta: "0.00", sortOrder: 0 },
+    });
+    const counter = await prisma.branchOrderCounter.create({
+      data: { tenantId: tenant.id, branchId: branch.id, businessDate: new Date("2026-11-09T00:00:00.000Z"), lastNumber: 1 },
+    });
     const ids: Record<EditableTable, string> = {
       companies: company.id,
       branches: branch.id,
@@ -101,6 +119,10 @@ describe("tenant_id immutability (PostgreSQL)", () => {
       product_option_groups: group.id,
       product_options: option.id,
       branch_product_settings: setting.id,
+      orders: order.id,
+      order_items: orderItem.id,
+      order_item_options: orderItemOption.id,
+      branch_order_counters: counter.id,
     };
     return { tenantId: tenant.id, company, branch, user, role, device, session, ids };
   }
