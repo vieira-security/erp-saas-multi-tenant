@@ -186,3 +186,13 @@ Contratos em `packages/contracts/src/products.ts`.
 - Auditoria (`audit_logs`) das alterações de catálogo, preço e disponibilidade: catálogo de ações ainda em aberto (#8); nada é gravado.
 - Campos fiscais do produto (NCM, CFOP, CEST, origem, tributação): M9. Imagens: com S3.
 - Pedidos (M5+) devem copiar nome/preço/opções no item: grupos e opções são apagados na substituição em bloco.
+
+## M5 — Pedidos do PDV (decisões de produto de 09/11/2026)
+1. Só atendimento de balcão com senha (sem mesa/comanda aberta, delivery ou cadastro de cliente).
+2. Número do pedido por filial, reiniciando todo dia no fuso da filial; atribuído na confirmação.
+3. Cancelamento: rascunho por quem criou (ou `order.cancel`); confirmado só com `order.cancel` e motivo obrigatório; entregue não cancela no M5 (estorno no M6).
+4. Sem descontos no M5.
+5. (Decidido no M4) Filial ou empresa INACTIVE não abre nem confirma pedido; cardápio e ajustes continuam acessíveis.
+
+**Defaults técnicos do contrato (revisar):** transições de preparo/pronto/entrega usam `order.create` (KITCHEN só tem `order.read`; permissão própria da cozinha fica para o M7); itens são cópias do cardápio e preços são recalculados na confirmação; até 100 itens, quantidade 1–99, observação até 140 caracteres.
+Contratos em `packages/contracts/src/orders.ts`.
