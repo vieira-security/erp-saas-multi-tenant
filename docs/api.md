@@ -49,3 +49,10 @@ campos e códigos de erro de cada módulo estão nos comentários dos próprios 
 - **`payment_total_mismatch`:** o pedido segue EDITING e o rascunho é atualizado com os preços vigentes; o `GET` do pedido devolve o
   total a pagar (default técnico, ver open-questions).
 - **Caixa de outro operador:** `GET` = 404 sem `cash.close` (não revela existência); `close` = 403.
+
+## Funcionários: leitura (`GET /users`, desbloqueia KAN-29)
+
+- `GET /users` (`user.read`, tenant) → `Page<UserSummaryDto>`; filtros `status` e `search` (nome contém, sem diferenciar maiúsculas, ou matrícula exata). Ordem por `name` e depois `id` — exceção à ordem por criação, porque a lista serve para achar a pessoa.
+- `GET /users/:userId` (`user.read`) → `UserDto` com as roles (tenant inteiro ou por filial, inclusive INACTIVE para exibição) | 404 `not_found` (inexistente ou de outro tenant).
+- Nunca expõe hash de senha, tentativas de login, bloqueio temporário nem sessões.
+- Cadastro/edição/desativação de funcionário, atribuição de roles e reset de senha: fora desta fase (próximo módulo, com decisão de produto).
