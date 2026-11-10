@@ -62,6 +62,15 @@ describe("schema hardening (PostgreSQL catalog)", () => {
           "branches_tenant_id_id_key",
           "branches_tenant_id_status_idx",
         ],
+        cash_movements: ["cash_movements_pkey", "cash_movements_tenant_id_branch_id_cash_session_id_idx", "cash_movements_tenant_id_created_by_idx"],
+        cash_sessions: [
+          "cash_sessions_open_per_operator_key",
+          "cash_sessions_pkey",
+          "cash_sessions_tenant_id_branch_id_id_key",
+          "cash_sessions_tenant_id_branch_id_opened_at_idx",
+          "cash_sessions_tenant_id_closed_by_idx",
+          "cash_sessions_tenant_id_opened_by_idx",
+        ],
         companies: ["companies_pkey", "companies_tenant_id_cnpj_key", "companies_tenant_id_id_key", "companies_tenant_id_status_idx"],
         devices: [
           "devices_pkey",
@@ -80,10 +89,17 @@ describe("schema hardening (PostgreSQL catalog)", () => {
           "orders_pkey",
           "orders_tenant_id_branch_id_business_date_number_key",
           "orders_tenant_id_branch_id_created_at_idx",
+          "orders_tenant_id_branch_id_id_key",
           "orders_tenant_id_branch_id_status_idx",
           "orders_tenant_id_cancelled_by_idx",
           "orders_tenant_id_created_by_idx",
           "orders_tenant_id_id_key",
+        ],
+        payments: [
+          "payments_pkey",
+          "payments_tenant_id_branch_id_cash_session_id_idx",
+          "payments_tenant_id_branch_id_id_order_id_method_amount_key",
+          "payments_tenant_id_branch_id_order_id_idx",
         ],
         permissions: ["permissions_code_key", "permissions_module_idx", "permissions_pkey"],
         product_categories: ["product_categories_pkey", "product_categories_tenant_id_id_key", "product_categories_tenant_id_status_idx"],
@@ -103,6 +119,12 @@ describe("schema hardening (PostgreSQL catalog)", () => {
           "products_tenant_id_code_key",
           "products_tenant_id_id_key",
           "products_tenant_id_status_idx",
+        ],
+        refunds: [
+          "refunds_pkey",
+          "refunds_tenant_id_branch_id_cash_session_id_idx",
+          "refunds_tenant_id_branch_id_payment_id_order_id_method_amou_key",
+          "refunds_tenant_id_created_by_idx",
         ],
         role_permissions: ["role_permissions_permission_id_idx", "role_permissions_pkey", "role_permissions_tenant_id_role_id_permission_id_key"],
         roles: ["roles_pkey", "roles_tenant_id_code_key", "roles_tenant_id_id_key", "roles_tenant_id_status_idx"],
@@ -213,6 +235,7 @@ describe("schema hardening (PostgreSQL catalog)", () => {
             "audit_logs_tenant_id_branch_id_fkey",
             "branch_order_counters_tenant_id_branch_id_fkey",
             "branch_product_settings_tenant_id_branch_id_fkey",
+            "cash_sessions_tenant_id_branch_id_fkey",
             "devices_tenant_id_branch_id_fkey",
             "orders_tenant_id_branch_id_fkey",
             "user_branch_access_tenant_id_branch_id_fkey",
@@ -237,8 +260,12 @@ describe("schema hardening (PostgreSQL catalog)", () => {
           index: "users_tenant_id_id_key",
           fks: [
             "audit_logs_tenant_id_user_id_fkey",
+            "cash_movements_tenant_id_created_by_fkey",
+            "cash_sessions_tenant_id_closed_by_fkey",
+            "cash_sessions_tenant_id_opened_by_fkey",
             "orders_tenant_id_cancelled_by_fkey",
             "orders_tenant_id_created_by_fkey",
+            "refunds_tenant_id_created_by_fkey",
             "sessions_tenant_id_user_id_fkey",
             "user_branch_access_tenant_id_user_id_fkey",
             "user_roles_tenant_id_user_id_fkey",
@@ -260,7 +287,7 @@ describe("schema hardening (PostgreSQL catalog)", () => {
 
   describe("manual partial indexes (UserRole scopes)", () => {
     it("pins both scope indexes: columns, order, uniqueness, B-tree and predicate", async () => {
-      expect(Object.keys(MANUAL_PARTIAL_INDEXES)).toEqual(["user_roles_branch_scope_key", "user_roles_tenant_scope_key"]);
+      expect(Object.keys(MANUAL_PARTIAL_INDEXES)).toEqual(["cash_sessions_open_per_operator_key", "user_roles_branch_scope_key", "user_roles_tenant_scope_key"]);
       expect(await partialIndexViolations(prisma)).toEqual([]);
     });
 
@@ -286,7 +313,7 @@ describe("schema hardening (PostgreSQL catalog)", () => {
 
   describe("manual CHECK constraints", () => {
     it("pins every CHECK of the schema with its exact definition", async () => {
-      expect(Object.keys(MANUAL_CHECK_CONSTRAINTS)).toHaveLength(57);
+      expect(Object.keys(MANUAL_CHECK_CONSTRAINTS)).toHaveLength(68);
       expect(await checkConstraintViolations(prisma)).toEqual([]);
     });
 
