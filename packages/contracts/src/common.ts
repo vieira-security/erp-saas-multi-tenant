@@ -37,6 +37,12 @@ export const API_ERROR_CODES = [
   "order_invalid_transition",
   "order_empty",
   "order_item_unavailable",
+  // M6
+  "cash_session_required",
+  "cash_session_already_open",
+  "cash_session_closed",
+  "insufficient_cash",
+  "payment_total_mismatch",
 ] as const;
 
 export type ApiErrorCode = (typeof API_ERROR_CODES)[number];

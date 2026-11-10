@@ -197,8 +197,9 @@ describe("M5 orders APIs over HTTP (PostgreSQL, as erp_app)", () => {
         createdBy: { userId: s.actors.attendant.userId, name: s.actors.attendant.name },
       });
       expect(Object.keys(order).sort()).toEqual(
-        ["branchId", "businessDate", "cancelReason", "cancelledAt", "cancelledBy", "confirmedAt", "createdAt", "createdBy", "deliveredAt", "id", "itemCount", "items", "number", "preparingAt", "readyAt", "status", "total"],
+        ["branchId", "businessDate", "cancelReason", "cancelledAt", "cancelledBy", "changeGiven", "confirmedAt", "createdAt", "createdBy", "deliveredAt", "id", "itemCount", "items", "number", "payments", "preparingAt", "readyAt", "refunds", "status", "total"],
       );
+      expect(order).toMatchObject({ payments: [], refunds: [], changeGiven: "0.00" });
       expect((await client(s.actors.attendant).post(s.main, {})).status).toBe(201);
     });
 
