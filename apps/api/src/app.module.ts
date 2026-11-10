@@ -10,6 +10,7 @@ import { OrdersModule } from "./orders/orders.module.js";
 import { OrganizationModule } from "./organization/organization.module.js";
 import { ProductsModule } from "./products/products.module.js";
 import { TenancyModule } from "./tenancy/tenancy.module.js";
+import { UsersModule } from "./users/users.module.js";
 
-@Module({ imports: [TenancyModule, DatabaseModule, ClockModule, AuthorizationModule, AuthModule, TenantsModule, OrganizationModule, ProductsModule, OrdersModule, CashModule], controllers: [HealthController] })
+@Module({ imports: [TenancyModule, DatabaseModule, ClockModule, AuthorizationModule, AuthModule, TenantsModule, OrganizationModule, UsersModule, ProductsModule, OrdersModule, CashModule], controllers: [HealthController] })
 export class AppModule {}
