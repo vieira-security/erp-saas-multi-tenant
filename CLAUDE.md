@@ -25,7 +25,17 @@ ERP SaaS multi-tenant para pequenas e médias lojas/restaurantes de alimentaçã
 
 - Todo dado de cliente é isolado por tenant.
 - Nunca confiar em `tenant_id` vindo livremente do frontend; o tenant vem do contexto autenticado.
+- Toda operação de negócio em entidade tenant-scoped obtém `tenant_id` do `TenantContext` e o inclui no escopo da query (`TenantScope`); nunca buscar/alterar só por `id`. `Tenant` e `Permission` são exceções por classificação (`docs/architecture.md`).
 - Modelar para múltiplas filiais.
+
+## Auth (M2)
+
+- Rotas exigem autenticação por padrão (AuthGuard global); `@Public()` só em método e com justificativa explícita (marca de classe é ignorada).
+- Operação em escopo de filial usa `@RequireBranchPermissions` (ou `branchScope` com filial resolvida do recurso) e exige `UserBranchAccess`, mesmo com role tenant-wide.
+- Controllers declaram `@RequirePermissions`/`@RequireBranchPermissions` com códigos de permissão; nunca checar nome de role.
+- Senha só via `PasswordHasher` (Argon2id); nunca logar ou auditar senha, token ou hash. Eventos de segurança só via `SecurityAuditWriter` (allowlist).
+- Regras de produto do Auth (TTLs, lockout, status do tenant, matriz das roles, formato da matrícula/`login_code`) só mudam com decisão de produto; permissão nova no catálogo exige decisão explícita na matriz (`default-roles.ts`).
+- Refresh token só em cookie HttpOnly; access token só em memória/Bearer; nunca `localStorage` nem `X-Tenant-Id`.
 
 ## Comandos
 

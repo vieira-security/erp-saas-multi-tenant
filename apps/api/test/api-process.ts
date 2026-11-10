@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { createServer } from "node:net";
 import { fileURLToPath } from "node:url";
 
@@ -55,10 +56,23 @@ async function waitForHealth(port: number, child: ChildProcess, timeoutMs: numbe
   throw new Error(`API health check timed out after ${timeoutMs}ms`);
 }
 
-export async function startApi(timeoutMs = 20_000): Promise<ApiProcess> {
+/**
+ * Environment of a boot-only API process: a random test secret and a DATABASE_URL that is never contacted (the client
+ * connects lazily and /health does not touch the database). Never the developer or production values.
+ */
+export function bootEnv(overrides: Record<string, string | undefined> = {}): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    DATABASE_URL: "postgresql://boot-smoke@127.0.0.1:1/never-contacted",
+    AUTH_ACCESS_TOKEN_SECRET: randomBytes(48).toString("base64url"),
+    ...overrides,
+  };
+}
+
+export async function startApi(timeoutMs = 20_000, env: NodeJS.ProcessEnv = bootEnv()): Promise<ApiProcess> {
   const port = await freePort();
   const child = spawn(process.execPath, [entry], {
-    env: { ...process.env, PORT: String(port) },
+    env: { ...env, PORT: String(port) },
     stdio: "ignore",
   });
   if (child.pid === undefined) throw new Error("failed to spawn API process");
