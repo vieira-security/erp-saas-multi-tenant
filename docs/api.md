@@ -63,6 +63,11 @@ campos e códigos de erro de cada módulo estão nos comentários dos próprios 
 ## Funcionários: leitura (`GET /users`, desbloqueia KAN-29)
 
 - `GET /users` (`user.read`, tenant) → `Page<UserSummaryDto>`; filtros `status` e `search` (nome contém, sem diferenciar maiúsculas, ou matrícula exata). Ordem por `name` e depois `id` — exceção à ordem por criação, porque a lista serve para achar a pessoa.
-- `GET /users/:userId` (`user.read`) → `UserDto` com as roles (tenant inteiro ou por filial, inclusive INACTIVE para exibição) | 404 `not_found` (inexistente ou de outro tenant).
+  - Query estrita (mesmo parser das outras listagens): `page`/`pageSize` (padrão 20, máx. 100); `status` fora de `ACTIVE | DISABLED | LOCKED` → `invalid_value`; `search` aparado, vazio → `too_short`, acima de 100 → `too_long`; qualquer outro campo (inclusive `tenantId`) → `unknown_field`.
+  - `search`: `name ILIKE '%termo%'` com `%`, `_` e `\` do termo escapados (texto literal, sempre parâmetro) **ou** `employee_number` igual ao termo normalizado pela mesma regra do login (`e001` encontra `E001`; termo que não é matrícula válida só busca por nome). Matrícula parcial não casa.
+  - Ordem: `name COLLATE "C"` e, em empate, `id` — ordem de code point, igual em qualquer banco (não depende da collation padrão). Consequência: maiúsculas vêm antes de minúsculas (`"Zulu"` antes de `"beta"`). Página e contagem são 2 queries SQL parametrizadas numa transação (o Prisma não aceita `COLLATE` no `orderBy`), com `tenant_id` do TenantContext.
+- `GET /users/:userId` (`user.read`) → `UserDto` com as roles (tenant inteiro ou por filial, inclusive INACTIVE para exibição) | 404 `not_found` (inexistente, de outro tenant ou id que não é UUID).
+  - Roles numa única leitura com relações aninhadas (sem query por role), ordenadas em memória por código: tenant inteiro primeiro, depois `branch.code`, depois `code`. Role `ARCHIVED` (existe no banco, não no contrato) sai como `INACTIVE`.
 - Nunca expõe hash de senha, tentativas de login, bloqueio temporário nem sessões.
+- Implementação: `apps/api/src/users/` (`UsersModule`, `UsersController` em `@Controller("users")`). `users/:userId/branch-access` continua no `OrganizationModule` (M3). Sem auditoria (leitura, como as demais listagens).
 - Cadastro/edição/desativação de funcionário, atribuição de roles e reset de senha: fora desta fase (próximo módulo, com decisão de produto).
