@@ -32,6 +32,10 @@ export const MODEL_SCOPE = {
   OrderItem: "tenant",
   OrderItemOption: "tenant",
   BranchOrderCounter: "tenant",
+  CashSession: "tenant",
+  CashMovement: "tenant",
+  Payment: "tenant",
+  Refund: "tenant",
 } as const satisfies Record<Prisma.ModelName, ModelScope>;
 
 /** Input de escopo: quem chama nunca informa o tenant (nem `tenantId`, nem a relação `tenant`). */

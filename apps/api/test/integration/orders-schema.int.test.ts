@@ -316,9 +316,14 @@ describe("Orders schema (PostgreSQL)", () => {
       await expect(app.$executeRaw`UPDATE orders SET preparing_at = now() - interval '1 hour' WHERE id = ${f.orderId}::uuid`).rejects.toThrow(FROZEN);
       expect(await app.$executeRaw`UPDATE orders SET status = 'READY', ready_at = now() WHERE id = ${f.orderId}::uuid`).toBe(1);
       expect(await app.$executeRaw`UPDATE orders SET status = 'DELIVERED', delivered_at = now() WHERE id = ${f.orderId}::uuid`).toBe(1);
+      // M6 (migration 20261110010000): DELIVERED -> CANCELLED is allowed, but only the cancellation columns may change.
       await expect(
         app.$executeRaw`UPDATE orders SET status = 'CANCELLED', delivered_at = NULL, cancelled_at = now(), cancelled_by = created_by, cancel_reason = 'tarde' WHERE id = ${f.orderId}::uuid`,
-      ).rejects.toThrow(INVALID_TRANSITION);
+      ).rejects.toThrow(FROZEN);
+      expect(
+        await app.$executeRaw`UPDATE orders SET status = 'CANCELLED', cancelled_at = now(), cancelled_by = created_by, cancel_reason = 'estorno' WHERE id = ${f.orderId}::uuid`,
+      ).toBe(1);
+      await expect(app.$executeRaw`UPDATE orders SET status = 'DELIVERED' WHERE id = ${f.orderId}::uuid`).rejects.toThrow(INVALID_TRANSITION);
     });
 
     it("a cancelled order is terminal", async () => {
@@ -342,7 +347,14 @@ describe("Orders schema (PostgreSQL)", () => {
     });
 
     it("the catalog audit pins the sale immutability triggers", async () => {
-      expect(Object.keys(SALE_IMMUTABILITY_TRIGGERS).sort()).toEqual(["order_item_options_editing_only", "order_items_editing_only", "orders_immutable_after_confirmation"]);
+      expect(Object.keys(SALE_IMMUTABILITY_TRIGGERS).filter((name) => name.startsWith("order")).sort()).toEqual([
+        "order_item_options_editing_only",
+        "order_item_options_no_truncate",
+        "order_items_editing_only",
+        "order_items_no_truncate",
+        "orders_immutable_after_confirmation",
+        "orders_no_truncate",
+      ]);
       expect(await saleImmutabilityViolations(owner)).toEqual([]);
     });
 

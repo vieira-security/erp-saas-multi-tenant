@@ -103,7 +103,8 @@ describe("order state machine", () => {
     start: { CONFIRMED: "PREPARING" },
     ready: { PREPARING: "READY" },
     deliver: { READY: "DELIVERED" },
-    cancel: { EDITING: "CANCELLED", CONFIRMED: "CANCELLED", PREPARING: "CANCELLED", READY: "CANCELLED" },
+    // M6: DELIVERED is cancellable too (full refund).
+    cancel: { EDITING: "CANCELLED", CONFIRMED: "CANCELLED", PREPARING: "CANCELLED", READY: "CANCELLED", DELIVERED: "CANCELLED" },
   };
 
   it("accepts exactly the contract transitions and rejects every other (status, action) pair", () => {
