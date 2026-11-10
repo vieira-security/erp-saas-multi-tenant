@@ -57,6 +57,10 @@ model Tenant {
   orderItems            OrderItem[]
   orderItemOptions      OrderItemOption[]
   branchOrderCounters   BranchOrderCounter[]
+  cashSessions          CashSession[]
+  cashMovements         CashMovement[]
+  payments              Payment[]
+  refunds               Refund[]
 
   @@map("tenants")
 }
@@ -118,6 +122,7 @@ model Branch {
   productSettings BranchProductSetting[]
   orders          Order[]
   orderCounters   BranchOrderCounter[]
+  cashSessions    CashSession[]
 
   @@unique([tenantId, code])
   // NULLS DISTINCT (padrão do PostgreSQL): várias branches sem CNPJ são permitidas.
@@ -161,6 +166,10 @@ model User {
   sessions            Session[]
   ordersCreated       Order[]            @relation("OrderCreatedBy")
   ordersCancelled     Order[]            @relation("OrderCancelledBy")
+  cashSessionsOpened  CashSession[]      @relation("CashSessionOpenedBy")
+  cashSessionsClosed  CashSession[]      @relation("CashSessionClosedBy")
+  cashMovements       CashMovement[]     @relation("CashMovementCreatedBy")
+  refunds             Refund[]           @relation("RefundCreatedBy")
   auditLogs           AuditLog[]
 
   @@unique([tenantId, employeeNumber])
@@ -579,9 +588,12 @@ model Order {
   // FK composta MATCH SIMPLE: verificada só quando cancelled_by não é NULL.
   canceller    User?       @relation("OrderCancelledBy", fields: [tenantId, cancelledBy], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
   items        OrderItem[]
+  payments     Payment[]
 
   // Alvo da FK composta de OrderItem.
   @@unique([tenantId, id])
+  // M6: alvo da FK composta de Payment (leva branch_id: pagamento e caixa da mesma filial do pedido).
+  @@unique([tenantId, branchId, id])
   // Número único por filial e dia (NULLs não colidem: rascunhos não têm número). Também atende filtros por dia.
   @@unique([tenantId, branchId, businessDate, number])
   // Listagem da filial (mais recentes primeiro); também atende a FK composta da filial.
@@ -664,4 +676,147 @@ model BranchOrderCounter {
   // Um contador por filial e dia; também atende a FK composta da filial.
   @@unique([tenantId, branchId, businessDate])
   @@map("branch_order_counters")
+}
+
+// ── M6: caixa e pagamentos ──────────────────────────────────────────────────────────────────────────────────────────
+// Registros financeiros nunca são alterados nem apagados: payments, refunds e cash_movements são append-only (triggers);
+// cash_sessions só passa de OPEN para CLOSED uma vez. Pagamento, estorno e movimento carregam branch_id e apontam para o
+// caixa por FK composta (tenant_id, branch_id, cash_session_id): o banco garante que caem num caixa DA MESMA FILIAL do
+// pedido. PIX/cartão são registro manual (sem PSP/TEF). Fiscal fica no M9.
+
+enum CashSessionStatus {
+  OPEN
+  CLOSED
+
+  @@map("cash_session_status")
+}
+
+enum CashMovementType {
+  SUPPLY
+  WITHDRAWAL
+
+  @@map("cash_movement_type")
+}
+
+enum PaymentMethod {
+  CASH
+  PIX
+  DEBIT_CARD
+  CREDIT_CARD
+
+  @@map("payment_method")
+}
+
+// Caixa de um operador numa filial. Índice único PARCIAL (fora do PSL, migration 20261110000000): no máximo um OPEN por
+// (tenant_id, branch_id, opened_by). CHECKs: valores >= 0; CLOSED <=> campos de fechamento preenchidos;
+// difference = counted_cash - expected_cash; justificativa obrigatória quando difference <> 0 (3..500).
+model CashSession {
+  id            String            @id @default(uuid(7)) @db.Uuid
+  tenantId      String            @map("tenant_id") @db.Uuid
+  branchId      String            @map("branch_id") @db.Uuid
+  status        CashSessionStatus
+  openedBy      String            @map("opened_by") @db.Uuid
+  openedAt      DateTime          @map("opened_at") @db.Timestamptz(3)
+  openingAmount Decimal           @map("opening_amount") @db.Decimal(12, 2)
+  closedBy      String?           @map("closed_by") @db.Uuid
+  closedAt      DateTime?         @map("closed_at") @db.Timestamptz(3)
+  expectedCash  Decimal?          @map("expected_cash") @db.Decimal(12, 2)
+  countedCash   Decimal?          @map("counted_cash") @db.Decimal(12, 2)
+  // Contado − esperado; pode ser negativo (falta).
+  difference    Decimal?          @db.Decimal(12, 2)
+  justification String?
+  createdAt     DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt     DateTime          @updatedAt @map("updated_at") @db.Timestamptz(3)
+  tenant        Tenant            @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  branch        Branch            @relation(fields: [tenantId, branchId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  opener        User              @relation("CashSessionOpenedBy", fields: [tenantId, openedBy], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  // FK composta MATCH SIMPLE: verificada só quando closed_by não é NULL.
+  closer        User?             @relation("CashSessionClosedBy", fields: [tenantId, closedBy], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  movements     CashMovement[]
+  payments      Payment[]
+  refunds       Refund[]
+
+  // Alvo das FKs compostas de pagamento, estorno e movimento: leva branch_id para garantir a mesma filial.
+  @@unique([tenantId, branchId, id])
+  // Listagem da filial (mais recentes primeiro); também atende a FK composta da filial.
+  @@index([tenantId, branchId, openedAt(sort: Desc)])
+  @@index([tenantId, openedBy])
+  @@index([tenantId, closedBy])
+  @@map("cash_sessions")
+}
+
+// Sangria (WITHDRAWAL) ou suprimento (SUPPLY). Append-only. CHECKs: amount > 0; reason não vazio e <= 200.
+model CashMovement {
+  id            String           @id @default(uuid(7)) @db.Uuid
+  tenantId      String           @map("tenant_id") @db.Uuid
+  branchId      String           @map("branch_id") @db.Uuid
+  cashSessionId String           @map("cash_session_id") @db.Uuid
+  type          CashMovementType
+  amount        Decimal          @db.Decimal(12, 2)
+  reason        String
+  createdBy     String           @map("created_by") @db.Uuid
+  createdAt     DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
+  tenant        Tenant           @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  cashSession   CashSession      @relation(fields: [tenantId, branchId, cashSessionId], references: [tenantId, branchId, id], onDelete: Restrict, onUpdate: Restrict)
+  creator       User             @relation("CashMovementCreatedBy", fields: [tenantId, createdBy], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@index([tenantId, branchId, cashSessionId])
+  @@index([tenantId, createdBy])
+  @@map("cash_movements")
+}
+
+// Pagamento registrado na confirmação do pedido. Append-only. FKs compostas com branch_id: pedido e caixa da MESMA
+// filial. CHECKs: amount > 0; CASH <=> received_amount >= amount e change = received_amount - amount; demais métodos sem
+// received_amount e change = 0; reference nula ou não vazia e <= 60.
+model Payment {
+  id             String        @id @default(uuid(7)) @db.Uuid
+  tenantId       String        @map("tenant_id") @db.Uuid
+  branchId       String        @map("branch_id") @db.Uuid
+  orderId        String        @map("order_id") @db.Uuid
+  cashSessionId  String        @map("cash_session_id") @db.Uuid
+  method         PaymentMethod
+  amount         Decimal       @db.Decimal(12, 2)
+  receivedAmount Decimal?      @map("received_amount") @db.Decimal(12, 2)
+  change         Decimal       @db.Decimal(12, 2)
+  reference      String?
+  createdAt      DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
+  tenant         Tenant        @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  order          Order         @relation(fields: [tenantId, branchId, orderId], references: [tenantId, branchId, id], onDelete: Restrict, onUpdate: Restrict)
+  cashSession    CashSession   @relation(fields: [tenantId, branchId, cashSessionId], references: [tenantId, branchId, id], onDelete: Restrict, onUpdate: Restrict)
+  refund         Refund?
+
+  // Alvo da FK composta do estorno: obriga o estorno a repetir pedido, método e valor do pagamento (estorno total).
+  @@unique([tenantId, branchId, id, orderId, method, amount])
+  // Busca por pedido (sempre com a filial da rota); também atende a FK composta do pedido.
+  @@index([tenantId, branchId, orderId])
+  @@index([tenantId, branchId, cashSessionId])
+  @@map("payments")
+}
+
+// Estorno total de um pagamento (cancelamento de pedido pago). Append-only; um por pagamento. A FK composta para
+// payments(tenant_id, branch_id, id, order_id, method, amount) garante no banco que o estorno tem o mesmo pedido, método e
+// VALOR do pagamento. CHECKs: amount > 0; CASH <=> cash_session_id não nulo (dinheiro sai do caixa de quem cancela).
+model Refund {
+  id            String        @id @default(uuid(7)) @db.Uuid
+  tenantId      String        @map("tenant_id") @db.Uuid
+  branchId      String        @map("branch_id") @db.Uuid
+  paymentId     String        @map("payment_id") @db.Uuid
+  orderId       String        @map("order_id") @db.Uuid
+  method        PaymentMethod
+  amount        Decimal       @db.Decimal(12, 2)
+  cashSessionId String?       @map("cash_session_id") @db.Uuid
+  createdBy     String        @map("created_by") @db.Uuid
+  createdAt     DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
+  tenant        Tenant        @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  payment       Payment       @relation(fields: [tenantId, branchId, paymentId, orderId, method, amount], references: [tenantId, branchId, id, orderId, method, amount], onDelete: Restrict, onUpdate: Restrict)
+  // FK composta MATCH SIMPLE: verificada só quando cash_session_id não é NULL (estorno em dinheiro).
+  cashSession   CashSession?  @relation(fields: [tenantId, branchId, cashSessionId], references: [tenantId, branchId, id], onDelete: Restrict, onUpdate: Restrict)
+  creator       User          @relation("RefundCreatedBy", fields: [tenantId, createdBy], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+
+  // Um estorno por pagamento: como a FK fixa pedido, método e valor iguais aos do pagamento, esta unique equivale a
+  // UNIQUE (tenant_id, payment_id); também cobre a FK composta.
+  @@unique([tenantId, branchId, paymentId, orderId, method, amount])
+  @@index([tenantId, branchId, cashSessionId])
+  @@index([tenantId, createdBy])
+  @@map("refunds")
 }

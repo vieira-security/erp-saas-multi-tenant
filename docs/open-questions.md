@@ -223,3 +223,21 @@ Contratos em `packages/contracts/src/orders.ts`.
 
 **Defaults técnicos do contrato (revisar):** estorno em dinheiro sai do caixa aberto de quem cancela; estorno de PIX/cartão é registrado como devolução manual na maquininha; quem não tem `cash.close` só vê os próprios caixas; até 10 pagamentos por pedido; sangria maior que o dinheiro esperado é recusada.
 Contratos em `packages/contracts/src/cash.ts` e mudanças em `orders.ts`.
+
+**Implementado (backend):** migrations `20261110000000_create_cash_and_payments` e `20261110010000_adjust_order_immutability` (ver [database.md](database.md)); grants em `03-runtime-grants.sql`; módulo `cash` e confirmação/cancelamento do módulo `orders` com pagamentos e estornos.
+
+**Defaults técnicos do M6 (revisar com o produto):**
+1. Confirmar exige caixa aberto de quem confirma mesmo com total `"0.00"` (lista de pagamentos vazia).
+2. Em `payment_total_mismatch`, o rascunho é atualizado com os preços vigentes (itens + total) antes do 409, para o `GET` devolver o total a pagar (o contrato manda "reenviar com o total devolvido em GET"); nada financeiro é gravado. Os demais erros desfazem tudo.
+3. Pagamentos de um pedido saem ordenados por criação e id (gravados juntos; a ordem do split não é preservada).
+4. Fechar caixa com permissão é checado antes do estado (caixa alheio fechado sem `cash.close` = 403, não 409).
+5. Índice de busca de pagamento por pedido é `(tenant_id, branch_id, order_id)` (a filial é sempre conhecida e cobre a FK composta) em vez de `(tenant_id, order_id)`.
+6. As tabelas append-only (`payments`, `refunds`, `cash_movements`) têm o trigger genérico de `tenant_id` além do append-only (regra geral do prompt); o padrão `SPECIAL_TENANT_ID_POLICIES` de `audit_logs` não foi usado porque proíbe outros triggers (o insert guard é necessário).
+
+**Pendente / fora do M6:**
+- Auditoria (`audit_logs`) de abertura/fechamento, sangria, suprimento, pagamento e estorno: catálogo de ações em aberto (#8, KAN-41); nada é gravado.
+- PSP/TEF (PIX e cartão integrados), conciliação de maquininha, estorno parcial, troca de forma de pagamento.
+- Fiscal (M9). Relatórios de caixa (fora do contrato).
+- **Merge:** este backend foi aberto contra `feat/m6-contracts`; ao fazer merge do #17, apagar a branch `feat/m6-contracts` (ou trocar a base do PR do backend para `develop`) antes do merge do backend.
+
+**Auditoria final do M6 (09/11/2026):** estorno em dinheiro passou a exigir dinheiro esperado suficiente no caixa de quem cancela (409 `insufficient_cash`, como a sangria). Antes, um estorno maior que o caixa do gerente deixava o esperado negativo: o GET do caixa respondia 500 e o caixa não fechava mais.

@@ -130,6 +130,12 @@ Bloqueado = 403 `tenant_unavailable`. Sem modo somente leitura.
 - `DELIVERED`/`CANCELLED`: 409 `order_invalid_transition` (estorno é do M6).
 - Sem permissão para o caso: 403 `forbidden`. Nunca checa nome de role.
 
+**Caixa e estorno (M6)** — rotas de filial; mesma lógica de "a rota declara o mínimo e o service decide" quando depende do dono do recurso:
+- **Fechar caixa:** `POST .../cash-sessions/:id/close` declara `cash.read`; o `CashService` exige `cash.open` para o PRÓPRIO caixa e `cash.close` para o de outro operador (403). Ver caixa de outro operador sem `cash.close` = 404 (não revela existência); listar sem `cash.close` = só os próprios.
+- **Sangria e suprimento:** `cash.close` declarado na rota (OWNER/MANAGER); motivo obrigatório; sangria acima do dinheiro esperado = 409.
+- **Estorno:** cancelar pedido pago (inclusive DELIVERED) exige `order.cancel` na filial + motivo; um estorno total por pagamento; dinheiro sai do caixa aberto de QUEM CANCELA (sem caixa aberto = 409 `cash_session_required`; sem dinheiro esperado suficiente nesse caixa = 409 `insufficient_cash`, como a sangria; em ambos nada muda); PIX/cartão = devolução manual (sem caixa).
+- Pagamentos, estornos, movimentos e caixas fechados nunca são alterados nem apagados (privilégio + trigger). Matriz de roles inalterada.
+
 ### Quem sou eu: `GET /me` e permissões efetivas por filial (KAN-52)
 - `GET /me` exige só autenticação (sem permissão específica); com `must_change_password` responde 403 `password_change_required` como as demais rotas de negócio (sem exceção). Usuário e organização vêm do AuthContext/TenantContext, nunca de parâmetro; `tenantId` não aparece na resposta (`MeDto`, `packages/contracts/src/me.ts`).
 - `permissions` = permissões efetivas no escopo do **tenant** (só roles tenant-wide). `branches` = **todas** as filiais com `UserBranchAccess` (qualquer status, ordem de criação), cada uma com `operable` (filial e empresa ACTIVE) e as permissões efetivas **naquela filial** (roles tenant-wide + roles da filial). Filial sem acesso não aparece; role escopada a uma filial só aparece nela; role INACTIVE/ARCHIVED e usuário não-ACTIVE não contam. Listas ordenadas por código (comparação em código, não collation).
