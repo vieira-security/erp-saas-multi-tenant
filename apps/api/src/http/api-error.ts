@@ -32,6 +32,17 @@ export class ConflictError extends ApiError {
   }
 }
 
+/** 409 que também lista os itens problemáticos (M5: `order_item_unavailable`, mesmos `details` da validação). */
+export class ConflictWithDetailsError extends ApiError {
+  override readonly name = "ConflictWithDetailsError";
+  constructor(
+    code: ApiErrorCode,
+    readonly details: readonly ValidationIssue[],
+  ) {
+    super(409, code, `${code}: ${details.map((d) => `${d.field}:${d.issue}`).join(", ")}`);
+  }
+}
+
 export class ValidationFailedError extends ApiError {
   override readonly name = "ValidationFailedError";
   constructor(readonly details: readonly ValidationIssue[]) {
@@ -44,12 +55,14 @@ interface JsonResponse {
   json(body: unknown): void;
 }
 
-/** `ApiError` -> `{ error, details? }` (ApiErrorResponse). Nada além disso vai para a resposta. */
+/** `ApiError` -> `{ error, details? }` (ApiErrorResponse; `details` só em validation_failed e order_item_unavailable). */
 @Catch(ApiError)
 export class ApiExceptionFilter implements ExceptionFilter {
   catch(error: ApiError, host: ArgumentsHost): void {
     const body: ApiErrorResponse =
-      error instanceof ValidationFailedError ? { error: error.code, details: error.details } : { error: error.code };
+      error instanceof ValidationFailedError || error instanceof ConflictWithDetailsError
+        ? { error: error.code, details: error.details }
+        : { error: error.code };
     host.switchToHttp().getResponse<JsonResponse>().status(error.status).json(body);
   }
 }

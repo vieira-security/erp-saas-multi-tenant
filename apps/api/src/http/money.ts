@@ -26,3 +26,22 @@ export const money: Parser<Money> = (raw) => {
 export function toMoney(value: { toFixed(decimals: number): string }): Money {
   return value.toFixed(2);
 }
+
+/** `MONEY_MAX` em centavos: maior valor de `numeric(12,2)`. */
+export const MONEY_MAX_CENTS = 999_999_999_999n;
+
+/**
+ * `Money` já normalizado (`"12.50"`, como sai de `money`/`toMoney`) -> centavos inteiros (`1250n`). Aritmética de totais
+ * é feita em `bigint` (sem ponto flutuante) e só volta a texto no fim (`centsToMoney`).
+ */
+export function moneyToCents(value: Money): bigint {
+  const match = /^([0-9]+)\.([0-9]{2})$/.exec(value);
+  if (!match) throw new Error(`not a normalized Money value: ${value}`);
+  return BigInt(match[1]!) * 100n + BigInt(match[2]!);
+}
+
+export function centsToMoney(cents: bigint): Money {
+  if (cents < 0n) throw new Error("negative money");
+  const text = cents.toString().padStart(3, "0");
+  return `${text.slice(0, -2)}.${text.slice(-2)}`;
+}

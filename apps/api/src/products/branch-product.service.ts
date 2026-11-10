@@ -1,7 +1,7 @@
 import { Inject, Injectable } from "@nestjs/common";
 import type { BranchProductSettingDto, MenuDto, Money } from "@erp/contracts";
 import { PRISMA_CLIENT } from "../database/database.module.js";
-import { ProductCategoryStatus, ProductStatus, type PrismaClient } from "../generated/prisma/client.js";
+import { ProductCategoryStatus, ProductStatus, type Prisma, type PrismaClient } from "../generated/prisma/client.js";
 import { NotFoundError } from "../http/api-error.js";
 import { toMoney } from "../http/money.js";
 import { TenantScope } from "../tenancy/tenant-scope.js";
@@ -55,22 +55,28 @@ export class BranchProductService {
     await this.prisma.branchProductSetting.deleteMany({ where: this.scope.where({ branchId, productId }) });
   }
 
-  /** Quatro leituras (categorias, produtos+grupos+opções em lote pelo Prisma, ajustes) e montagem em memória (menu.ts). */
-  async menu(branchId: string): Promise<MenuDto> {
-    const [categories, products, settings] = await this.prisma.$transaction([
-      this.prisma.productCategory.findMany({
+  /**
+   * Quatro leituras (categorias, produtos+grupos+opções em lote pelo Prisma, ajustes) e montagem em memória (menu.ts).
+   * `db` = transação de quem chama (M5: pedidos validam e precificam itens com ESTE cardápio dentro da própria
+   * transação); sem ela, as leituras rodam juntas num batch.
+   */
+  async menu(branchId: string, db?: Prisma.TransactionClient): Promise<MenuDto> {
+    const client = db ?? this.prisma;
+    const queries = [
+      client.productCategory.findMany({
         where: this.scope.where({ status: ProductCategoryStatus.ACTIVE }),
         select: { id: true, name: true, sortOrder: true, createdAt: true },
       }),
-      this.prisma.product.findMany({
+      client.product.findMany({
         where: this.scope.where({ status: ProductStatus.ACTIVE }),
         include: { optionGroups: { include: { options: true } } },
       }),
-      this.prisma.branchProductSetting.findMany({
+      client.branchProductSetting.findMany({
         where: this.scope.where({ branchId }),
         select: { productId: true, available: true, price: true },
       }),
-    ]);
+    ] as const;
+    const [categories, products, settings] = db ? await Promise.all(queries) : await this.prisma.$transaction([...queries]);
     return buildMenu({
       branchId,
       categories,
