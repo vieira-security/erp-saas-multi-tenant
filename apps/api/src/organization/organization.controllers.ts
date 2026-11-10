@@ -1,5 +1,5 @@
 import { Body, Controller, Delete, Get, HttpCode, Inject, Param, Patch, Post, Put, Query, Res } from "@nestjs/common";
-import type { BranchAccessDto, BranchDto, BranchSummaryDto, CompanyDto, OrganizationDto, Page } from "@erp/contracts";
+import type { BranchAccessDto, BranchDto, BranchSummaryDto, CompanyDto, MeDto, OrganizationDto, Page } from "@erp/contracts";
 import { RequireBranchPermissions, RequirePermissions } from "../authorization/permission.guard.js";
 import { NotFoundError } from "../http/api-error.js";
 import { UUID, checked, nullable, oneOf, optional, parseInput, required, text, uuid, type Parsed } from "../http/input.js";
@@ -7,6 +7,7 @@ import { pageQuerySpec, pageRequest } from "../http/paging.js";
 import { BranchAccessService } from "./branch-access.service.js";
 import { BranchService } from "./branch.service.js";
 import { CompanyService } from "./company.service.js";
+import { MeService } from "./me.service.js";
 import { OrganizationService } from "./organization.service.js";
 import { checkBranchCode } from "./validation/branch-code.js";
 import { checkCnpj } from "./validation/cnpj.js";
@@ -178,10 +179,22 @@ export class BranchesController {
   }
 }
 
-/** Dados do próprio usuário autenticado; sem permissão específica (só autenticação). */
+/**
+ * Dados do próprio usuário autenticado; sem permissão específica (só autenticação). Com troca de senha obrigatória, o
+ * AuthGuard responde 403 `password_change_required` como em qualquer rota de negócio (sem exceção aqui).
+ */
 @Controller("me")
 export class MeController {
-  constructor(@Inject(BranchService) private readonly branches: BranchService) {}
+  constructor(
+    @Inject(BranchService) private readonly branches: BranchService,
+    @Inject(MeService) private readonly me: MeService,
+  ) {}
+
+  /** KAN-52: usuário, organização e permissões efetivas no tenant e em cada filial com acesso (MeDto). */
+  @Get()
+  get(): Promise<MeDto> {
+    return this.me.get();
+  }
 
   @Get("branches")
   myBranches(): Promise<BranchSummaryDto[]> {

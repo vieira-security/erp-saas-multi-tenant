@@ -100,7 +100,30 @@ describe("Auth over HTTP: login code, refresh cookie and logout (PostgreSQL, as 
       expect({ status: res.status, body: res.body }).toEqual({ status: 401, body: { error: "invalid_credentials" } });
       expect(setCookie(res.headers)).toBeNull();
     }
-    expect((await post("/auth/login", { body: { loginCode: orgA.loginCode } })).status).toBe(400);
+    expect(await post("/auth/login", { body: { loginCode: orgA.loginCode } })).toMatchObject({
+      status: 400,
+      body: { error: "validation_failed", details: [{ field: "employeeNumber", issue: "required" }, { field: "password", issue: "required" }] },
+    });
+  });
+
+  it("answers a malformed login body with 400 validation_failed { error, details } and never echoes the values", async () => {
+    const user = await seedUser(owner, orgA.tenantId);
+    const cases: [unknown, unknown[]][] = [
+      [["array", "is", "not", "an", "object"], [{ field: "body", issue: "invalid_type" }]],
+      [{ loginCode: orgA.loginCode, employeeNumber: user.employeeNumber, password: 12345678 }, [{ field: "password", issue: "invalid_type" }]],
+      [{ loginCode: null, employeeNumber: user.employeeNumber, password: DEFAULT_PASSWORD }, [{ field: "loginCode", issue: "invalid_type" }]],
+      [{ loginCode: orgA.loginCode, employeeNumber: user.employeeNumber, password: DEFAULT_PASSWORD, tenantId: orgB.tenantId }, [{ field: "tenantId", issue: "unknown_field" }]],
+      [{ loginCode: orgA.loginCode, employeeNumber: user.employeeNumber, password: DEFAULT_PASSWORD, deviceKey: 1 }, [{ field: "deviceKey", issue: "invalid_type" }]],
+    ];
+    for (const [body, details] of cases) {
+      const res = await post("/auth/login", { body });
+      expect({ status: res.status, body: res.body }, JSON.stringify(body)).toEqual({ status: 400, body: { error: "validation_failed", details } });
+      expect(setCookie(res.headers)).toBeNull();
+      expect(JSON.stringify(res.body)).not.toContain(DEFAULT_PASSWORD);
+    }
+    // Origin is still checked before the body; a well-formed body still logs in.
+    expect((await post("/auth/login", { body: ["x"], headers: { origin: "https://evil.example.test" } })).status).toBe(403);
+    expect((await login(orgA.loginCode, user.employeeNumber)).status).toBe(200);
   });
 
   it("5/6/7. refresh rotates the cookie; the old cookie is a replay that revokes the session and clears the cookie", async () => {
