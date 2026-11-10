@@ -43,6 +43,13 @@ export const API_ERROR_CODES = [
   "cash_session_closed",
   "insufficient_cash",
   "payment_total_mismatch",
+  // Funcionários
+  "employee_number_already_exists",
+  "cannot_target_self",
+  "last_owner_required",
+  "user_has_open_cash_session",
+  "role_inactive",
+  "branch_access_required",
 ] as const;
 
 export type ApiErrorCode = (typeof API_ERROR_CODES)[number];
