@@ -59,3 +59,10 @@ campos e códigos de erro de cada módulo estão nos comentários dos próprios 
 - `POST /auth/login` e `POST /auth/password`: corpo inválido agora responde no formato padrão
   `400 { error: "validation_failed", details }` (antes, `{ statusCode, message: "invalid_request", error }` do Nest).
   Campo desconhecido passa a ser `unknown_field`, como nas demais rotas. Nenhuma outra resposta do Auth mudou.
+
+## Funcionários: leitura (`GET /users`, desbloqueia KAN-29)
+
+- `GET /users` (`user.read`, tenant) → `Page<UserSummaryDto>`; filtros `status` e `search` (nome contém, sem diferenciar maiúsculas, ou matrícula exata). Ordem por `name` e depois `id` — exceção à ordem por criação, porque a lista serve para achar a pessoa.
+- `GET /users/:userId` (`user.read`) → `UserDto` com as roles (tenant inteiro ou por filial, inclusive INACTIVE para exibição) | 404 `not_found` (inexistente ou de outro tenant).
+- Nunca expõe hash de senha, tentativas de login, bloqueio temporário nem sessões.
+- Cadastro/edição/desativação de funcionário, atribuição de roles e reset de senha: fora desta fase (próximo módulo, com decisão de produto).
