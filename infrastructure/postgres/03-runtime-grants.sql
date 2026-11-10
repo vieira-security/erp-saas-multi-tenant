@@ -33,6 +33,18 @@ GRANT SELECT, INSERT, DELETE ON product_option_groups, product_options TO erp_ap
 -- M4, ajuste do produto na filial: upsert (INSERT/UPDATE) e "voltar ao padrão" apaga a linha (DELETE idempotente).
 GRANT SELECT, INSERT, UPDATE, DELETE ON branch_product_settings TO erp_app;
 
+-- M5, pedido: criado (INSERT) e movido de estado (UPDATE). Sem DELETE: vendas nunca são apagadas; rascunho descartado
+-- vira CANCELLED. O trigger orders_immutable_after_confirmation congela o pedido confirmado mesmo com UPDATE.
+GRANT SELECT, INSERT, UPDATE ON orders TO erp_app;
+
+-- M5, itens e opções do pedido: substituídos em bloco (DELETE + INSERT) só em EDITING (garantido também pelos
+-- triggers *_editing_only); sem UPDATE e sem TRUNCATE.
+GRANT SELECT, INSERT, DELETE ON order_items, order_item_options TO erp_app;
+
+-- M5, contador do número do dia: INSERT ... ON CONFLICT DO UPDATE ... RETURNING (exige INSERT, UPDATE e SELECT).
+-- Sem DELETE: o histórico de numeração fica.
+GRANT SELECT, INSERT, UPDATE ON branch_order_counters TO erp_app;
+
 -- Catálogo técnico global: mantido pelo deploy (seed como erp_migrator); somente leitura em runtime.
 GRANT SELECT ON permissions TO erp_app;
 
