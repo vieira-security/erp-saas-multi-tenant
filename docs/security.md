@@ -142,6 +142,18 @@ Bloqueado = 403 `tenant_unavailable`. Sem modo somente leitura.
 - Implementação: `MeService` faz 4 leituras e resolve em memória com `resolveEffectivePermissions` (`apps/api/src/authorization/effective-permissions.ts`), a mesma regra do `AuthorizationService` (sem query por filial). Um teste de integração compara as duas para vários usuários e filiais.
 - É só para a interface montar menus: cada rota continua conferindo a permissão no backend (403). Permissões nunca vão no JWT.
 
+### Frontend (`apps/web`, KAN-23/KAN-53)
+- Navegador só fala com a origem do web; o proxy do Next repassa `/auth/*` (mesmo caminho, cookie `Path=/auth`) e
+  `/api/*` para a API. `API_URL` só no servidor. Em dev a API precisa de `AUTH_ALLOWED_ORIGINS=http://localhost:3000` e
+  `AUTH_COOKIE_SECURE=false` (docs/dev-setup.md).
+- Access token só na memória do cliente HTTP (`src/lib/api/token-store.ts`); nada em localStorage/sessionStorage/IndexedDB/
+  cookie legível (teste). O refresh é serializado (single-flight) porque dois refreshes com o mesmo cookie = replay = sessão
+  revogada. O cliente não loga nada e recusa caminhos absolutos (o Bearer nunca sai para outra origem).
+- O web nunca envia tenant. Permissões do `/me` só escondem menu; a autorização é da API. O localStorage guarda só o
+  último `branchId` (preferência, não segredo).
+- Erros exibidos pelo código do contrato (`errorMessage`), nunca pelo texto do servidor.
+- Mocks (`NEXT_PUBLIC_API_MOCKS=1`) são inlinados no build; sem o flag, o módulo de mocks nem entra no bundle.
+
 ### Seed de desenvolvimento (KAN-51)
 `npm run db:seed:dev` cria o tenant demo `DEMO` (docs/dev-setup.md). Recusa rodar com `NODE_ENV=production`, sem `ALLOW_DEV_SEED=true` ou sem `DEV_SEED_PASSWORD`; a senha nunca está no código, vira hash Argon2id via `PasswordHasher` e nunca é logada. Roda como `erp_migrator`, nunca como `erp_app`. Idempotente por chave natural; não altera nada existente.
 

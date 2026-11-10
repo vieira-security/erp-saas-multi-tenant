@@ -241,3 +241,29 @@ Contratos em `packages/contracts/src/cash.ts` e mudanças em `orders.ts`.
 - **Merge:** este backend foi aberto contra `feat/m6-contracts`; ao fazer merge do #17, apagar a branch `feat/m6-contracts` (ou trocar a base do PR do backend para `develop`) antes do merge do backend.
 
 **Auditoria final do M6 (09/11/2026):** estorno em dinheiro passou a exigir dinheiro esperado suficiente no caixa de quem cancela (409 `insufficient_cash`, como a sangria). Antes, um estorno maior que o caixa do gerente deixava o esperado negativo: o GET do caixa respondia 500 e o caixa não fechava mais.
+
+## Frontend — fundação do web (KAN-53, KAN-23, KAN-22, KAN-25; 10/11/2026)
+Implementado em `apps/web`: proxy de dev (`/auth/*` e `/api/*`), cliente HTTP com access token só em memória e refresh
+single-flight, rotas tipadas por `@erp/contracts`, mocks por `NEXT_PUBLIC_API_MOCKS=1`, shell com filial na rota e menu
+por permissão do `GET /me`. O `GET /me` já tinha contrato (`MeDto`, KAN-52): o mock usa esse formato, sem formato provisório.
+
+**Pendências / decisões necessárias:**
+1. **DECISION REQUIRED — bundler x `@erp/contracts`:** o contracts usa imports relativos `./x.js` apontando para `.ts`
+   (exigido pelo `NodeNext` da API). O Turbopack (padrão do Next 16) não resolve isso; o web roda `next dev/build
+   --webpack` com `resolve.extensionAlias`. Para voltar ao Turbopack: build de runtime do contracts (emitir `.js`) ou outra
+   forma de publicar o pacote — mudança no backend/contracts, fora desta entrega.
+2. **Roteamento em produção** de `/auth/*` e `/api/*`: hoje são rewrites do Next com `API_URL` lida no build (em produção
+   sem `API_URL` o proxy fica desligado). Definir se produção usa o mesmo proxy do Next ou roteamento por caminho no
+   load balancer/CDN (mesma origem), junto com o deploy (#18). Requisito: `/auth` precisa continuar no mesmo site e caminho.
+3. **Tela de login (KAN-24):** não pode ficar sob `/auth/*` nem `/api/*` (proxy). Até lá, "sem sessão"/"sessão encerrada"
+   só oferecem "tentar de novo" (novo bootstrap). Troca de senha obrigatória mostra só o aviso.
+4. **Defaults técnicos do cliente (revisar):** refresh só reativo (no 401), sem renovação antecipada pelo
+   `accessTokenExpiresAt`; falha do refresh por rede durante o uso também encerra a sessão (no bootstrap vira estado de erro);
+   o evento "sessão encerrada" sai uma vez por sessão.
+5. **Filial da rota = filiais operáveis** (`GET /me/branches`). Filial inativa ou sem acesso na URL mostra "sem permissão".
+   Telas administrativas que precisem de filial inativa (ex.: reativar) não dependem da filial da rota; revisar quando existirem.
+6. Itens do menu e permissões usadas (provisório, até as telas existirem): Pedidos `order.read`, Caixa `cash.read`,
+   Cardápio `product.read` e Ajustes do cardápio `product.manage` (escopo da filial); Organização e Empresas
+   `organization.read`, Filiais `branch.read`, Usuários `user.read`, Produtos `product.read` (escopo do tenant).
+7. Testes de componente rodam sem DOM (`react-dom/server` + funções puras), sem jsdom/Testing Library. Interação real
+   (cliques, gaveta do menu) foi verificada manualmente; E2E com Playwright segue futuro (#17).
