@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_ROLE_PERMISSIONS } from "../tenants/default-roles.js";
-import { exceedsAuthority, forbiddenRoleChanges, type RoleChange } from "./authority.js";
+import { exceedsAuthority, forbiddenRoleChanges, touchesAdministratorWithoutGuard, type RoleChange } from "./authority.js";
 
 const set = (codes: readonly string[]) => new Set(codes);
 const { OWNER, MANAGER, ATTENDANT, KITCHEN } = DEFAULT_ROLE_PERMISSIONS;
@@ -41,5 +41,23 @@ describe("forbiddenRoleChanges (roles entering or leaving)", () => {
 
   it("a role without permissions is always allowed", () => {
     expect(forbiddenRoleChanges([change("empty", B2, [])], () => set([]))).toEqual([]);
+  });
+});
+
+describe("touchesAdministratorWithoutGuard (managers do not manage administrators)", () => {
+  const owner = new Set(DEFAULT_ROLE_PERMISSIONS.OWNER);
+  const manager = new Set(DEFAULT_ROLE_PERMISSIONS.MANAGER);
+  it("blocks the manager on anything that carries user.manage", () => {
+    expect(touchesAdministratorWithoutGuard(manager, DEFAULT_ROLE_PERMISSIONS.MANAGER)).toBe(true);
+    expect(touchesAdministratorWithoutGuard(manager, DEFAULT_ROLE_PERMISSIONS.OWNER)).toBe(true);
+  });
+  it("lets the manager touch roles and people without user.manage", () => {
+    expect(touchesAdministratorWithoutGuard(manager, DEFAULT_ROLE_PERMISSIONS.ATTENDANT)).toBe(false);
+    expect(touchesAdministratorWithoutGuard(manager, DEFAULT_ROLE_PERMISSIONS.KITCHEN)).toBe(false);
+    expect(touchesAdministratorWithoutGuard(manager, [])).toBe(false);
+  });
+  it("lets whoever has role.manage (the owner) touch administrators", () => {
+    expect(touchesAdministratorWithoutGuard(owner, DEFAULT_ROLE_PERMISSIONS.MANAGER)).toBe(false);
+    expect(touchesAdministratorWithoutGuard(owner, DEFAULT_ROLE_PERMISSIONS.OWNER)).toBe(false);
   });
 });

@@ -5,6 +5,7 @@ import { AuthContextService } from "../auth/context/auth-context.js";
 import { PasswordHasher } from "../auth/password/password-hasher.js";
 import { revokeAllForUserIn } from "../auth/session.service.js";
 import { AuthorityService, type RoleChange } from "../authorization/authority.js";
+import { TENANT_SCOPE } from "../authorization/authorization.service.js";
 import { PRISMA_CLIENT } from "../database/database.module.js";
 import { CashSessionStatus, RoleStatus, UserStatus, type Prisma, type PrismaClient } from "../generated/prisma/client.js";
 import { ConflictError, NotFoundError, ValidationFailedError } from "../http/api-error.js";
@@ -227,7 +228,9 @@ export class UserManagementService {
     const actorUserId = this.auth.require().userId;
     const target = await this.prisma.user.findUnique({ where: this.scope.where({ id: targetUserId }), select: { id: true } });
     if (!target) throw new NotFoundError("User");
-    await this.authority.requireNoGreaterAuthority(actorUserId, targetUserId);
+    // Em si mesmo a guarda de administrador não se aplica: as ações sobre si são barradas adiante (409 cannot_target_self)
+    // ou permitidas (renomear a si mesmo).
+    await this.authority.requireNoGreaterAuthority(actorUserId, targetUserId, TENANT_SCOPE, { guardAdministrators: targetUserId !== actorUserId });
     return actorUserId;
   }
 

@@ -245,14 +245,22 @@ describe("Users management API over HTTP (PostgreSQL, as erp_app)", () => {
       expect(await call(a["MANAGER"]!, "PUT", `/users/${target.userId}/roles`, { roles: [...roles, { roleId: await roleIdOf(orgA, "OWNER"), branchId: null }] })).toEqual(FORBIDDEN);
     });
 
-    // DECISION REQUIRED (docs/open-questions.md): the approved rule compares PERMISSIONS ("never above your own"). With
-    // the default matrix a MANAGER role has exactly the manager's permissions, so the rule lets a manager assign MANAGER
-    // and remove MANAGER from another manager. This test pins the CURRENT behavior until the product decides.
-    it("[DECISION REQUIRED] with the permission rule, the manager can assign and remove MANAGER (equal authority)", async () => {
+    // Product decision (10/11): the manager does not create nor promote anyone to Owner/Manager and does not manage
+    // another administrator. Touching `user.manage` (target or role) requires `role.manage` in the tenant.
+    it("the manager cannot assign or remove MANAGER nor manage another manager; the owner can", async () => {
       const target = await employee();
       const manager = { roleId: await roleIdOf(orgA, "MANAGER"), branchId: null };
-      expect((await ok(a["MANAGER"]!, "PUT", `/users/${target.userId}/roles`, { roles: [manager] })).roles.map((r) => r.code)).toEqual(["MANAGER"]);
-      expect((await ok(a["MANAGER"]!, "PUT", `/users/${target.userId}/roles`, { roles: [] })).roles).toEqual([]);
+      expect(await call(a["MANAGER"]!, "PUT", `/users/${target.userId}/roles`, { roles: [manager] })).toEqual(FORBIDDEN);
+      expect((await ok(a["OWNER"]!, "PUT", `/users/${target.userId}/roles`, { roles: [manager] })).roles.map((r) => r.code)).toEqual(["MANAGER"]);
+      // Now the target is an administrator: every management action by the manager is 403.
+      expect(await call(a["MANAGER"]!, "PUT", `/users/${target.userId}/roles`, { roles: [] })).toEqual(FORBIDDEN);
+      expect(await call(a["MANAGER"]!, "PATCH", `/users/${target.userId}`, { name: "Outro nome" })).toEqual(FORBIDDEN);
+      expect(await call(a["MANAGER"]!, "POST", `/users/${target.userId}/deactivate`)).toEqual(FORBIDDEN);
+      expect(await call(a["MANAGER"]!, "POST", `/users/${target.userId}/unlock`)).toEqual(FORBIDDEN);
+      expect(await call(a["MANAGER"]!, "POST", `/users/${target.userId}/reset-password`, { temporaryPassword: "Temporaria#2026" })).toEqual(FORBIDDEN);
+      expect((await ok(a["OWNER"]!, "PUT", `/users/${target.userId}/roles`, { roles: [] })).roles).toEqual([]);
+      // Back to a plain employee: the manager manages it again.
+      await ok(a["MANAGER"]!, "PATCH", `/users/${target.userId}`, { name: "Funcionario comum" });
     });
 
     it("a branch-scoped role at a branch where the actor has no user.manage (no access) is 403", async () => {
@@ -448,9 +456,10 @@ describe("Users management API over HTTP (PostgreSQL, as erp_app)", () => {
       expect((await ok(a["MANAGER"]!, "POST", `/users/${operator.userId}/deactivate`)).status).toBe("DISABLED");
     });
 
-    it("the manager deactivates another manager (equal authority) but not the owner", async () => {
+    it("the manager deactivates neither another manager nor the owner; the owner deactivates the manager", async () => {
       const other = await actor(orgA, [{ role: "MANAGER" }], [orgA.branchId]);
-      expect((await ok(a["MANAGER"]!, "POST", `/users/${other.userId}/deactivate`)).status).toBe("DISABLED");
+      expect(await call(a["MANAGER"]!, "POST", `/users/${other.userId}/deactivate`)).toEqual(FORBIDDEN);
+      expect((await ok(a["OWNER"]!, "POST", `/users/${other.userId}/deactivate`)).status).toBe("DISABLED");
       expect(await call(a["MANAGER"]!, "POST", `/users/${a["OWNER"]!.userId}/deactivate`)).toEqual(FORBIDDEN);
     });
   });

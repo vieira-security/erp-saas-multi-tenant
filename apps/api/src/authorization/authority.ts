@@ -10,6 +10,22 @@ import { AuthorizationService, TENANT_SCOPE, branchScope, type AuthorizationScop
  * permissão, nunca nomes de role.
  */
 
+/**
+ * Gestão de funcionários (decisão de produto de 10/11: "gerente não cria nem promove ninguém a Proprietário/Gerente"):
+ * quem administra funcionários (`user.manage`) só pode mexer em OUTRO administrador, ou atribuir/remover uma role que
+ * dê `user.manage`, se também tiver `role.manage` no tenant. Com a matriz padrão, só o Proprietário. Não se aplica ao
+ * acesso a filiais (M3), que segue só a regra de permissões.
+ */
+export const ADMINISTRATOR_PERMISSION = "user.manage";
+export const ADMINISTRATOR_GUARD_PERMISSION = "role.manage";
+
+/** `true` se o ator não pode mexer em administradores e o conjunto `touched` dá poder de administrador. */
+export function touchesAdministratorWithoutGuard(actorTenant: ReadonlySet<string>, touched: Iterable<string>): boolean {
+  if (actorTenant.has(ADMINISTRATOR_GUARD_PERMISSION)) return false;
+  for (const code of touched) if (code === ADMINISTRATOR_PERMISSION) return true;
+  return false;
+}
+
 /** `true` se `required` tem alguma permissão fora de `actor`. */
 export function exceedsAuthority(actor: ReadonlySet<string>, required: Iterable<string>): boolean {
   for (const code of required) if (!actor.has(code)) return true;
@@ -57,18 +73,28 @@ export class AuthorityService {
    * 403 se o alvo tiver, em qualquer role ACTIVE de qualquer escopo, permissão que o ator não tem em `actorScope`.
    * Gestão de funcionários: escopo do tenant. Acesso a filial (M3): a filial alvo.
    */
-  async requireNoGreaterAuthority(actorUserId: string, targetUserId: string, actorScope: AuthorizationScope = TENANT_SCOPE): Promise<void> {
+  async requireNoGreaterAuthority(
+    actorUserId: string,
+    targetUserId: string,
+    actorScope: AuthorizationScope = TENANT_SCOPE,
+    options: { readonly guardAdministrators?: boolean } = {},
+  ): Promise<void> {
     const [actor, target] = await Promise.all([
       this.authorization.getEffectivePermissions(actorUserId, actorScope),
       this.permissionsHeldAnywhere(targetUserId),
     ]);
     if (exceedsAuthority(actor, target)) throw new PermissionDeniedError();
+    if (options.guardAdministrators) {
+      const actorTenant = actorScope === TENANT_SCOPE ? actor : await this.authorization.getEffectivePermissions(actorUserId, TENANT_SCOPE);
+      if (touchesAdministratorWithoutGuard(actorTenant, target)) throw new PermissionDeniedError();
+    }
   }
 
   /** 403 se alguma atribuição que entra ou sai tiver permissão que o ator não tem no escopo dela. */
   async requireRoleChangesAllowed(actorUserId: string, changes: readonly RoleChange[]): Promise<void> {
     if (changes.length === 0) return;
-    const scopes = [...new Set(changes.map((c) => c.branchId))];
+    // O tenant entra sempre: a guarda de administrador olha `role.manage` no tenant.
+    const scopes = [...new Set<string | null>([null, ...changes.map((c) => c.branchId)])];
     const resolved = new Map<string | null, ReadonlySet<string>>();
     await Promise.all(
       scopes.map(async (branchId) => {
@@ -76,5 +102,7 @@ export class AuthorityService {
       }),
     );
     if (forbiddenRoleChanges(changes, (branchId) => resolved.get(branchId) ?? new Set()).length > 0) throw new PermissionDeniedError();
+    const touched = changes.flatMap((change) => change.permissions);
+    if (touchesAdministratorWithoutGuard(resolved.get(null) ?? new Set(), touched)) throw new PermissionDeniedError();
   }
 }
