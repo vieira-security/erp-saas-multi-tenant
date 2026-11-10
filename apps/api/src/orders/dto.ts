@@ -63,5 +63,9 @@ export function toOrderDto(order: OrderWithDetail): OrderDto {
     cancelledAt: iso(order.cancelledAt),
     cancelledBy: order.canceller ? { userId: order.canceller.id, name: order.canceller.name } : null,
     cancelReason: order.cancelReason,
+    // M6 (contrato em cash.ts): ainda sem tabelas de pagamento; o backend do M6 preenche estes campos.
+    payments: [],
+    refunds: [],
+    changeGiven: "0.00",
   };
 }

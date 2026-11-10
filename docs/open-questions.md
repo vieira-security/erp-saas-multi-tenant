@@ -211,3 +211,15 @@ Contratos em `packages/contracts/src/orders.ts`.
 - Permissão própria da cozinha (start/ready/deliver hoje usam `order.create`): M7.
 - Pagamento e estorno (M6), fiscal (M9), idempotency key do PDV offline (#4).
 - `TRUNCATE` em `orders`/itens não tem trigger próprio (só a falta de privilégio de `erp_app` impede); avaliar guarda como a de `audit_logs`.
+
+## M6 — Caixa e pagamentos (decisões de produto de 09/11/2026)
+1. PIX e cartão por registro manual (maquininha/PIX da loja); integração PSP/TEF fica para depois. Dinheiro com troco.
+2. Pedido de balcão pago antes de confirmar: a confirmação recebe os pagamentos (split permitido) e exige soma = total recalculado.
+3. Um caixa por operador na filial; pagamentos caem no caixa aberto de quem confirma; sem caixa aberto não confirma.
+4. O operador fecha o próprio caixa (`cash.open` basta); `cash.close` fecha o de qualquer um. Matriz de roles inalterada.
+5. Fechamento com o valor esperado visível; qualquer diferença exige justificativa.
+6. Sangria e suprimento só com `cash.close` (OWNER/MANAGER) e motivo.
+7. Cancelar pedido pago gera estorno total, só com `order.cancel` e motivo, inclusive pedido entregue (muda a regra do M5).
+
+**Defaults técnicos do contrato (revisar):** estorno em dinheiro sai do caixa aberto de quem cancela; estorno de PIX/cartão é registrado como devolução manual na maquininha; quem não tem `cash.close` só vê os próprios caixas; até 10 pagamentos por pedido; sangria maior que o dinheiro esperado é recusada.
+Contratos em `packages/contracts/src/cash.ts` e mudanças em `orders.ts`.

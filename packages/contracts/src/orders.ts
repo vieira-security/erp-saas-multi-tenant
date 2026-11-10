@@ -1,4 +1,5 @@
 import type { PageQuery } from "./common.js";
+import type { PaymentDto, PaymentInput, RefundDto } from "./cash.js";
 import type { Money } from "./products.js";
 
 /**
@@ -10,15 +11,18 @@ import type { Money } from "./products.js";
  * - Número do pedido POR FILIAL, reiniciando todo dia (#1, #2...), no fuso da filial. Atribuído só na CONFIRMAÇÃO:
  *   rascunho descartado não consome número.
  * - Cancelamento: rascunho (EDITING) pode ser descartado por quem o criou; pedido confirmado só por quem tem
- *   `order.cancel` na filial (OWNER/MANAGER), com motivo obrigatório. Pedido DELIVERED não é cancelável no M5
- *   (estorno é do M6).
+ *   `order.cancel` na filial (OWNER/MANAGER), com motivo obrigatório. **M6:** pedido DELIVERED também pode ser
+ *   cancelado (com estorno total) por quem tem `order.cancel`.
  * - Sem descontos no M5: preço = preço do produto na filial + soma dos `priceDelta` das opções escolhidas.
  * - Filial ou empresa INACTIVE não abre nem confirma pedido (409 `branch_inactive`/`company_inactive`).
- * - Pagamento é separado do estado do pedido e fica para o M6.
+ * - **M6 (09/11/2026): o pedido é PAGO ANTES DE CONFIRMAR.** A confirmação recebe os pagamentos (`ConfirmOrderRequest`) e
+ *   só acontece se a soma bater com o total recalculado; os pagamentos caem no caixa aberto de quem confirma. Cancelar
+ *   pedido pago gera estorno total de todos os pagamentos (ver cash.ts).
  *
  * Estados:   EDITING ──confirm──▶ CONFIRMED ──start──▶ PREPARING ──ready──▶ READY ──deliver──▶ DELIVERED
  *               │                     │                    │                   │
- *               └──────────── cancel ─┴────────────────────┴───────────────────┴──▶ CANCELLED
+ *               └──────────── cancel ─┴────────────────────┴───────────────────┴─────────────┴──▶ CANCELLED
+ *                                                                                    (M6: DELIVERED também cancela)
  * Transição fora dessa ordem -> 409 `order_invalid_transition` (repetir a transição já feita também é 409).
  *
  * Itens são CÓPIAS (snapshot) do cardápio: nome, código, preços e opções ficam gravados no pedido. Alterar ou desativar o
@@ -34,16 +38,19 @@ import type { Money } from "./products.js";
  * GET  /branches/:branchId/orders/:orderId                 `order.read`   -> 200 OrderDto | 404
  * PUT  /branches/:branchId/orders/:orderId/items           `order.create` ReplaceOrderItemsRequest -> 200 OrderDto
  *                                                          Substitui TODOS os itens; só em EDITING (409 order_not_editable)
- * POST /branches/:branchId/orders/:orderId/confirm         `order.create` -> 200 OrderDto (CONFIRMED, com `number`)
+ * POST /branches/:branchId/orders/:orderId/confirm         `order.create` ConfirmOrderRequest -> 200 OrderDto (CONFIRMED,
+ *                                                          com `number` e `payments`)
  *                                                          409 order_empty | order_item_unavailable | branch_inactive |
- *                                                              company_inactive | order_invalid_transition
+ *                                                              company_inactive | order_invalid_transition |
+ *                                                              cash_session_required (M6) | payment_total_mismatch (M6)
  * POST /branches/:branchId/orders/:orderId/start           `order.create` -> 200 OrderDto (PREPARING)
  * POST /branches/:branchId/orders/:orderId/ready           `order.create` -> 200 OrderDto (READY)
  * POST /branches/:branchId/orders/:orderId/deliver         `order.create` -> 200 OrderDto (DELIVERED)
  * POST /branches/:branchId/orders/:orderId/cancel          CancelOrderRequest -> 200 OrderDto (CANCELLED)
  *        EDITING: quem criou (com `order.create`) OU quem tem `order.cancel`; motivo opcional.
- *        CONFIRMED/PREPARING/READY: `order.cancel` na filial; `reason` obrigatório (`validation_failed`/`required`).
- *        Sem permissão para o caso -> 403. DELIVERED/CANCELLED -> 409 order_invalid_transition.
+ *        CONFIRMED/PREPARING/READY/DELIVERED (M6): `order.cancel` na filial; `reason` obrigatório
+ *        (`validation_failed`/`required`); estorna todos os pagamentos. Estorno em dinheiro exige caixa aberto de quem
+ *        cancela (409 `cash_session_required`). Sem permissão para o caso -> 403. CANCELLED -> 409 order_invalid_transition.
  *
  * As transições start/ready/deliver usam `order.create` no M5 (a role KITCHEN só tem `order.read`). Permissão própria
  * da cozinha é decisão do M7 (Kitchen Display).
@@ -109,6 +116,22 @@ export interface OrderDto extends OrderSummaryDto {
   readonly cancelledAt: string | null;
   readonly cancelledBy: OrderActorDto | null;
   readonly cancelReason: string | null;
+  /** M6: pagamentos registrados na confirmação (vazio em EDITING). */
+  readonly payments: readonly PaymentDto[];
+  /** M6: estornos (um por pagamento) quando o pedido pago foi cancelado. */
+  readonly refunds: readonly RefundDto[];
+  /** M6: soma do troco dado em dinheiro. */
+  readonly changeGiven: Money;
+}
+
+/**
+ * M6: pagamento na confirmação. Lista vazia só quando o total é `"0.00"`. Soma dos `amount` ≠ total recalculado ->
+ * 409 `payment_total_mismatch` (o pedido continua EDITING; reenviar com o total devolvido em GET). Formato inválido ->
+ * 400 com caminho (`payments[1].receivedAmount`).
+ */
+export interface ConfirmOrderRequest {
+  /** 0–10 pagamentos (split). */
+  readonly payments: readonly PaymentInput[];
 }
 
 export interface OrderItemInput {
