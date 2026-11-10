@@ -128,6 +128,12 @@ Bloqueado = 403 `tenant_unavailable`. Sem modo somente leitura.
 - `DELIVERED`/`CANCELLED`: 409 `order_invalid_transition` (estorno é do M6).
 - Sem permissão para o caso: 403 `forbidden`. Nunca checa nome de role.
 
+**Caixa e estorno (M6)** — rotas de filial; mesma lógica de "a rota declara o mínimo e o service decide" quando depende do dono do recurso:
+- **Fechar caixa:** `POST .../cash-sessions/:id/close` declara `cash.read`; o `CashService` exige `cash.open` para o PRÓPRIO caixa e `cash.close` para o de outro operador (403). Ver caixa de outro operador sem `cash.close` = 404 (não revela existência); listar sem `cash.close` = só os próprios.
+- **Sangria e suprimento:** `cash.close` declarado na rota (OWNER/MANAGER); motivo obrigatório; sangria acima do dinheiro esperado = 409.
+- **Estorno:** cancelar pedido pago (inclusive DELIVERED) exige `order.cancel` na filial + motivo; um estorno total por pagamento; dinheiro sai do caixa aberto de QUEM CANCELA (sem caixa aberto = 409 e nada muda); PIX/cartão = devolução manual (sem caixa).
+- Pagamentos, estornos, movimentos e caixas fechados nunca são alterados nem apagados (privilégio + trigger). Matriz de roles inalterada.
+
 ### Roles padrão e matriz
 `TenantProvisioningService.provisionDefaultRoles()` (idempotente, seguro sob concorrência, nunca assume role customizada) aplica `DEFAULT_ROLE_PERMISSIONS`:
 

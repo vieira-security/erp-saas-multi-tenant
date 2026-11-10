@@ -43,3 +43,9 @@ campos e códigos de erro de cada módulo estão nos comentários dos próprios 
   `status` aceita lista separada por vírgula (`CONFIRMED,PREPARING`); `businessDate` = `YYYY-MM-DD` de calendário real.
 - **Corpo opcional** em `POST /branches/:branchId/orders` e `.../cancel`: ausente equivale a `{}`.
 
+## Convenções acrescentadas no M6
+- **Pagamentos aninhados:** `payments[1].receivedAmount` (`required` em CASH, `invalid_value` se menor que o valor ou em outro método).
+- **`Money` com sinal só em `difference`** e nos totais líquidos do caixa (`"-5.00"`); todo o resto é ≥ 0.
+- **`payment_total_mismatch`:** o pedido segue EDITING e o rascunho é atualizado com os preços vigentes; o `GET` do pedido devolve o
+  total a pagar (default técnico, ver open-questions).
+- **Caixa de outro operador:** `GET` = 404 sem `cash.close` (não revela existência); `close` = 403.
