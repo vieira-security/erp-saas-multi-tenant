@@ -45,6 +45,14 @@ GRANT SELECT, INSERT, DELETE ON order_items, order_item_options TO erp_app;
 -- Sem DELETE: o histórico de numeração fica.
 GRANT SELECT, INSERT, UPDATE ON branch_order_counters TO erp_app;
 
+-- M6, registros financeiros: append-only também por privilégio (independente dos triggers *_append_only): pagamentos e
+-- estornos gravados na confirmação/cancelamento, sangrias e suprimentos. Sem UPDATE, DELETE ou TRUNCATE.
+GRANT SELECT, INSERT ON payments, refunds, cash_movements TO erp_app;
+
+-- M6, caixa: aberto (INSERT) e fechado uma única vez (UPDATE, congelado depois pelo trigger cash_sessions_close_once).
+-- Sem DELETE nem TRUNCATE.
+GRANT SELECT, INSERT, UPDATE ON cash_sessions TO erp_app;
+
 -- Catálogo técnico global: mantido pelo deploy (seed como erp_migrator); somente leitura em runtime.
 GRANT SELECT ON permissions TO erp_app;
 
