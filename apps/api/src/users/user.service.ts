@@ -47,7 +47,7 @@ const byCode = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
  * `ARCHIVED` existe no banco mas não no contrato (`ROLE_STATUSES` = ACTIVE | INACTIVE). Role arquivada também não concede
  * permissão; sai como `INACTIVE` para a tela mostrar a atribuição sem afirmar que ela vale (DECISION REQUIRED no PR).
  */
-function toRoleStatus(status: DbRoleStatus): RoleStatus {
+export function toRoleStatus(status: DbRoleStatus): RoleStatus {
   return status === DbRoleStatus.ACTIVE ? "ACTIVE" : "INACTIVE";
 }
 
