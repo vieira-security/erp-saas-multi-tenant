@@ -15,11 +15,18 @@
  * POST /auth/password  Bearer (aceito mesmo com troca obrigatória) ChangePasswordRequest -> 204 (outras sessões revogadas)
  *                      403 invalid_current_password | 400 password_policy_violation
  *
+ * Corpo fora do formato em /auth/login e /auth/password (não-objeto, campo obrigatório ausente, valor não-string, campo
+ * desconhecido) -> 400 `{ error: "validation_failed", details: [{ field, issue }] }` (mesmo `ApiErrorResponse` das demais
+ * rotas; `issue` = `required` | `invalid_type` | `unknown_field`; `field = "body"` quando o corpo não é objeto). Os
+ * valores nunca são ecoados. Strings não são aparadas aqui: a senha vale como digitada; matrícula e código são normalizados
+ * pela API (fora do formato = 401 `invalid_credentials`, não 400).
+ *
  * Com `mustChangePassword: true`, toda rota de negócio responde 403 `password_change_required` até a troca de senha.
  * Qualquer rota com Bearer inválido/expirado responde 401 `unauthenticated`: chame `/auth/refresh` e repita uma vez.
  */
 
 export const AUTH_ERROR_CODES = [
+  "validation_failed",
   "invalid_credentials",
   "unauthenticated",
   "tenant_unavailable",

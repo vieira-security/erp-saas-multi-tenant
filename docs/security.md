@@ -56,6 +56,8 @@ sequenceDiagram
 | `POST /auth/password` | Bearer | troca da própria senha (aceita com `must_change_password`) |
 | `GET /health` | pública | liveness |
 
+Corpo fora do formato em `/auth/login` e `/auth/password` (não-objeto, campo ausente, não-string, campo desconhecido): 400 `{ error: "validation_failed", details: [{ field, issue }] }` (mesmo formato das demais rotas; valores nunca ecoados). JSON sintaticamente inválido é recusado antes, pelo parser do corpo (400 no formato padrão do Nest, em todas as rotas).
+
 Não existem endpoints administrativos (reset de senha, LOCKED/unlock, revogação de dispositivo): os serviços existem e os endpoints são **futuros**, protegidos por permissão (ex.: `user.manage`).
 
 ### Descoberta do tenant: código público de login
@@ -131,8 +133,17 @@ Bloqueado = 403 `tenant_unavailable`. Sem modo somente leitura.
 **Caixa e estorno (M6)** — rotas de filial; mesma lógica de "a rota declara o mínimo e o service decide" quando depende do dono do recurso:
 - **Fechar caixa:** `POST .../cash-sessions/:id/close` declara `cash.read`; o `CashService` exige `cash.open` para o PRÓPRIO caixa e `cash.close` para o de outro operador (403). Ver caixa de outro operador sem `cash.close` = 404 (não revela existência); listar sem `cash.close` = só os próprios.
 - **Sangria e suprimento:** `cash.close` declarado na rota (OWNER/MANAGER); motivo obrigatório; sangria acima do dinheiro esperado = 409.
-- **Estorno:** cancelar pedido pago (inclusive DELIVERED) exige `order.cancel` na filial + motivo; um estorno total por pagamento; dinheiro sai do caixa aberto de QUEM CANCELA (sem caixa aberto = 409 e nada muda); PIX/cartão = devolução manual (sem caixa).
+- **Estorno:** cancelar pedido pago (inclusive DELIVERED) exige `order.cancel` na filial + motivo; um estorno total por pagamento; dinheiro sai do caixa aberto de QUEM CANCELA (sem caixa aberto = 409 `cash_session_required`; sem dinheiro esperado suficiente nesse caixa = 409 `insufficient_cash`, como a sangria; em ambos nada muda); PIX/cartão = devolução manual (sem caixa).
 - Pagamentos, estornos, movimentos e caixas fechados nunca são alterados nem apagados (privilégio + trigger). Matriz de roles inalterada.
+
+### Quem sou eu: `GET /me` e permissões efetivas por filial (KAN-52)
+- `GET /me` exige só autenticação (sem permissão específica); com `must_change_password` responde 403 `password_change_required` como as demais rotas de negócio (sem exceção). Usuário e organização vêm do AuthContext/TenantContext, nunca de parâmetro; `tenantId` não aparece na resposta (`MeDto`, `packages/contracts/src/me.ts`).
+- `permissions` = permissões efetivas no escopo do **tenant** (só roles tenant-wide). `branches` = **todas** as filiais com `UserBranchAccess` (qualquer status, ordem de criação), cada uma com `operable` (filial e empresa ACTIVE) e as permissões efetivas **naquela filial** (roles tenant-wide + roles da filial). Filial sem acesso não aparece; role escopada a uma filial só aparece nela; role INACTIVE/ARCHIVED e usuário não-ACTIVE não contam. Listas ordenadas por código (comparação em código, não collation).
+- Implementação: `MeService` faz 4 leituras e resolve em memória com `resolveEffectivePermissions` (`apps/api/src/authorization/effective-permissions.ts`), a mesma regra do `AuthorizationService` (sem query por filial). Um teste de integração compara as duas para vários usuários e filiais.
+- É só para a interface montar menus: cada rota continua conferindo a permissão no backend (403). Permissões nunca vão no JWT.
+
+### Seed de desenvolvimento (KAN-51)
+`npm run db:seed:dev` cria o tenant demo `DEMO` (docs/dev-setup.md). Recusa rodar com `NODE_ENV=production`, sem `ALLOW_DEV_SEED=true` ou sem `DEV_SEED_PASSWORD`; a senha nunca está no código, vira hash Argon2id via `PasswordHasher` e nunca é logada. Roda como `erp_migrator`, nunca como `erp_app`. Idempotente por chave natural; não altera nada existente.
 
 ### Roles padrão e matriz
 `TenantProvisioningService.provisionDefaultRoles()` (idempotente, seguro sob concorrência, nunca assume role customizada) aplica `DEFAULT_ROLE_PERMISSIONS`:

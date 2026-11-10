@@ -41,7 +41,7 @@ O `docker-compose.yml` da raiz sobe dois servidores PostgreSQL 17 (UTF8), public
 
 | Serviço | Porta | Uso |
 |---|---|---|
-| `postgres-dev` | 5432 | Desenvolvimento local da API; dados persistem no volume `erp_postgres_dev`. Para rodar a API, aplique os scripts 01/02/03 e as migrations conforme a ordem acima. |
+| `postgres-dev` | 5432 | Desenvolvimento local da API; dados persistem no volume `erp_postgres_dev`. Passo a passo completo (scripts 01/02/03, migrations, `db:seed`, `db:seed:dev` e login no frontend): [docs/dev-setup.md](../../docs/dev-setup.md). |
 | `postgres-test` | 5433 | Servidor **dedicado** aos testes de integração; roda em `tmpfs` e é zerado a cada subida. Não use para desenvolvimento. |
 
 1. Copie `.env.example` para `.env` na raiz e preencha `POSTGRES_DEV_PASSWORD` e `POSTGRES_TEST_PASSWORD` com valores aleatórios.

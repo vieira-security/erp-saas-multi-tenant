@@ -92,8 +92,17 @@ describe("password lifecycle (PostgreSQL, as erp_app)", () => {
     expect(await change(accessToken, { currentPassword: DEFAULT_PASSWORD, newPassword: "x".repeat(AUTH_SECURITY_POLICY.password.maxBytes + 1) })).toMatchObject({
       status: 400,
     });
-    expect((await change(accessToken, { newPassword: "Outra-Senha-789" })).status).toBe(400);
+    expect(await change(accessToken, { newPassword: "Outra-Senha-789" })).toEqual({
+      status: 400,
+      body: { error: "validation_failed", details: [{ field: "currentPassword", issue: "required" }] },
+    });
+    expect(await change(accessToken, [DEFAULT_PASSWORD])).toEqual({ status: 400, body: { error: "validation_failed", details: [{ field: "body", issue: "invalid_type" }] } });
+    // Malformed JSON never reaches the controller: rejected by the JSON body parser (still 400).
     expect((await change(accessToken, "not-an-object")).status).toBe(400);
+    expect(await change(accessToken, { currentPassword: DEFAULT_PASSWORD, newPassword: "Outra-Senha-789", extra: true })).toEqual({
+      status: 400,
+      body: { error: "validation_failed", details: [{ field: "extra", issue: "unknown_field" }] },
+    });
     await login(orgA, user.employeeNumber); // unchanged
   });
 
