@@ -43,3 +43,13 @@ campos e códigos de erro de cada módulo estão nos comentários dos próprios 
   `status` aceita lista separada por vírgula (`CONFIRMED,PREPARING`); `businessDate` = `YYYY-MM-DD` de calendário real.
 - **Corpo opcional** em `POST /branches/:branchId/orders` e `.../cancel`: ausente equivale a `{}`.
 
+
+## `GET /me` e ajuste do Auth (KAN-52)
+- `GET /me` (contrato `MeDto` em `packages/contracts/src/me.ts`) fica no módulo `organization`, no mesmo `MeController` de
+  `GET /me/branches` (dados do próprio usuário; só autenticação). `/me/branches` continua com o significado do M3 (só
+  filiais operáveis); `/me` lista todas as filiais com acesso, com `operable` e permissões por filial.
+- `PERMISSION_CODES` (contrato) é igual ao catálogo do seed, na mesma ordem: um teste unitário falha se o catálogo mudar
+  sem atualizar o contrato.
+- `POST /auth/login` e `POST /auth/password`: corpo inválido agora responde no formato padrão
+  `400 { error: "validation_failed", details }` (antes, `{ statusCode, message: "invalid_request", error }` do Nest).
+  Campo desconhecido passa a ser `unknown_field`, como nas demais rotas. Nenhuma outra resposta do Auth mudou.
