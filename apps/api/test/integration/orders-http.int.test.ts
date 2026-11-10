@@ -75,6 +75,23 @@ describe("M5 orders APIs over HTTP (PostgreSQL, as erp_app)", () => {
   }
   type Client = ReturnType<typeof client>;
 
+  /** M6: confirming needs an OPEN cash session of the confirmer in the branch (opened once; 409 = already open/inactive). */
+  async function ensureCash(as: Client, base: string): Promise<void> {
+    const res = await as.post(base.replace(/\/orders$/, "/cash-sessions"), { openingAmount: "0.00" });
+    if (res.status !== 201 && res.status !== 409) throw new Error(`cannot open the cash session: ${JSON.stringify(res)}`);
+  }
+
+  /** M6: the order is paid before confirming — pays `total` (default: the order's current total) by PIX. */
+  async function payAndConfirm(as: Client, base: string, orderId: string, total?: string) {
+    await ensureCash(as, base);
+    const amount = total ?? (((await as.get(`${base}/${orderId}`)).body as Partial<OrderDto>).total ?? "1.00");
+    return as.post(`${base}/${orderId}/confirm`, { payments: amount === "0.00" ? [] : [{ method: "PIX", amount }] });
+  }
+
+  /** A state action; `confirm` carries the payment body. */
+  const act = (as: Client, base: string, orderId: string, action: string) =>
+    action === "confirm" ? payAndConfirm(as, base, orderId) : as.post(`${base}/${orderId}/${action}`);
+
   /**
    * Isolated shop: tenant with MAIN and OTHER branches, actors (owner/manager reach both; the rest only MAIN) and a
    * catalog created through the M4 API: burger (required size + optional extras), candy, drink, and a combo linking the drink.
@@ -127,7 +144,7 @@ describe("M5 orders APIs over HTTP (PostgreSQL, as erp_app)", () => {
 
   async function confirmed(s: Shop, as: Client = client(s.actors.attendant), base = s.main): Promise<OrderDto> {
     const order = await draft(s, [burgerG(s)], as, base);
-    const res = await as.post(`${base}/${order.id}/confirm`);
+    const res = await payAndConfirm(as, base, order.id);
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     return res.body as OrderDto;
   }
@@ -147,7 +164,7 @@ describe("M5 orders APIs over HTTP (PostgreSQL, as erp_app)", () => {
         const as = client(s.actors[role]);
         const order = await draft(s, [burgerG(s)], as);
         expect((await as.put(`${s.main}/${order.id}/items`, { items: [burgerG(s, 2)] })).status).toBe(200);
-        for (const action of ["confirm", "start", "ready", "deliver"]) expect((await as.post(`${s.main}/${order.id}/${action}`)).status, `${role} ${action}`).toBe(200);
+        for (const action of ["confirm", "start", "ready", "deliver"]) expect((await act(as, s.main, order.id, action)).status, `${role} ${action}`).toBe(200);
         expect((await as.get(`${s.main}/${order.id}`)).status).toBe(200);
         expect((await as.get(s.main)).status).toBe(200);
       }
@@ -330,7 +347,7 @@ describe("M5 orders APIs over HTTP (PostgreSQL, as erp_app)", () => {
       expect(replaced).toMatchObject({ status: 200, body: { total: "0.50", itemCount: 1 } });
       expect((replaced.body as OrderDto).items.map((i) => i.productName)).toEqual(["Bala"]);
       expect((await as.put(`${s.main}/${order.id}/items`, { items: [] })).body).toMatchObject({ total: "0.00", items: [] });
-      expect(await as.post(`${s.main}/${order.id}/confirm`)).toEqual({ status: 409, body: { error: "order_empty" } });
+      expect(await payAndConfirm(as, s.main, order.id)).toEqual({ status: 409, body: { error: "order_empty" } });
       expect((await as.put(`${s.main}/${order.id}/items`, {})).body).toEqual({ error: "validation_failed", details: [{ field: "items", issue: "required" }] });
       const done = await confirmed(s);
       expect(await as.put(`${s.main}/${done.id}/items`, { items: [] })).toEqual({ status: 409, body: { error: "order_not_editable" } });
@@ -345,7 +362,7 @@ describe("M5 orders APIs over HTTP (PostgreSQL, as erp_app)", () => {
       for (const id of [otherBranchOrder.id, foreignOrder.id, randomUUID(), "not-a-uuid"]) {
         expect(await manager.get(`${s.main}/${id}`), id).toEqual(NOT_FOUND);
         expect(await manager.put(`${s.main}/${id}/items`, { items: [] })).toEqual(NOT_FOUND);
-        for (const action of ["confirm", "start", "ready", "deliver"]) expect(await manager.post(`${s.main}/${id}/${action}`)).toEqual(NOT_FOUND);
+        for (const action of ["confirm", "start", "ready", "deliver"]) expect(await act(manager, s.main, id, action)).toEqual(NOT_FOUND);
         expect(await manager.post(`${s.main}/${id}/cancel`, { reason: "teste" })).toEqual(NOT_FOUND);
       }
       expect(((await manager.get(s.main)).body as Page<OrderSummaryDto>).items.map((o) => o.id)).not.toContain(otherBranchOrder.id);
@@ -360,12 +377,12 @@ describe("M5 orders APIs over HTTP (PostgreSQL, as erp_app)", () => {
       const pending = await draft(s);
       await owner.branch.update({ where: { id: s.org.branchId }, data: { status: BranchStatus.INACTIVE } });
       expect(await as.post(s.main, {})).toEqual({ status: 409, body: { error: "branch_inactive" } });
-      expect(await as.post(`${s.main}/${pending.id}/confirm`)).toEqual({ status: 409, body: { error: "branch_inactive" } });
+      expect(await payAndConfirm(as, s.main, pending.id)).toEqual({ status: 409, body: { error: "branch_inactive" } });
       expect((await as.get(`/branches/${s.org.branchId}/menu`)).status).toBe(200);
       await owner.branch.update({ where: { id: s.org.branchId }, data: { status: BranchStatus.ACTIVE } });
       await owner.company.update({ where: { id: s.org.companyId }, data: { status: CompanyStatus.INACTIVE } });
       expect(await as.post(s.main, {})).toEqual({ status: 409, body: { error: "company_inactive" } });
-      expect(await as.post(`${s.main}/${pending.id}/confirm`)).toEqual({ status: 409, body: { error: "company_inactive" } });
+      expect(await payAndConfirm(as, s.main, pending.id)).toEqual({ status: 409, body: { error: "company_inactive" } });
       expect((await owner.order.findUniqueOrThrow({ where: { id: pending.id } })).status).toBe("EDITING");
     });
   });
@@ -378,10 +395,10 @@ describe("M5 orders APIs over HTTP (PostgreSQL, as erp_app)", () => {
       expect(order.total).toBe("58.00");
       await s.api.put(`/branches/${s.org.branchId}/product-settings/${s.burger.id}`, { available: true, price: "26.00" });
       clock.fixed = new Date("2026-11-09T15:00:00.000Z");
-      const res = await as.post(`${s.main}/${order.id}/confirm`);
+      const res = await payAndConfirm(as, s.main, order.id, "60.00");
       expect(res).toMatchObject({ status: 200, body: { status: "CONFIRMED", number: 1, businessDate: "2026-11-09", total: "60.00", confirmedAt: "2026-11-09T15:00:00.000Z" } });
       expect((res.body as OrderDto).items[0]).toMatchObject({ unitPrice: "30.00", lineTotal: "60.00" });
-      expect(await as.post(`${s.main}/${order.id}/confirm`)).toEqual(INVALID_TRANSITION);
+      expect(await payAndConfirm(as, s.main, order.id)).toEqual(INVALID_TRANSITION);
     });
 
     it("fails with 409 order_item_unavailable + details when an item stopped being sellable; the draft is kept", async () => {
@@ -392,7 +409,7 @@ describe("M5 orders APIs over HTTP (PostgreSQL, as erp_app)", () => {
       // Replacing the burger groups deletes the chosen option (M4 block replacement).
       await s.api.put(`/products/${s.burger.id}/option-groups`, { optionGroups: [{ name: "Tamanho", minChoices: 1, maxChoices: 1, options: [{ name: "Único" }] }] });
       await s.api.put(`/branches/${s.org.branchId}/product-settings/${s.drink.id}`, { available: false, price: null });
-      expect(await as.post(`${s.main}/${order.id}/confirm`)).toEqual({
+      expect(await payAndConfirm(as, s.main, order.id)).toEqual({
         status: 409,
         body: {
           error: "order_item_unavailable",
@@ -446,10 +463,15 @@ describe("M5 orders APIs over HTTP (PostgreSQL, as erp_app)", () => {
       expect(await as.post(`${s.main}/${order.id}/deliver`)).toEqual(INVALID_TRANSITION);
       expect((await as.post(`${s.main}/${order.id}/start`)).status).toBe(200);
       expect(await as.post(`${s.main}/${order.id}/start`)).toEqual(INVALID_TRANSITION);
-      expect(await as.post(`${s.main}/${order.id}/confirm`)).toEqual(INVALID_TRANSITION);
+      expect(await payAndConfirm(as, s.main, order.id)).toEqual(INVALID_TRANSITION);
       await as.post(`${s.main}/${order.id}/ready`);
       await as.post(`${s.main}/${order.id}/deliver`);
-      for (const action of ["confirm", "start", "ready", "deliver"]) expect(await as.post(`${s.main}/${order.id}/${action}`)).toEqual(INVALID_TRANSITION);
+      for (const action of ["confirm", "start", "ready", "deliver"]) expect(await act(as, s.main, order.id, action)).toEqual(INVALID_TRANSITION);
+      // M6: DELIVERED is cancellable with order.cancel + reason (full refund of the PIX payment, no cash session needed).
+      expect(await client(s.actors.manager).post(`${s.main}/${order.id}/cancel`, { reason: "estorno" })).toMatchObject({
+        status: 200,
+        body: { status: "CANCELLED", refunds: [{ method: "PIX", amount: order.total, cashSessionId: null }] },
+      });
       expect(await client(s.actors.manager).post(`${s.main}/${order.id}/cancel`, { reason: "estorno" })).toEqual(INVALID_TRANSITION);
     });
   });
@@ -562,7 +584,7 @@ describe("M5 orders APIs over HTTP (PostgreSQL, as erp_app)", () => {
       const order = await draft(s, Array.from({ length: 100 }, () => ({ productId: s.candy.id, quantity: 3 })));
       expect(order.items[0]).toMatchObject({ unitPrice: "0.10", lineTotal: "0.30" });
       expect(order.total).toBe("30.00");
-      const confirmedOrder = (await client(s.actors.attendant).post(`${s.main}/${order.id}/confirm`)).body as OrderDto;
+      const confirmedOrder = (await payAndConfirm(client(s.actors.attendant), s.main, order.id)).body as OrderDto;
       expect(confirmedOrder.total).toBe("30.00");
       const [row] = await owner.$queryRaw<{ sum: string }[]>`SELECT sum(line_total)::text AS sum FROM order_items WHERE order_id = ${order.id}::uuid`;
       expect(row?.sum).toBe("30.00");
@@ -574,7 +596,8 @@ describe("M5 orders APIs over HTTP (PostgreSQL, as erp_app)", () => {
       const s = await shop("Corrida números");
       const as = client(s.actors.attendant);
       const drafts = await Promise.all(Array.from({ length: 20 }, () => draft(s, [{ productId: s.candy.id, quantity: 1 }])));
-      const results = await Promise.all(drafts.map((d) => as.post(`${s.main}/${d.id}/confirm`)));
+      await ensureCash(as, s.main);
+      const results = await Promise.all(drafts.map((d) => as.post(`${s.main}/${d.id}/confirm`, { payments: [{ method: "PIX", amount: d.total }] })));
       expect(results.map((r) => r.status)).toEqual(Array(20).fill(200));
       expect(results.map((r) => (r.body as OrderDto).number).sort((a, b) => a! - b!)).toEqual(Array.from({ length: 20 }, (_, i) => i + 1));
     });
@@ -582,9 +605,11 @@ describe("M5 orders APIs over HTTP (PostgreSQL, as erp_app)", () => {
     it("confirming the same order twice in parallel: one 200, one 409", async () => {
       const s = await shop("Corrida mesmo pedido");
       const as = client(s.actors.attendant);
+      await ensureCash(as, s.main);
       for (let round = 0; round < 5; round++) {
         const order = await draft(s);
-        const results = await Promise.all([as.post(`${s.main}/${order.id}/confirm`), as.post(`${s.main}/${order.id}/confirm`)]);
+        const pay = { payments: [{ method: "PIX", amount: order.total }] };
+        const results = await Promise.all([as.post(`${s.main}/${order.id}/confirm`, pay), as.post(`${s.main}/${order.id}/confirm`, pay)]);
         expect(results.map((r) => r.status).sort()).toEqual([200, 409]);
       }
       expect((await owner.branchOrderCounter.findMany({ where: { branchId: s.org.branchId } })).map((c) => c.lastNumber)).toEqual([5]);
@@ -593,6 +618,7 @@ describe("M5 orders APIs over HTTP (PostgreSQL, as erp_app)", () => {
     it("a confirmation waits for a pending branch/company deactivation and then fails — never confirms after it", async () => {
       const s = await shop("Corrida desativação");
       const as = client(s.actors.attendant);
+      await ensureCash(as, s.main);
       for (const [target, code] of [["branch", "branch_inactive"], ["company", "company_inactive"]] as const) {
         const order = await draft(s);
         let settled = false;
@@ -601,7 +627,7 @@ describe("M5 orders APIs over HTTP (PostgreSQL, as erp_app)", () => {
           async (tx) => {
             if (target === "branch") await tx.branch.update({ where: { id: s.org.branchId }, data: { status: BranchStatus.INACTIVE } });
             else await tx.company.update({ where: { id: s.org.companyId }, data: { status: CompanyStatus.INACTIVE } });
-            confirmation = as.post(`${s.main}/${order.id}/confirm`).finally(() => (settled = true));
+            confirmation = as.post(`${s.main}/${order.id}/confirm`, { payments: [{ method: "PIX", amount: order.total }] }).finally(() => (settled = true));
             await new Promise((resolve) => setTimeout(resolve, 400));
             expect(settled, `${target}: confirmation must wait for the deactivation`).toBe(false);
           },
@@ -616,9 +642,10 @@ describe("M5 orders APIs over HTTP (PostgreSQL, as erp_app)", () => {
     it("cancel × confirm in parallel always ends in a coherent state", async () => {
       const s = await shop("Corrida cancelar");
       const manager = client(s.actors.manager);
+      await ensureCash(manager, s.main);
       for (let round = 0; round < 6; round++) {
         const order = await draft(s, [burgerG(s)], manager);
-        const [confirm, cancel] = await Promise.all([manager.post(`${s.main}/${order.id}/confirm`), manager.post(`${s.main}/${order.id}/cancel`, { reason: "desistiu" })]);
+        const [confirm, cancel] = await Promise.all([manager.post(`${s.main}/${order.id}/confirm`, { payments: [{ method: "PIX", amount: order.total }] }), manager.post(`${s.main}/${order.id}/cancel`, { reason: "desistiu" })]);
         const final = await owner.order.findUniqueOrThrow({ where: { id: order.id } });
         expect(cancel.status, JSON.stringify(cancel.body)).toBe(200);
         expect(final.status).toBe("CANCELLED");
