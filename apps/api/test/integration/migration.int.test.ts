@@ -41,6 +41,7 @@ describe("migrations on a clean PostgreSQL database", () => {
       { name: "20261012010000_enforce_employee_number_format", finished: true, rolledBack: false },
       { name: "20261107000000_allow_alphanumeric_cnpj", finished: true, rolledBack: false },
       { name: "20261108000000_create_product_catalog", finished: true, rolledBack: false },
+      { name: "20261109000000_create_orders", finished: true, rolledBack: false },
     ]);
   });
 
@@ -51,10 +52,14 @@ describe("migrations on a clean PostgreSQL database", () => {
     expect(tables.map((t) => t.name)).toEqual([
       "_prisma_migrations",
       "audit_logs",
+      "branch_order_counters",
       "branch_product_settings",
       "branches",
       "companies",
       "devices",
+      "order_item_options",
+      "order_items",
+      "orders",
       "permissions",
       "product_categories",
       "product_option_groups",
@@ -729,14 +734,26 @@ describe("migrations on a clean PostgreSQL database", () => {
       SELECT c.relname::text AS "table", t.tgname::text AS name
       FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace
       WHERE n.nspname = 'public' AND NOT t.tgisinternal ORDER BY c.relname, t.tgname`;
-    expect(functions.map((f) => f.name)).toEqual(["forbid_audit_log_mutation", "forbid_tenant_id_change"]);
+    expect(functions.map((f) => f.name)).toEqual([
+      "forbid_audit_log_mutation",
+      "forbid_order_line_change_unless_editing",
+      "forbid_order_mutation_after_confirmation",
+      "forbid_tenant_id_change",
+    ]);
     expect(triggers).toEqual([
       { table: "audit_logs", name: "audit_logs_append_only" },
       { table: "audit_logs", name: "audit_logs_no_truncate" },
+      { table: "branch_order_counters", name: "branch_order_counters_tenant_id_immutable" },
       { table: "branch_product_settings", name: "branch_product_settings_tenant_id_immutable" },
       { table: "branches", name: "branches_tenant_id_immutable" },
       { table: "companies", name: "companies_tenant_id_immutable" },
       { table: "devices", name: "devices_tenant_id_immutable" },
+      { table: "order_item_options", name: "order_item_options_editing_only" },
+      { table: "order_item_options", name: "order_item_options_tenant_id_immutable" },
+      { table: "order_items", name: "order_items_editing_only" },
+      { table: "order_items", name: "order_items_tenant_id_immutable" },
+      { table: "orders", name: "orders_immutable_after_confirmation" },
+      { table: "orders", name: "orders_tenant_id_immutable" },
       { table: "product_categories", name: "product_categories_tenant_id_immutable" },
       { table: "product_option_groups", name: "product_option_groups_tenant_id_immutable" },
       { table: "product_options", name: "product_options_tenant_id_immutable" },

@@ -89,6 +89,7 @@ Cada módulo vive em `apps/api/src/<modulo>` e expõe apenas uma API pública. *
 | `tenants` | Ciclo de vida do tenant (cliente SaaS). Hoje: provisionamento idempotente das roles padrão (M2.11). |
 | `organization` | M3: aplicação/HTTP de organização (o próprio tenant), companies, branches e acesso de usuários a filiais (`UserBranchAccess`); validação de CNPJ, timezone IANA e código de filial. Agrupa o que antes estava previsto como `companies`/`branches` porque as regras cruzam as duas entidades (raiz do CNPJ, filial ativa só sob empresa ativa). `companies/company.repository.ts` (M2.1) continua sendo o repository de Company. Contratos em `packages/contracts`, convenções em [api.md](api.md). |
 | `products` | M4: categorias, produtos (cardápio único por tenant), grupos de opções (variação/adicional/combo, substituídos em bloco), ajustes por filial (disponibilidade/preço) e cardápio da filial para o PDV (`GET /branches/:branchId/menu`, montado em memória por função pura). Catálogo em escopo de tenant (`product.read`/`product.manage`); rotas `/branches/:branchId/...` em escopo de filial. Regras de combo protegidas por trava de linhas (`product-lock.ts`). Sem campos fiscais (M9) nem imagens. |
+| `orders` | M5: pedidos de balcão por filial — rascunho, itens validados e precificados com o cardápio da filial do M4 (`BranchProductService.menu`, sem duplicar regras), confirmação com número do dia no fuso da filial (contador atômico), preparo/pronto/entrega e cancelamento. Todas as rotas em escopo de filial. Relógio injetável (`ClockModule`/`CLOCK`) para dia de operação e timestamps de estado. Imutabilidade de venda também no banco. Sem pagamento (M6) nem fiscal (M9). |
 | `users` | Funcionários, matrícula (única por tenant). O vínculo com filiais é exposto pelo módulo `organization` (M3). |
 | `roles` | Papéis. |
 | `permissions` | Permissões e verificação de acesso. |
@@ -96,7 +97,7 @@ Cada módulo vive em `apps/api/src/<modulo>` e expõe apenas uma API pública. *
 | `audit` | Trilha de auditoria (não apagável fisicamente). |
 
 ### Posteriores
-`orders`, `payments`, `cash-register`, `printing`, `offline-sync`, `fiscal`, `subscriptions`, `admin`.
+`payments`, `cash-register`, `printing`, `offline-sync`, `fiscal`, `subscriptions`, `admin`.
 
 Fronteiras detalhadas (ex.: roles x permissions; orders x payments x cash-register): **TBD**, definidas antes de cada módulo.
 
@@ -111,9 +112,9 @@ flowchart TD
     devices
     audit
     products
+    orders --> products
   end
   subgraph Posteriores
-    orders --> products
     orders --> payments --> cash-register
     orders --> printing
     orders --> fiscal

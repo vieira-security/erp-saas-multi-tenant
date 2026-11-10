@@ -122,6 +122,12 @@ Bloqueado = 403 `tenant_unavailable`. Sem modo somente leitura.
 - **Escopo:** `tenant` = só roles tenant-wide. `branch` = roles tenant-wide + roles da filial, **somente com `UserBranchAccess` àquela filial** (role = O QUE; acesso = ONDE), mesmo para role tenant-wide.
 - `@RequirePermissions(...)` / `@RequireBranchPermissions("branchId", ...)`: todas as permissões exigidas; classe e método valem juntos; código inexistente nunca concede; 401 sem autenticação, 403 sem permissão. Controllers usam códigos de permissão, nunca nomes de role.
 
+**Exceção documentada ao padrão declarativo (M5, cancelamento de pedido):** `POST /branches/:branchId/orders/:orderId/cancel` declara só o mínimo `@RequireBranchPermissions("branchId", "order.read")` porque quem pode cancelar depende do estado do pedido e de quem o criou. O `OrderService`, com o pedido travado, decide com `AuthorizationService.getEffectivePermissions(ator, branchScope(branchId))` (escopo da filial do pedido, já validada na rota) + `orders.created_by`:
+- `EDITING`: quem criou o rascunho (com `order.create` na filial) **ou** quem tem `order.cancel` na filial; motivo opcional.
+- `CONFIRMED`/`PREPARING`/`READY`: só `order.cancel` na filial (OWNER/MANAGER na matriz padrão); motivo obrigatório (3–200).
+- `DELIVERED`/`CANCELLED`: 409 `order_invalid_transition` (estorno é do M6).
+- Sem permissão para o caso: 403 `forbidden`. Nunca checa nome de role.
+
 ### Roles padrão e matriz
 `TenantProvisioningService.provisionDefaultRoles()` (idempotente, seguro sob concorrência, nunca assume role customizada) aplica `DEFAULT_ROLE_PERMISSIONS`:
 

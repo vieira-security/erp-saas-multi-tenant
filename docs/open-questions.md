@@ -196,3 +196,18 @@ Contratos em `packages/contracts/src/products.ts`.
 
 **Defaults técnicos do contrato (revisar):** transições de preparo/pronto/entrega usam `order.create` (KITCHEN só tem `order.read`; permissão própria da cozinha fica para o M7); itens são cópias do cardápio e preços são recalculados na confirmação; até 100 itens, quantidade 1–99, observação até 140 caracteres.
 Contratos em `packages/contracts/src/orders.ts`.
+
+**Implementado (backend):** migration `20261109000000_create_orders` (4 tabelas, triggers de imutabilidade de venda; ver [database.md](database.md)); grants em `03-runtime-grants.sql`; módulo `orders` com todas as rotas do contrato.
+
+**Defaults técnicos do M5 (revisar com o produto):**
+1. Total acima de `numeric(12,2)` = 400 `validation_failed` em `items` (`invalid_value`), também na confirmação (sem código próprio no contrato).
+2. Cancelamento de pedido confirmado sem permissão é checado ANTES do motivo: atendente sem `order.cancel` recebe 403 mesmo sem motivo.
+3. Substituir itens não exige filial/empresa ACTIVE (só abrir e confirmar exigem, conforme a decisão); o rascunho de filial desativada fica parado até reativar ou cancelar.
+4. Validar/confirmar itens monta o cardápio inteiro da filial (mesma regra do `GET /menu`): simples e sem duplicação; para catálogos muito grandes, otimizar depois carregando só os produtos do pedido.
+5. `created_at` vem do banco; o relógio injetável cobre `business_date` e os timestamps de estado.
+
+**Pendente / fora do M5:**
+- Auditoria (`audit_logs`) de criação, confirmação e cancelamento: catálogo de ações ainda em aberto (#8); nada é gravado.
+- Permissão própria da cozinha (start/ready/deliver hoje usam `order.create`): M7.
+- Pagamento e estorno (M6), fiscal (M9), idempotency key do PDV offline (#4).
+- `TRUNCATE` em `orders`/itens não tem trigger próprio (só a falta de privilégio de `erp_app` impede); avaliar guarda como a de `audit_logs`.

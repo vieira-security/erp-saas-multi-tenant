@@ -33,3 +33,13 @@ campos e códigos de erro de cada módulo estão nos comentários dos próprios 
 - **Escopo de filial na URL** (`/branches/:branchId/...`): sem acesso à filial, filial de outro tenant ou inexistente = 403
   `forbidden` (o guard decide antes de qualquer consulta ao recurso); recursos do tenant fora da filial seguem 404.
 - **Busca textual** (`q`): "contém", sem diferenciar maiúsculas; `%`, `_` e `\` são literais (sem curingas).
+
+## Convenções acrescentadas no M5
+- **`details` também em 409:** `order_item_unavailable` traz os mesmos `details` da validação dos itens
+  (`items[2].productId` `unavailable`, `items[2].optionIds` `invalid_choices`).
+- **Total acima de `numeric(12,2)`** (`"9999999999.99"`): 400 `validation_failed` com `{ "field": "items", "issue": "invalid_value" }`,
+  ao montar/substituir itens e na confirmação (o contrato não tem código próprio).
+- **Listagem de pedidos:** mais recentes primeiro (`createdAt` desc, `id` desc), exceção à ordem padrão prevista no contrato;
+  `status` aceita lista separada por vírgula (`CONFIRMED,PREPARING`); `businessDate` = `YYYY-MM-DD` de calendário real.
+- **Corpo opcional** em `POST /branches/:branchId/orders` e `.../cancel`: ausente equivale a `{}`.
+

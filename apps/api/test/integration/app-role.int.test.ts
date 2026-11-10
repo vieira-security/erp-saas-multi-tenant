@@ -236,13 +236,18 @@ describe("runtime role erp_app (PostgreSQL, logged in as erp_app)", () => {
         SELECT count(*) FILTER (WHERE tgenabled = 'O')::int AS enabled, count(*)::int AS total,
                count(*) FILTER (WHERE tgname = 'probe')::int AS probes
         FROM pg_trigger WHERE NOT tgisinternal`;
-      expect(row).toEqual({ enabled: 16, total: 16, probes: 0 });
+      expect(row).toEqual({ enabled: 23, total: 23, probes: 0 });
       const [replication] = await app.$queryRaw<{ value: string }[]>`SELECT current_setting('session_replication_role') AS value`;
       expect(replication?.value).toBe("origin");
       const functions = await owner.$queryRaw<{ name: string; body: string }[]>`
         SELECT p.proname::text AS name, p.prosrc AS body FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
         WHERE n.nspname = 'public' ORDER BY 1`;
-      expect(functions.map((f) => f.name)).toEqual(["forbid_audit_log_mutation", "forbid_tenant_id_change"]);
+      expect(functions.map((f) => f.name)).toEqual([
+        "forbid_audit_log_mutation",
+        "forbid_order_line_change_unless_editing",
+        "forbid_order_mutation_after_confirmation",
+        "forbid_tenant_id_change",
+      ]);
       expect(functions[0]?.body).toContain("RAISE EXCEPTION");
       expect(functions[1]?.body).toContain("RAISE EXCEPTION");
     });
