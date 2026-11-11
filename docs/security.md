@@ -164,6 +164,7 @@ Bloqueado = 403 `tenant_unavailable`. Sem modo somente leitura.
 | order.read | ✓ | ✓ | ✓ | ✓ |
 | order.create | ✓ | ✓ | ✓ | |
 | order.cancel | ✓ | ✓ | | |
+| order.prepare | ✓ | ✓ | ✓ | ✓ |
 | cash.read | ✓ | ✓ | ✓ | |
 | cash.open | ✓ | ✓ | ✓ | |
 | cash.close | ✓ | ✓ | | |
@@ -171,7 +172,8 @@ Bloqueado = 403 `tenant_unavailable`. Sem modo somente leitura.
 | fiscal.issue | ✓ | ✓ | ✓ | |
 | fiscal.cancel | ✓ | ✓ | | |
 
-- OWNER recebe as 19 permissões **atuais**, listadas explicitamente; **não** recebe permissões futuras automaticamente. Toda permissão nova do catálogo deve ser adicionada explicitamente à matriz (um teste falha enquanto ela não estiver em nenhuma role).
+- **M7 (decisão de produto de 10/11/2026):** `order.prepare` (iniciar/terminar o preparo: `start`/`ready` da comanda e os atalhos do pedido) para Proprietário, Gerente, Atendente e Cozinha. `deliver` continua com `order.create` (a Cozinha não entrega, não cria nem confirma pedido); `print` exige só `order.read` na filial. Tenants existentes receberam o vínculo pela migration `20261110020000_create_kitchen` (só roles `is_system`; role customizada não ganha nada).
+- OWNER recebe as 20 permissões **atuais**, listadas explicitamente; **não** recebe permissões futuras automaticamente. Toda permissão nova do catálogo deve ser adicionada explicitamente à matriz (um teste falha enquanto ela não estiver em nenhuma role).
 - **Regra de administração:** um usuário não pode conceder role/permissão com autoridade superior à sua própria (ex.: MANAGER tem `user.manage`, mas não pode atribuir OWNER nem role com permissão que ele não tem). Será imposta quando houver endpoints administrativos. **Primeira aplicação (M3):** conceder/revogar acesso a filial (`PUT/DELETE /users/:userId/branch-access/:branchId`) exige `user.manage` **na filial alvo** (`@RequireBranchPermissions`), ou seja, o ator precisa ter acesso àquela filial: ninguém distribui acesso a uma filial onde não pode operar, nem o OWNER sem acesso. E o ator só concede/revoga acesso de quem não tem, em nenhuma role ACTIVE (de qualquer escopo), permissão que ele próprio não tenha naquela filial: MANAGER não estende nem remove o acesso de um OWNER (403). A regra (código) fica em `AuthorityService` (`apps/api/src/authorization/authority.ts`), usada pelo acesso a filiais e pela gestão de funcionários.
 - **Gestão de funcionários** (`POST/PATCH /users`, `PUT /users/:userId/roles`, desativar/ativar/reset/desbloquear): exige `user.manage` no tenant e:
   - **alvo:** se o funcionário alvo tiver, em qualquer role ACTIVE de qualquer escopo, permissão que o ator não tem no escopo do **tenant** → 403. Com a matriz padrão, o gerente não mexe no dono;

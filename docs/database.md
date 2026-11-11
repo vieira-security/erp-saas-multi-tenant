@@ -336,6 +336,29 @@ Um caixa por operador e filial; o pedido é pago antes de confirmar (pagamentos 
 - **Contas** (aplicação, centavos `bigint`): esperado em dinheiro = abertura + suprimentos − sangrias + Σ `amount` CASH (já líquido de troco) − estornos CASH lançados no caixa. O esperado gravado no fechamento é o conferido.
 - **Serialização:** confirmação, estorno em dinheiro, sangria, suprimento e fechamento travam a linha do caixa `FOR UPDATE` (`cash-lock.ts`): o fechamento inclui tudo o que foi commitado antes e nada entra depois.
 
+## Cozinha: setores e comandas (M7)
+Setores de preparo do tenant, ligados/desligados por filial; comandas por setor criadas na confirmação do pedido; impressão pelo navegador. Migration `20261110020000_create_kitchen`. Tabelas de tenant (UUIDv7, FKs compostas `RESTRICT`, trigger `<tabela>_tenant_id_immutable`).
+
+| Tabela | Colunas principais | FKs compostas | Uniques / índices |
+|---|---|---|---|
+| `kitchen_sectors` | `name`, `code`, `is_default`, `status kitchen_sector_status` (`ACTIVE`/`INACTIVE`), `sort_order` | — | `(tenant_id, code)`; `(tenant_id, id)` (alvo das FKs); **parcial** `kitchen_sectors_one_default_per_tenant_key (tenant_id) WHERE is_default` |
+| `branch_kitchen_sectors` | `branch_id`, `sector_id`, `enabled` (sem linha = ligado) | `(tenant_id, branch_id)` → `branches`; `(tenant_id, sector_id)` → `kitchen_sectors` | `(tenant_id, branch_id, sector_id)`; `(tenant_id, sector_id)` |
+| `products` (coluna nova) | `kitchen_sector_id` (nulo = setor padrão) | `(tenant_id, kitchen_sector_id)` (`MATCH SIMPLE`) → `kitchen_sectors` | `(tenant_id, kitchen_sector_id)` |
+| `kitchen_tickets` | `branch_id`, `order_id`, `sector_id`, `sector_name`/`sector_code` (cópias), `status kitchen_ticket_status` (`WAITING`/`PREPARING`/`READY`/`CANCELLED`), `started_at`, `ready_at`, `cancelled_at`, `print_count`, `last_printed_at` | `(tenant_id, branch_id, order_id)` → `orders(tenant_id, branch_id, id)` (mesma filial do pedido); `(tenant_id, sector_id)` → `kitchen_sectors` | `(tenant_id, order_id, sector_id)` (uma comanda por setor por pedido); `(tenant_id, order_id, id)` (alvo da FK dos itens); `(tenant_id, branch_id, order_id)`; `(tenant_id, branch_id, created_at)` (fila); `(tenant_id, sector_id)` |
+| `kitchen_ticket_items` | `order_id`, `ticket_id`, `order_item_id` (sem `updated_at`: append-only) | `(tenant_id, order_id, ticket_id)` → `kitchen_tickets(tenant_id, order_id, id)`; `(tenant_id, order_id, order_item_id)` → `order_items(tenant_id, order_id, id)` | `(tenant_id, order_id, order_item_id)` (cada item do pedido numa só comanda); `(tenant_id, order_id, ticket_id)` |
+
+- **Mesmo pedido garantido no banco:** as duas FKs do item da comanda carregam `order_id`, então comanda e item da venda são do MESMO pedido e tenant. `order_items` ganhou `UNIQUE (tenant_id, order_id, id)` para isso.
+- **CHECKs:** setor com `name` não vazio e ≤ 60, `code` no formato de `products.code`, `sort_order` 0..9999, e **padrão sempre ACTIVE** (`kitchen_sectors_default_active_check`); comanda com timestamps coerentes com o status (`kitchen_tickets_status_check`, `ELSE false`; READY sempre com `started_at`), `print_count >= 0` e `last_printed_at` preenchido ⇔ `print_count > 0`, cópias do setor não vazias e no formato do código.
+- **Imutabilidade (triggers; vale também para o dono):**
+  - `guard_kitchen_ticket()` (`kitchen_tickets_guard`, `BEFORE INSERT OR UPDATE OR DELETE`): nasce WAITING, sem timestamps e sem impressão, com o pedido CONFIRMED (lido `FOR SHARE`); `DELETE` rejeitado; identidade, pedido, filial, setor, cópias e criação nunca mudam; contagem de vias só cresce; sem troca de status só a impressão muda; transições só WAITING>PREPARING, WAITING>READY, PREPARING>READY e {WAITING, PREPARING, READY}>CANCELLED, sem imprimir junto; timestamp de estado já gravado nunca muda.
+  - `guard_kitchen_ticket_item()` (`kitchen_ticket_items_guard`, `BEFORE INSERT OR UPDATE OR DELETE`): `UPDATE`/`DELETE` rejeitados; `INSERT` só com a comanda WAITING e nunca impressa.
+  - `kitchen_tickets_no_truncate` e `kitchen_ticket_items_no_truncate` (`forbid_sales_truncate()`).
+  - Os triggers de pedido do M5/M6 não mudaram: o status derivado anda pelas setas já aceitas (CONFIRMED>PREPARING>READY, uma por vez, cada uma gravando o próprio timestamp).
+  - Inventário fail-closed: `SALE_IMMUTABILITY_TRIGGERS` em `table-audit.ts`.
+- **Travas (ordem global, `kitchen-lock.ts`):** pedido → filial/empresa → caixa → contador (M5/M6) → setores do tenant (por `id`) → ajustes de setor da filial → comandas do pedido (por `id`). A confirmação lê setores e ajustes `FOR SHARE`; desativar setor e ligar/desligar setor na filial travam a linha do setor `FOR UPDATE`; trocar o padrão trava todos os setores do tenant `FOR UPDATE`. start/ready/cancelamento travam o pedido antes das comandas. A via de impressão é um `UPDATE ... RETURNING` na linha da comanda.
+- **Backfill da migration:** setor padrão "Cozinha" (`COZINHA`, ACTIVE, `sort_order` 0) para todo tenant existente; permissão `order.prepare` inserida no catálogo (`ON CONFLICT (code) DO NOTHING`) e vinculada às roles **padrão** (`is_system`) `OWNER`, `MANAGER`, `ATTENDANT` e `KITCHEN` de todos os tenants (`ON CONFLICT DO NOTHING`; role customizada não é tocada, mesmo com código padrão). IDs UUIDv7 gerados em SQL. Pedidos já confirmados **não** ganham comandas (seguem o M5). Tenants novos ganham o setor em `TenantProvisioningService.provisionDefaultKitchenSector()` e o vínculo pela matriz.
+- **Privilégios (`03-runtime-grants.sql`):** `kitchen_sectors`, `branch_kitchen_sectors` e `kitchen_tickets` com `SELECT, INSERT, UPDATE` (sem DELETE/TRUNCATE); `kitchen_ticket_items` com `SELECT, INSERT` (append-only também por privilégio).
+
 ## Identidades e privilégios do PostgreSQL (M1.14.2b)
 Duas identidades, criadas fora das Prisma migrations por scripts de infraestrutura em [`infrastructure/postgres/`](../infrastructure/postgres/README.md) (sem senha no git):
 
