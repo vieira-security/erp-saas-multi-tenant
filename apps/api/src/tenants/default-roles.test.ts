@@ -18,19 +18,20 @@ describe("default roles and permission matrix", () => {
 
   it("is exactly the approved matrix", () => {
     const sorted = (codes: readonly string[]) => [...codes].sort();
-    expect(sorted(DEFAULT_ROLE_PERMISSIONS.OWNER)).toEqual(sorted(PERMISSION_CATALOG.map((p) => p.code).slice(0, 19)));
-    expect(DEFAULT_ROLE_PERMISSIONS.OWNER).toHaveLength(19);
+    expect(sorted(DEFAULT_ROLE_PERMISSIONS.OWNER)).toEqual(sorted(PERMISSION_CATALOG.map((p) => p.code).slice(0, 20)));
+    expect(DEFAULT_ROLE_PERMISSIONS.OWNER).toHaveLength(20);
     expect(sorted(DEFAULT_ROLE_PERMISSIONS.MANAGER)).toEqual(
       sorted([
         "organization.read", "branch.read", "user.read", "user.manage", "role.read", "product.read", "product.manage",
-        "order.read", "order.create", "order.cancel", "cash.read", "cash.open", "cash.close", "fiscal.read", "fiscal.issue",
-        "fiscal.cancel",
+        "order.read", "order.create", "order.cancel", "order.prepare", "cash.read", "cash.open", "cash.close", "fiscal.read",
+        "fiscal.issue", "fiscal.cancel",
       ]),
     );
     expect(sorted(DEFAULT_ROLE_PERMISSIONS.ATTENDANT)).toEqual(
-      sorted(["branch.read", "product.read", "order.read", "order.create", "cash.read", "cash.open", "fiscal.read", "fiscal.issue"]),
+      sorted(["branch.read", "product.read", "order.read", "order.create", "order.prepare", "cash.read", "cash.open", "fiscal.read", "fiscal.issue"]),
     );
-    expect(sorted(DEFAULT_ROLE_PERMISSIONS.KITCHEN)).toEqual(["order.read", "product.read"]);
+    // M7 (10/11/2026): order.prepare for the four default roles; KITCHEN still neither creates nor confirms orders.
+    expect(sorted(DEFAULT_ROLE_PERMISSIONS.KITCHEN)).toEqual(["order.prepare", "order.read", "product.read"]);
   });
 
   it("forces an explicit decision for every catalog permission (OWNER gets nothing automatically)", () => {
@@ -38,7 +39,7 @@ describe("default roles and permission matrix", () => {
     // role by role, to the matrix.
     const assigned = new Set(Object.values(DEFAULT_ROLE_PERMISSIONS).flat());
     for (const { code } of PERMISSION_CATALOG) expect(assigned.has(code), code).toBe(true);
-    expect(PERMISSION_CATALOG).toHaveLength(19);
+    expect(PERMISSION_CATALOG).toHaveLength(20);
   });
 
   it("never grants a role more than OWNER holds (no role above OWNER)", () => {

@@ -172,7 +172,7 @@ describe("Permission (PostgreSQL)", () => {
       await seedPermissions(prisma);
 
       const rows = await catalogRows();
-      expect(rows).toHaveLength(19);
+      expect(rows).toHaveLength(20);
       expect(Object.fromEntries(rows.map((r) => [r.code, r.module]))).toEqual({
         "organization.read": "organization",
         "organization.manage": "organization",
@@ -187,6 +187,7 @@ describe("Permission (PostgreSQL)", () => {
         "order.read": "orders",
         "order.create": "orders",
         "order.cancel": "orders",
+        "order.prepare": "orders",
         "cash.read": "cash",
         "cash.open": "cash",
         "cash.close": "cash",
@@ -204,11 +205,11 @@ describe("Permission (PostgreSQL)", () => {
       await seedPermissions(prisma);
       const first = new Map((await catalogRows()).map((r) => [r.code, r]));
 
-      await expect(seedPermissions(prisma)).resolves.toBe(19);
-      await expect(seedPermissions(prisma)).resolves.toBe(19);
+      await expect(seedPermissions(prisma)).resolves.toBe(20);
+      await expect(seedPermissions(prisma)).resolves.toBe(20);
 
       const again = await catalogRows();
-      expect(again).toHaveLength(19);
+      expect(again).toHaveLength(20);
       for (const row of again) expect(row, row.code).toEqual(first.get(row.code));
     });
 
