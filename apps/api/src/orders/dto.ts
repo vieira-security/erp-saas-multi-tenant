@@ -93,5 +93,7 @@ export function toOrderDto(order: OrderWithDetail): OrderDto {
     payments: payments.map(toPaymentDto),
     refunds: payments.flatMap((p) => (p.refund ? [p.refund] : [])).sort(byCreation).map(toRefundDto),
     changeGiven: sumMoney(payments.map((p) => toMoney(p.change))),
+    // M7 (contrato #26): placeholder até a implementação das comandas.
+    kitchenTickets: [],
   };
 }
