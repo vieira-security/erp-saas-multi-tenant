@@ -8,6 +8,7 @@ export * from "./companies.js";
 export * from "./branches.js";
 export * from "./branch-access.js";
 export * from "./users.js";
+export * from "./roles.js";
 export * from "./products.js";
 export * from "./orders.js";
 export * from "./cash.js";

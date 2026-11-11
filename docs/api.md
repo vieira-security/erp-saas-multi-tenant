@@ -71,3 +71,9 @@ campos e códigos de erro de cada módulo estão nos comentários dos próprios 
 - Nunca expõe hash de senha, tentativas de login, bloqueio temporário nem sessões.
 - Implementação: `apps/api/src/users/` (`UsersModule`, `UsersController` em `@Controller("users")`). `users/:userId/branch-access` continua no `OrganizationModule` (M3). Sem auditoria (leitura, como as demais listagens).
 - Cadastro/edição/desativação de funcionário, atribuição de roles e reset de senha: fora desta fase (próximo módulo, com decisão de produto).
+
+## Funcionários: gestão (contratos)
+
+- `POST /users`, `PATCH /users/:userId` (só nome), `PUT /users/:userId/roles` (substitui o conjunto), `POST /users/:userId/deactivate|activate|reset-password|unlock`, todos com `user.manage` no tenant; `GET /roles` com `role.read`. Detalhes e erros em `packages/contracts/src/users.ts` e `roles.ts`.
+- Decisões de produto: matrícula digitada pelo gestor e imutável; senha temporária digitada pelo gestor, com troca obrigatória; dono e gerente gerenciam, mas nunca acima da própria autoridade; desativar derruba as sessões na hora, sem exclusão física, nunca a si mesmo nem o último Proprietário; o reset de senha destrava e derruba as sessões; desbloquear destrava sem trocar senha.
+- Novos códigos 409: `employee_number_already_exists`, `cannot_target_self`, `last_owner_required`, `user_has_open_cash_session`, `role_inactive`, `branch_access_required`.
