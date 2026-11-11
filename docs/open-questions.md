@@ -280,3 +280,8 @@ Decisões já no contrato (`packages/contracts/src/kitchen.ts`): permissão `ord
 - Auditoria (`audit_logs`) de setores, comandas e impressões: catálogo de ações em aberto (KAN-41); nada é gravado.
 - Agente local de impressão ESC/POS (reaproveita `lines`); M8 (fiscal) não iniciado.
 - Tela da cozinha (KDS) e tempo real (polling/SSE) ficam com o frontend.
+
+**Decisões do M7 na auditoria (10/11/2026):**
+1. Reimpressão numera a via de verdade: "2ª VIA", "3ª VIA"... (antes toda reimpressão saía "2ª VIA").
+2. Setor desativado no tenant ou desligado na filial com comandas abertas: **permitido**; as comandas abertas continuam no setor original (a cozinha termina o que já começou) e só os pedidos confirmados depois vão para o setor padrão.
+3. `PATCH /kitchen-sectors/:id` com corpo vazio responde 200 sem mudança (padrão das PATCH do repo); contrato ajustado.

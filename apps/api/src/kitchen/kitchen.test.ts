@@ -16,7 +16,7 @@ import {
   shortcutTargets,
   type RoutableSector,
 } from "./kitchen-rules.js";
-import { CANCELLED_BANNER, COPY_BANNER, CUT_LINE, PRINT_WIDTH, localDateTime, ticketLines, wrap, type PrintableTicket } from "./print-layout.js";
+import { CANCELLED_BANNER, CUT_LINE, PRINT_WIDTH, localDateTime, ticketLines, wrap, type PrintableTicket } from "./print-layout.js";
 import * as api from "./validation.js";
 import { sectorCode, ticketStatusList } from "./validation.js";
 
@@ -243,12 +243,12 @@ describe("print layout (80 mm, 48 columns)", () => {
     expect(ticketLines({ ...base, createdAt: late })[2]).toBe("09/11/2026 23:30");
   });
 
-  it("adds '2ª VIA' from the second copy and '*** CANCELADO ***' for a cancelled ticket", () => {
+  it("adds the numbered copy ('2ª VIA', '7ª VIA') from the second copy and '*** CANCELADO ***' for a cancelled ticket", () => {
     const second = ticketLines({ ...base, copyNumber: 2 });
-    expect(second[0]!.trim()).toBe(COPY_BANNER);
-    expect(ticketLines({ ...base, copyNumber: 7 })[0]!.trim()).toBe("2ª VIA");
+    expect(second[0]!.trim()).toBe("2ª VIA");
+    expect(ticketLines({ ...base, copyNumber: 7 })[0]!.trim()).toBe("7ª VIA");
     const cancelled = ticketLines({ ...base, status: "CANCELLED", copyNumber: 3 });
-    expect(cancelled.slice(0, 2).map((l) => l.trim())).toEqual([CANCELLED_BANNER, COPY_BANNER]);
+    expect(cancelled.slice(0, 2).map((l) => l.trim())).toEqual([CANCELLED_BANNER, "3ª VIA"]);
     expect(ticketLines({ ...base, status: "CANCELLED" })[0]!.trim()).toBe("*** CANCELADO ***");
     expect(ticketLines(base).some((l) => l.includes("VIA") || l.includes("CANCELADO"))).toBe(false);
   });

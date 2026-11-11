@@ -6,7 +6,7 @@ import type { KitchenTicketStatus } from "@erp/contracts";
  * futuro agente ESC/POS.
  *
  *   *** CANCELADO ***        (comanda CANCELLED)
- *         2ª VIA             (via >= 2)
+ *         Nª VIA             (via >= 2: "2ª VIA", "3ª VIA"...)
  *         COZINHA            (setor)
  *        PEDIDO #12
  *   10/11/2026 14:35         (criação da comanda, fuso da filial)
@@ -20,7 +20,10 @@ import type { KitchenTicketStatus } from "@erp/contracts";
 
 export const PRINT_WIDTH = 48;
 export const CANCELLED_BANNER = "*** CANCELADO ***";
-export const COPY_BANNER = "2ª VIA";
+/** Cabeçalho da reimpressão com o número real da via (decisão de 10/11: "3ª VIA", "4ª VIA"...). */
+export function copyBanner(copyNumber: number): string {
+  return `${copyNumber}ª VIA`;
+}
 const SEPARATOR = "=".repeat(PRINT_WIDTH);
 export const CUT_LINE = "- ".repeat(PRINT_WIDTH / 2).trimEnd();
 const INDENT = "   ";
@@ -109,7 +112,7 @@ export function localDateTime(instant: Date, timeZone: string): string {
 export function ticketLines(ticket: PrintableTicket): string[] {
   const lines: string[] = [];
   if (ticket.status === "CANCELLED") lines.push(...centered(CANCELLED_BANNER));
-  if (ticket.copyNumber >= 2) lines.push(...centered(COPY_BANNER));
+  if (ticket.copyNumber >= 2) lines.push(...centered(copyBanner(ticket.copyNumber)));
   lines.push(...centered(ticket.sectorName.toLocaleUpperCase("pt-BR")));
   lines.push(...centered(`PEDIDO #${ticket.orderNumber}`));
   lines.push(localDateTime(ticket.createdAt, ticket.timeZone));

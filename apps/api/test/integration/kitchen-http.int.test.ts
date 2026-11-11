@@ -655,6 +655,8 @@ describe("M7 kitchen APIs over HTTP (PostgreSQL, as erp_app)", () => {
       expect(second.copyNumber).toBe(2);
       expect(second.lines[0]!.trim()).toBe("2ª VIA");
       expect(second.ticket.printCount).toBe(2);
+      const third = await ok<KitchenTicketPrintDto>(kitchen.post(`${s.tickets}/${food}/print`));
+      expect([third.copyNumber, third.lines[0]!.trim(), third.ticket.printCount]).toEqual([3, "3ª VIA", 3]);
       // Printing never changes the status (nor the order).
       expect(second.ticket.status).toBe("WAITING");
       expect(await orderStatus(s, order.id)).toBe("CONFIRMED");
