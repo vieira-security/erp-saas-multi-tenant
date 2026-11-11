@@ -76,3 +76,24 @@ export interface MeDto {
   /** TODAS as filiais com acesso (inclusive inativas, para telas administrativas), ordem de criação. */
   readonly branches: readonly MeBranchDto[];
 }
+
+/**
+ * Preferências do próprio usuário (KAN-42). Só o próprio usuário lê e grava as suas (sem permissão específica, só
+ * autenticação). Com troca de senha obrigatória segue o guard: 403 `password_change_required`.
+ *
+ * GET /me/preferences   -> 200 MePreferencesDto (usuário que nunca gravou recebe os defaults)
+ * PUT /me/preferences   UpdateMePreferencesRequest -> 200 MePreferencesDto
+ *                       400 validation_failed (valor fora da lista, campo desconhecido, corpo vazio = `required`)
+ */
+export const CATALOG_VIEWS = ["GRID", "LIST"] as const;
+export type CatalogView = (typeof CATALOG_VIEWS)[number];
+
+export interface MePreferencesDto {
+  /** Modo do cardápio no PDV. Default `GRID` (botões grandes para toque). */
+  readonly catalogView: CatalogView;
+}
+
+/** Substitui as preferências enviadas (hoje só `catalogView`, obrigatório). */
+export interface UpdateMePreferencesRequest {
+  readonly catalogView: CatalogView;
+}
