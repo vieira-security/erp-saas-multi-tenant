@@ -188,6 +188,8 @@ export interface DevSeedSummary {
   /** Quantos registros ESTA execução criou (0 em tudo numa segunda execução). */
   readonly created: {
     readonly roles: number;
+    /** M7: setor de preparo padrão ("Cozinha"), pelo provisionamento. */
+    readonly kitchenSectors: number;
     readonly companies: number;
     readonly branches: number;
     readonly users: number;
@@ -222,13 +224,14 @@ export async function seedDevData(prisma: PrismaClient, options: { password: str
   };
 
   return tenants.run({ tenantId: tenant.id }, async () => {
-    const created = { roles: 0, companies: 0, branches: 0, users: 0, branchAccesses: 0, userRoles: 0, categories: 0, products: 0, branchSettings: 0 };
+    const created = { roles: 0, kitchenSectors: 0, companies: 0, branches: 0, users: 0, branchAccesses: 0, userRoles: 0, categories: 0, products: 0, branchSettings: 0 };
 
     const provisioning = await services.provisioning.provisionDefaultRoles();
     if (provisioning.conflicts.length > 0) {
       throw new Error(`Default role codes taken by custom roles in the demo tenant: ${provisioning.conflicts.join(", ")}`);
     }
     created.roles = provisioning.created.length;
+    if ((await services.provisioning.provisionDefaultKitchenSector()).created) created.kitchenSectors++;
     const roles = await prisma.role.findMany({ where: scope.where({ isSystem: true }), select: { id: true, code: true } });
     const roleId = (code: DefaultRoleCode) => roles.find((r) => r.code === code)!.id;
 

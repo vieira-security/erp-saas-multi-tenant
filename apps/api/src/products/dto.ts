@@ -26,8 +26,8 @@ export function toProductSummaryDto(product: Product & { _count: { optionGroups:
   return {
     id: product.id,
     categoryId: product.categoryId,
-    // M7 (contrato #26): placeholder até a implementação dos setores; `null` = setor padrão.
-    kitchenSectorId: null,
+    // M7: `null` = setor padrão.
+    kitchenSectorId: product.kitchenSectorId,
     name: product.name,
     code: product.code,
     basePrice: toMoney(product.basePrice),
@@ -65,8 +65,8 @@ export function toProductDto(product: ProductWithGroups): ProductDto {
   return {
     id: product.id,
     categoryId: product.categoryId,
-    // M7 (contrato #26): placeholder até a implementação dos setores; `null` = setor padrão.
-    kitchenSectorId: null,
+    // M7: `null` = setor padrão.
+    kitchenSectorId: product.kitchenSectorId,
     name: product.name,
     description: product.description,
     code: product.code,

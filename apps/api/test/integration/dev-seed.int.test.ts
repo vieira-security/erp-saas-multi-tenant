@@ -31,6 +31,7 @@ describe("development seed (PostgreSQL: seed as erp_migrator, login as erp_app)"
       users: await owner.user.count({ where }),
       branchAccesses: await owner.userBranchAccess.count({ where }),
       roles: await owner.role.count({ where }),
+      kitchenSectors: await owner.kitchenSector.count({ where }),
       rolePermissions: await owner.rolePermission.count({ where }),
       userRoles: await owner.userRole.count({ where }),
       categories: await owner.productCategory.count({ where }),
@@ -59,12 +60,12 @@ describe("development seed (PostgreSQL: seed as erp_migrator, login as erp_app)"
 
   it("is idempotent: the second run creates nothing and changes no count", async () => {
     expect(first.tenantCreated).toBe(true);
-    expect(first.created).toEqual({ roles: 4, companies: 1, branches: 3, users: 6, branchAccesses: 9, userRoles: 6, categories: 3, products: 10, branchSettings: 2 });
+    expect(first.created).toEqual({ roles: 4, kitchenSectors: 1, companies: 1, branches: 3, users: 6, branchAccesses: 9, userRoles: 6, categories: 3, products: 10, branchSettings: 2 });
     expect(second.tenantId).toBe(first.tenantId);
     expect(second.tenantCreated).toBe(false);
     expect(Object.values(second.created).every((n) => n === 0)).toBe(true);
     expect(countsAfterSecond).toEqual(countsAfterFirst);
-    expect(countsAfterFirst).toMatchObject({ companies: 1, branches: 3, users: 6, roles: 4, userRoles: 6, categories: 3, products: 10, tenantsWithDemoCode: 1 });
+    expect(countsAfterFirst).toMatchObject({ companies: 1, branches: 3, users: 6, roles: 4, kitchenSectors: 1, userRoles: 6, categories: 3, products: 10, tenantsWithDemoCode: 1 });
   });
 
   it("keeps existing rows untouched on a re-run (password hash, status, prices)", async () => {

@@ -2,7 +2,7 @@ import { Inject, Injectable } from "@nestjs/common";
 import type { Money, Page, ProductDto, ProductStatus, ProductSummaryDto } from "@erp/contracts";
 import { PRISMA_CLIENT } from "../database/database.module.js";
 import { ProductStatus as DbStatus, type Prisma, type PrismaClient } from "../generated/prisma/client.js";
-import { ConflictError, NotFoundError } from "../http/api-error.js";
+import { ConflictError, NotFoundError, ValidationFailedError } from "../http/api-error.js";
 import { toPage, type PageRequest } from "../http/paging.js";
 import { BRANCH_CODE } from "../organization/validation/branch-code.js";
 import { isRecordNotFound, isUniqueViolation } from "../organization/prisma-errors.js";
@@ -17,6 +17,8 @@ export interface CreateProductInput {
   description?: string | null;
   code?: string | null;
   categoryId?: string | null;
+  /** M7: setor do tenant (qualquer status); `null`/ausente = setor padrão. */
+  kitchenSectorId?: string | null;
   basePrice: Money;
   sortOrder?: number;
   optionGroups?: readonly OptionGroupValue[];
@@ -27,6 +29,7 @@ export interface ProductChanges {
   description?: string | null;
   code?: string | null;
   categoryId?: string | null;
+  kitchenSectorId?: string | null;
   basePrice?: Money;
   sortOrder?: number;
 }
@@ -37,6 +40,8 @@ type Tx = Prisma.TransactionClient;
  * Produtos do tenant atual (TenantScope em toda query; outro tenant = 404). Regras do M4:
  * - `code` único por tenant (409 `product_code_already_exists`, identificado consultando o estado);
  * - `categoryId`: categoria do tenant em qualquer status (senão 404);
+ * - `kitchenSectorId` (M7): setor do tenant em qualquer status (inexistente/de outro tenant = 400 `invalid_value`, como o
+ *   contrato define); `null` = setor padrão;
  * - grupos/opções substituídos em bloco numa transação;
  * - combo: produto vinculado do tenant (404), ACTIVE, diferente do próprio e sem grupos; produto que já é vinculado não
  *   recebe grupos (409 `linked_product_invalid`). Corrida tratada com trava das linhas de products (product-lock.ts).
@@ -78,6 +83,7 @@ export class ProductService {
     try {
       return await this.prisma.$transaction(async (tx) => {
         if (input.categoryId) await this.requireCategory(tx, input.categoryId);
+        if (input.kitchenSectorId) await this.requireKitchenSector(tx, input.kitchenSectorId);
         await this.checkCombos(tx, null, groups);
         const product = await tx.product.create({
           data: this.scope.data({
@@ -85,6 +91,7 @@ export class ProductService {
             description: input.description ?? null,
             code: input.code ?? null,
             categoryId: input.categoryId ?? null,
+            kitchenSectorId: input.kitchenSectorId ?? null,
             basePrice: input.basePrice,
             sortOrder: input.sortOrder ?? 0,
             status: DbStatus.ACTIVE,
@@ -101,12 +108,13 @@ export class ProductService {
 
   /** Corpo vazio devolve o registro sem gravar. Grupos e status não mudam por aqui. */
   async update(id: string, changes: ProductChanges): Promise<ProductDto> {
-    const { name, description, code, categoryId, basePrice, sortOrder } = changes;
+    const { name, description, code, categoryId, kitchenSectorId, basePrice, sortOrder } = changes;
     const data: Prisma.ProductUncheckedUpdateInput = {
       ...(name !== undefined ? { name } : {}),
       ...(description !== undefined ? { description } : {}),
       ...(code !== undefined ? { code } : {}),
       ...(categoryId !== undefined ? { categoryId } : {}),
+      ...(kitchenSectorId !== undefined ? { kitchenSectorId } : {}),
       ...(basePrice !== undefined ? { basePrice } : {}),
       ...(sortOrder !== undefined ? { sortOrder } : {}),
     };
@@ -117,6 +125,7 @@ export class ProductService {
         const current = await tx.product.findUnique({ where: this.scope.where({ id }), select: { id: true } });
         if (!current) throw new NotFoundError("Product");
         if (categoryId) await this.requireCategory(tx, categoryId);
+        if (kitchenSectorId) await this.requireKitchenSector(tx, kitchenSectorId);
         await tx.product.update({ where: this.scope.where({ id }), data });
         return toProductDto(await this.load(tx, id));
       });
@@ -163,6 +172,15 @@ export class ProductService {
   private async requireCategory(tx: Tx, categoryId: string): Promise<void> {
     const category = await tx.productCategory.findUnique({ where: this.scope.where({ id: categoryId }), select: { id: true } });
     if (!category) throw new NotFoundError("Product category");
+  }
+
+  /**
+   * M7: setor do tenant, em qualquer status (setores não são excluídos; a FK composta garante o tenant). Inexistente ou de
+   * outro tenant = 400 `invalid_value` em `kitchenSectorId` (contrato), não 404.
+   */
+  private async requireKitchenSector(tx: Tx, sectorId: string): Promise<void> {
+    const sector = await tx.kitchenSector.findUnique({ where: this.scope.where({ id: sectorId }), select: { id: true } });
+    if (!sector) throw new ValidationFailedError([{ field: "kitchenSectorId", issue: "invalid_value" }]);
   }
 
   /**
