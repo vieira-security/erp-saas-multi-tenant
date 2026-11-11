@@ -85,3 +85,10 @@ campos e códigos de erro de cada módulo estão nos comentários dos próprios 
 - `POST /users` responde 201; as demais respondem 200 com o `UserDto` atualizado (inclusive na chamada idempotente, sem gravar nada).
 - `PUT /roles`: atribuição já existente (mesma role e escopo) não é tocada, nem se a role estiver inativa; só as que entram precisam de role ACTIVE. Violação da FK composta (`user_roles` → `user_branch_access`, corrida com a revogação do acesso) vira 409 `branch_access_required`; violação da unique de matrícula (corrida no cadastro) vira 409 `employee_number_already_exists`.
 - `GET /roles`: todas as roles do tenant, `isSystem` primeiro e depois `code` (comparação por código), permissões por código, `ARCHIVED` como `INACTIVE`.
+
+## M7 — Cozinha (contratos)
+
+- Setores de preparo do tenant (`/kitchen-sectors`), ligados/desligados por filial; produto ganha `kitchenSectorId` (`null` = padrão).
+- Comandas por setor geradas na confirmação (`/branches/:branchId/kitchen-tickets`), com status WAITING → PREPARING → READY; o status do pedido é derivado delas; `start`/`ready` do pedido viram atalho.
+- Permissão nova `order.prepare` (dono, gerente, atendente, cozinha). Impressão pelo navegador com `lines` de 48 colunas e contagem de vias.
+- Detalhes em `packages/contracts/src/kitchen.ts`. Placeholders temporários na API (`kitchenTickets: []`, `kitchenSectorId: null`) até a implementação.
