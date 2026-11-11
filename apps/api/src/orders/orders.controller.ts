@@ -5,6 +5,7 @@ import { NotFoundError } from "../http/api-error.js";
 import { UUID, optional, parseInput, required } from "../http/input.js";
 import { pageQuerySpec, pageRequest } from "../http/paging.js";
 import { OrderService } from "./order.service.js";
+import { payments } from "../cash/validation.js";
 import { businessDateQuery, cancelReason, orderItems, statusList } from "./validation.js";
 
 /** Id de rota fora do formato UUID = recurso inexistente (404), sem consultar o banco. */
@@ -67,8 +68,12 @@ export class OrdersController {
   @Post(":orderId/confirm")
   @HttpCode(200)
   @RequireBranchPermissions("branchId", "order.create")
-  confirm(@Param("branchId") branchId: string, @Param("orderId") orderId: string): Promise<OrderDto> {
-    return this.orders.confirm(routeId(branchId, "Branch"), routeId(orderId, "Order"));
+  confirm(@Param("branchId") branchId: string, @Param("orderId") orderId: string, @Body() body: unknown): Promise<OrderDto> {
+    const branch = routeId(branchId, "Branch");
+    const order = routeId(orderId, "Order");
+    // M6: o pedido é pago antes de confirmar (ConfirmOrderRequest).
+    const input = parseInput(body, { payments: required(payments) });
+    return this.orders.confirm(branch, order, input.payments);
   }
 
   @Post(":orderId/start")

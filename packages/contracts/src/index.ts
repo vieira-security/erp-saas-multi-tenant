@@ -1,10 +1,14 @@
 // Contratos HTTP compartilhados (contract-first). A API importa SOMENTE tipos daqui (`import type`): o pacote ainda
 // não tem build para runtime do Node. Valores (`as const`, constantes) são para o frontend.
 export * from "./common.js";
+export * from "./auth.js";
+export * from "./me.js";
 export * from "./organization.js";
 export * from "./companies.js";
 export * from "./branches.js";
 export * from "./branch-access.js";
+export * from "./users.js";
+export * from "./roles.js";
 export * from "./products.js";
 export * from "./orders.js";
 export * from "./cash.js";

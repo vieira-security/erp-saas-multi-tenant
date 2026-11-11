@@ -1,5 +1,6 @@
-import { BadRequestException, Body, Controller, HttpCode, Inject, Post, Req, Res } from "@nestjs/common";
+import { Body, Controller, HttpCode, Inject, Post, Req, Res } from "@nestjs/common";
 import { AUTH_CONFIG, type AuthConfig } from "../../config/auth-config.js";
+import { optional, parseInput, required, type Parser } from "../../http/input.js";
 import { AuthService, type ClientInfo, type IssuedTokens } from "../auth.service.js";
 import { InvalidRefreshTokenError } from "../errors.js";
 import { PasswordService } from "../password.service.js";
@@ -30,12 +31,25 @@ function clientOf(request: HttpRequest): ClientInfo {
   return { ipAddress: request.ip ?? null, userAgent: typeof userAgent === "string" ? userAgent : null };
 }
 
-function stringField(body: unknown, name: string, optional = false): string | undefined {
-  const value = body !== null && typeof body === "object" ? (body as Record<string, unknown>)[name] : undefined;
-  if (value === undefined && optional) return undefined;
-  if (typeof value !== "string") throw new BadRequestException("invalid_request");
-  return value;
-}
+/**
+ * Qualquer string, SEM trim nem outra normalização: a senha é usada exatamente como digitada, e matrícula/código da
+ * organização são normalizados pelo AuthService (valor fora do formato = 401 genérico, não 400, para não revelar nada).
+ * Corpo fora do formato (campo ausente, não-string, campo desconhecido, não-objeto) = 400 `validation_failed` com
+ * `details`, o mesmo formato `{ error, details }` das demais rotas (parseInput + ApiExceptionFilter).
+ */
+const anyString: Parser<string> = (raw) => (typeof raw === "string" ? { ok: true, value: raw } : { ok: false, issue: "invalid_type" });
+
+const LOGIN_BODY = {
+  loginCode: required(anyString),
+  employeeNumber: required(anyString),
+  password: required(anyString),
+  deviceKey: optional(anyString),
+};
+
+const CHANGE_PASSWORD_BODY = {
+  currentPassword: required(anyString),
+  newPassword: required(anyString),
+};
 
 /**
  * Transporte HTTP do Auth (decisões de produto do M2). Access token no corpo (o frontend o mantém em memória e envia como
@@ -56,10 +70,7 @@ export class AuthController {
   @HttpCode(200)
   async login(@Body() body: unknown, @Req() request: HttpRequest, @Res({ passthrough: true }) response: HttpResponse): Promise<AccessTokenResponse> {
     assertTrustedOrigin(request.headers, this.config.allowedOrigins);
-    const loginCode = stringField(body, "loginCode");
-    const employeeNumber = stringField(body, "employeeNumber") as string;
-    const password = stringField(body, "password") as string;
-    const deviceKey = stringField(body, "deviceKey", true);
+    const { loginCode, employeeNumber, password, deviceKey } = parseInput(body, LOGIN_BODY);
     const tokens = await this.auth.loginWithCode(loginCode, { employeeNumber, password, deviceKey: deviceKey ?? null, client: clientOf(request) });
     return this.respond(tokens, response);
   }
@@ -100,8 +111,7 @@ export class AuthController {
   @HttpCode(204)
   @AllowWhenPasswordChangeRequired()
   async changePassword(@Body() body: unknown): Promise<void> {
-    const currentPassword = stringField(body, "currentPassword") as string;
-    const newPassword = stringField(body, "newPassword") as string;
+    const { currentPassword, newPassword } = parseInput(body, CHANGE_PASSWORD_BODY);
     await this.passwords.changeOwnPassword(currentPassword, newPassword);
   }
 

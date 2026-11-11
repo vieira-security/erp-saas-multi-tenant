@@ -19,6 +19,8 @@ Node >= 22, npm >= 10.
 
 A API exige `DATABASE_URL` (identidade `erp_app`) e `AUTH_ACCESS_TOKEN_SECRET` (>= 32 bytes aleatórios); em produção também `AUTH_ALLOWED_ORIGINS`. Sem eles não sobe. Nomes em `apps/api/.env.example`; valores nunca no git.
 
+Ambiente local completo (PostgreSQL, API, web e dados demo para login): [docs/dev-setup.md](docs/dev-setup.md).
+
 ## Comandos
 
 ```
@@ -27,6 +29,8 @@ npm run lint
 npm run typecheck
 npm test
 npm run build
+npm run db:seed       # catálogo de permissões (como erp_migrator)
+npm run db:seed:dev   # dados demo, só em desenvolvimento (docs/dev-setup.md)
 ```
 
 Contribuição: veja `CLAUDE.md`.

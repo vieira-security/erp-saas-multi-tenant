@@ -30,6 +30,10 @@ export const MODEL_TABLES: Readonly<Record<string, string>> = {
   OrderItem: "order_items",
   OrderItemOption: "order_item_options",
   BranchOrderCounter: "branch_order_counters",
+  CashSession: "cash_sessions",
+  CashMovement: "cash_movements",
+  Payment: "payments",
+  Refund: "refunds",
 };
 
 export type TableKind = "root" | "tooling" | "global" | "tenant";
@@ -339,16 +343,20 @@ export const RUNTIME_TABLE_PRIVILEGES: Readonly<Record<string, readonly TablePri
   branch_order_counters: ["SELECT", "INSERT", "UPDATE"],
   branch_product_settings: ["SELECT", "INSERT", "UPDATE", "DELETE"],
   branches: ["SELECT", "INSERT", "UPDATE"],
+  cash_movements: ["SELECT", "INSERT"],
+  cash_sessions: ["SELECT", "INSERT", "UPDATE"],
   companies: ["SELECT", "INSERT", "UPDATE"],
   devices: ["SELECT", "INSERT", "UPDATE"],
   order_item_options: ["SELECT", "INSERT", "DELETE"],
   order_items: ["SELECT", "INSERT", "DELETE"],
   orders: ["SELECT", "INSERT", "UPDATE"],
+  payments: ["SELECT", "INSERT"],
   permissions: ["SELECT"],
   product_categories: ["SELECT", "INSERT", "UPDATE"],
   product_option_groups: ["SELECT", "INSERT", "DELETE"],
   product_options: ["SELECT", "INSERT", "DELETE"],
   products: ["SELECT", "INSERT", "UPDATE"],
+  refunds: ["SELECT", "INSERT"],
   role_permissions: ["SELECT", "INSERT", "DELETE"],
   roles: ["SELECT", "INSERT", "UPDATE"],
   sessions: ["SELECT", "INSERT", "UPDATE"],
@@ -632,6 +640,14 @@ export async function compositeFkTargetViolations(db: Queryable): Promise<string
 export const MANUAL_PARTIAL_INDEXES: Readonly<
   Record<string, { table: string; columns: readonly string[]; unique: boolean; method: string; predicate: string }>
 > = {
+  // M6: no máximo um caixa OPEN por operador e filial.
+  cash_sessions_open_per_operator_key: {
+    table: "cash_sessions",
+    columns: ["tenant_id", "branch_id", "opened_by"],
+    unique: true,
+    method: "btree",
+    predicate: "(status = 'OPEN'::cash_session_status)",
+  },
   user_roles_branch_scope_key: {
     table: "user_roles",
     columns: ["tenant_id", "user_id", "role_id", "branch_id"],
@@ -716,8 +732,19 @@ export const MANUAL_CHECK_CONSTRAINTS: Readonly<Record<string, string>> = {
   "orders.orders_cancellation_check": "CHECK ((((status = 'CANCELLED'::order_status) = (cancelled_by IS NOT NULL)) AND ((status = 'CANCELLED'::order_status) OR (cancel_reason IS NULL)) AND ((status <> 'CANCELLED'::order_status) OR (confirmed_at IS NULL) OR (cancel_reason IS NOT NULL))))",
   "orders.orders_confirmation_check": "CHECK ((((number IS NULL) = (business_date IS NULL)) AND ((number IS NULL) = (confirmed_at IS NULL))))",
   "orders.orders_number_check": "CHECK (((number IS NULL) OR (number >= 1)))",
-  "orders.orders_status_check": "CHECK (\nCASE status\n    WHEN 'EDITING'::order_status THEN ((confirmed_at IS NULL) AND (preparing_at IS NULL) AND (ready_at IS NULL) AND (delivered_at IS NULL) AND (cancelled_at IS NULL))\n    WHEN 'CONFIRMED'::order_status THEN ((confirmed_at IS NOT NULL) AND (preparing_at IS NULL) AND (ready_at IS NULL) AND (delivered_at IS NULL) AND (cancelled_at IS NULL))\n    WHEN 'PREPARING'::order_status THEN ((confirmed_at IS NOT NULL) AND (preparing_at IS NOT NULL) AND (ready_at IS NULL) AND (delivered_at IS NULL) AND (cancelled_at IS NULL))\n    WHEN 'READY'::order_status THEN ((confirmed_at IS NOT NULL) AND (preparing_at IS NOT NULL) AND (ready_at IS NOT NULL) AND (delivered_at IS NULL) AND (cancelled_at IS NULL))\n    WHEN 'DELIVERED'::order_status THEN ((confirmed_at IS NOT NULL) AND (preparing_at IS NOT NULL) AND (ready_at IS NOT NULL) AND (delivered_at IS NOT NULL) AND (cancelled_at IS NULL))\n    WHEN 'CANCELLED'::order_status THEN ((cancelled_at IS NOT NULL) AND (delivered_at IS NULL) AND ((preparing_at IS NULL) OR (confirmed_at IS NOT NULL)) AND ((ready_at IS NULL) OR (preparing_at IS NOT NULL)))\n    ELSE false\nEND)",
+  "orders.orders_status_check": "CHECK (\nCASE status\n    WHEN 'EDITING'::order_status THEN ((confirmed_at IS NULL) AND (preparing_at IS NULL) AND (ready_at IS NULL) AND (delivered_at IS NULL) AND (cancelled_at IS NULL))\n    WHEN 'CONFIRMED'::order_status THEN ((confirmed_at IS NOT NULL) AND (preparing_at IS NULL) AND (ready_at IS NULL) AND (delivered_at IS NULL) AND (cancelled_at IS NULL))\n    WHEN 'PREPARING'::order_status THEN ((confirmed_at IS NOT NULL) AND (preparing_at IS NOT NULL) AND (ready_at IS NULL) AND (delivered_at IS NULL) AND (cancelled_at IS NULL))\n    WHEN 'READY'::order_status THEN ((confirmed_at IS NOT NULL) AND (preparing_at IS NOT NULL) AND (ready_at IS NOT NULL) AND (delivered_at IS NULL) AND (cancelled_at IS NULL))\n    WHEN 'DELIVERED'::order_status THEN ((confirmed_at IS NOT NULL) AND (preparing_at IS NOT NULL) AND (ready_at IS NOT NULL) AND (delivered_at IS NOT NULL) AND (cancelled_at IS NULL))\n    WHEN 'CANCELLED'::order_status THEN ((cancelled_at IS NOT NULL) AND ((preparing_at IS NULL) OR (confirmed_at IS NOT NULL)) AND ((ready_at IS NULL) OR (preparing_at IS NOT NULL)) AND ((delivered_at IS NULL) OR (ready_at IS NOT NULL)))\n    ELSE false\nEND)",
   "orders.orders_total_check": "CHECK ((total >= (0)::numeric))",
+  "cash_movements.cash_movements_amount_check": "CHECK ((amount > (0)::numeric))",
+  "cash_movements.cash_movements_reason_check": "CHECK (((char_length(btrim(reason)) >= 3) AND (char_length(reason) <= 200)))",
+  "cash_sessions.cash_sessions_amounts_check": "CHECK (((opening_amount >= (0)::numeric) AND ((expected_cash IS NULL) OR (expected_cash >= (0)::numeric)) AND ((counted_cash IS NULL) OR (counted_cash >= (0)::numeric))))",
+  "cash_sessions.cash_sessions_closing_check": "CHECK ((((status = 'CLOSED'::cash_session_status) = (closed_by IS NOT NULL)) AND ((status = 'CLOSED'::cash_session_status) = (closed_at IS NOT NULL)) AND ((status = 'CLOSED'::cash_session_status) = (expected_cash IS NOT NULL)) AND ((status = 'CLOSED'::cash_session_status) = (counted_cash IS NOT NULL)) AND ((status = 'CLOSED'::cash_session_status) = (difference IS NOT NULL)) AND ((status = 'CLOSED'::cash_session_status) OR (justification IS NULL))))",
+  "cash_sessions.cash_sessions_difference_check": "CHECK (((difference IS NULL) OR (difference = (counted_cash - expected_cash))))",
+  "cash_sessions.cash_sessions_justification_check": "CHECK ((((difference IS NULL) OR (difference = (0)::numeric) OR (justification IS NOT NULL)) AND ((justification IS NULL) OR ((char_length(btrim(justification)) >= 3) AND (char_length(justification) <= 500)))))",
+  "payments.payments_amount_check": "CHECK (((amount > (0)::numeric) AND (change >= (0)::numeric)))",
+  "payments.payments_method_check": "CHECK (\nCASE\n    WHEN (method = 'CASH'::payment_method) THEN ((received_amount IS NOT NULL) AND (received_amount >= amount) AND (change = (received_amount - amount)))\n    ELSE ((received_amount IS NULL) AND (change = (0)::numeric))\nEND)",
+  "payments.payments_reference_check": "CHECK (((reference IS NULL) OR ((btrim(reference) <> ''::text) AND (char_length(reference) <= 60))))",
+  "refunds.refunds_amount_check": "CHECK ((amount > (0)::numeric))",
+  "refunds.refunds_cash_session_check": "CHECK (((method = 'CASH'::payment_method) = (cash_session_id IS NOT NULL)))",
   "roles.roles_code_check": "CHECK ((btrim(code) <> ''::text))",
   "roles.roles_name_check": "CHECK ((btrim(name) <> ''::text))",
   "sessions.sessions_expires_at_check": "CHECK ((expires_at > created_at))",
@@ -753,10 +780,33 @@ export async function checkConstraintViolations(db: Queryable): Promise<string[]
  * triggers. Pinned: name, table, BEFORE, row level, events (INSERT/UPDATE/DELETE), no column list, enabled and function.
  * The functions may be used only by the triggers listed here. Adding/removing one is an explicit, reviewed decision.
  */
-export const SALE_IMMUTABILITY_TRIGGERS: Readonly<Record<string, { table: string; fn: string; events: readonly ("INSERT" | "UPDATE" | "DELETE")[] }>> = {
-  orders_immutable_after_confirmation: { table: "orders", fn: "forbid_order_mutation_after_confirmation", events: ["UPDATE", "DELETE"] },
-  order_items_editing_only: { table: "order_items", fn: "forbid_order_line_change_unless_editing", events: ["INSERT", "UPDATE", "DELETE"] },
-  order_item_options_editing_only: { table: "order_item_options", fn: "forbid_order_line_change_unless_editing", events: ["INSERT", "UPDATE", "DELETE"] },
+type GuardEvent = "INSERT" | "UPDATE" | "DELETE" | "TRUNCATE";
+const row = (table: string, fn: string, events: readonly GuardEvent[]) => ({ table, fn, level: "row" as const, events });
+const truncate = (table: string, fn: string) => ({ table, fn, level: "statement" as const, events: ["TRUNCATE"] as const });
+
+/**
+ * M6 extends it to the financial records and to the TRUNCATE guards (statement level): payments, refunds and
+ * cash_movements are append-only (UPDATE/DELETE per row, TRUNCATE per statement) with an INSERT guard (OPEN cash session,
+ * order in the right state); cash_sessions only goes OPEN -> CLOSED once; sales tables reject TRUNCATE.
+ */
+export const SALE_IMMUTABILITY_TRIGGERS: Readonly<Record<string, { table: string; fn: string; level: "row" | "statement"; events: readonly GuardEvent[] }>> = {
+  orders_immutable_after_confirmation: row("orders", "forbid_order_mutation_after_confirmation", ["UPDATE", "DELETE"]),
+  order_items_editing_only: row("order_items", "forbid_order_line_change_unless_editing", ["INSERT", "UPDATE", "DELETE"]),
+  order_item_options_editing_only: row("order_item_options", "forbid_order_line_change_unless_editing", ["INSERT", "UPDATE", "DELETE"]),
+  orders_no_truncate: truncate("orders", "forbid_sales_truncate"),
+  order_items_no_truncate: truncate("order_items", "forbid_sales_truncate"),
+  order_item_options_no_truncate: truncate("order_item_options", "forbid_sales_truncate"),
+  payments_append_only: row("payments", "forbid_financial_record_mutation", ["UPDATE", "DELETE"]),
+  payments_no_truncate: truncate("payments", "forbid_financial_record_mutation"),
+  payments_insert_guard: row("payments", "check_financial_record_insert", ["INSERT"]),
+  refunds_append_only: row("refunds", "forbid_financial_record_mutation", ["UPDATE", "DELETE"]),
+  refunds_no_truncate: truncate("refunds", "forbid_financial_record_mutation"),
+  refunds_insert_guard: row("refunds", "check_financial_record_insert", ["INSERT"]),
+  cash_movements_append_only: row("cash_movements", "forbid_financial_record_mutation", ["UPDATE", "DELETE"]),
+  cash_movements_no_truncate: truncate("cash_movements", "forbid_financial_record_mutation"),
+  cash_movements_insert_guard: row("cash_movements", "check_financial_record_insert", ["INSERT"]),
+  cash_sessions_close_once: row("cash_sessions", "forbid_cash_session_mutation", ["UPDATE", "DELETE"]),
+  cash_sessions_no_truncate: truncate("cash_sessions", "forbid_financial_record_mutation"),
 };
 
 export async function saleImmutabilityViolations(db: Queryable): Promise<string[]> {
@@ -769,17 +819,18 @@ export async function saleImmutabilityViolations(db: Queryable): Promise<string[
       violations.push(`${expected.table}: missing sale immutability trigger ${name}`);
       continue;
     }
-    const events = [t.onInsert && "INSERT", t.onUpdate && "UPDATE", t.onDelete && "DELETE"].filter(Boolean).join(",");
+    const events = [t.onInsert && "INSERT", t.onUpdate && "UPDATE", t.onDelete && "DELETE", t.onTruncate && "TRUNCATE"].filter(Boolean).join(",");
     const ok =
       t.table === expected.table &&
       t.fn === expected.fn &&
       t.enabled === "O" &&
       t.before &&
-      t.row &&
-      !t.onTruncate &&
+      t.row === (expected.level === "row") &&
       t.columns.length === 0 &&
       events === expected.events.join(",");
-    if (!ok) violations.push(`${expected.table}: ${name} must be an enabled BEFORE ${expected.events.join(" OR ")} row trigger calling ${expected.fn}()`);
+    if (!ok) {
+      violations.push(`${expected.table}: ${name} must be an enabled BEFORE ${expected.events.join(" OR ")} ${expected.level} trigger calling ${expected.fn}()`);
+    }
   }
   for (const t of triggers.filter((x) => functions.has(x.fn) && !(x.name in SALE_IMMUTABILITY_TRIGGERS))) {
     violations.push(`${t.table}: ${t.fn}() used by unexpected trigger ${t.name}`);

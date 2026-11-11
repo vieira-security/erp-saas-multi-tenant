@@ -43,3 +43,45 @@ campos e códigos de erro de cada módulo estão nos comentários dos próprios 
   `status` aceita lista separada por vírgula (`CONFIRMED,PREPARING`); `businessDate` = `YYYY-MM-DD` de calendário real.
 - **Corpo opcional** em `POST /branches/:branchId/orders` e `.../cancel`: ausente equivale a `{}`.
 
+## Convenções acrescentadas no M6
+- **Pagamentos aninhados:** `payments[1].receivedAmount` (`required` em CASH, `invalid_value` se menor que o valor ou em outro método).
+- **`Money` com sinal só em `difference`** e nos totais líquidos do caixa (`"-5.00"`); todo o resto é ≥ 0.
+- **`payment_total_mismatch`:** o pedido segue EDITING e o rascunho é atualizado com os preços vigentes; o `GET` do pedido devolve o
+  total a pagar (default técnico, ver open-questions).
+- **Caixa de outro operador:** `GET` = 404 sem `cash.close` (não revela existência); `close` = 403.
+
+## `GET /me` e ajuste do Auth (KAN-52)
+- `GET /me` (contrato `MeDto` em `packages/contracts/src/me.ts`) fica no módulo `organization`, no mesmo `MeController` de
+  `GET /me/branches` (dados do próprio usuário; só autenticação). `/me/branches` continua com o significado do M3 (só
+  filiais operáveis); `/me` lista todas as filiais com acesso, com `operable` e permissões por filial.
+- `PERMISSION_CODES` (contrato) é igual ao catálogo do seed, na mesma ordem: um teste unitário falha se o catálogo mudar
+  sem atualizar o contrato.
+- `POST /auth/login` e `POST /auth/password`: corpo inválido agora responde no formato padrão
+  `400 { error: "validation_failed", details }` (antes, `{ statusCode, message: "invalid_request", error }` do Nest).
+  Campo desconhecido passa a ser `unknown_field`, como nas demais rotas. Nenhuma outra resposta do Auth mudou.
+
+## Funcionários: leitura (`GET /users`, desbloqueia KAN-29)
+
+- `GET /users` (`user.read`, tenant) → `Page<UserSummaryDto>`; filtros `status` e `search` (nome contém, sem diferenciar maiúsculas, ou matrícula exata). Ordem por `name` e depois `id` — exceção à ordem por criação, porque a lista serve para achar a pessoa.
+  - Query estrita (mesmo parser das outras listagens): `page`/`pageSize` (padrão 20, máx. 100); `status` fora de `ACTIVE | DISABLED | LOCKED` → `invalid_value`; `search` aparado, vazio → `too_short`, acima de 100 → `too_long`; qualquer outro campo (inclusive `tenantId`) → `unknown_field`.
+  - `search`: `name ILIKE '%termo%'` com `%`, `_` e `\` do termo escapados (texto literal, sempre parâmetro) **ou** `employee_number` igual ao termo normalizado pela mesma regra do login (`e001` encontra `E001`; termo que não é matrícula válida só busca por nome). Matrícula parcial não casa.
+  - Ordem: `name COLLATE "C"` e, em empate, `id` — ordem de code point, igual em qualquer banco (não depende da collation padrão). Consequência: maiúsculas vêm antes de minúsculas (`"Zulu"` antes de `"beta"`). Página e contagem são 2 queries SQL parametrizadas numa transação (o Prisma não aceita `COLLATE` no `orderBy`), com `tenant_id` do TenantContext.
+- `GET /users/:userId` (`user.read`) → `UserDto` com as roles (tenant inteiro ou por filial, inclusive INACTIVE para exibição) | 404 `not_found` (inexistente, de outro tenant ou id que não é UUID).
+  - Roles numa única leitura com relações aninhadas (sem query por role), ordenadas em memória por código: tenant inteiro primeiro, depois `branch.code`, depois `code`. Role `ARCHIVED` (existe no banco, não no contrato) sai como `INACTIVE`.
+- Nunca expõe hash de senha, tentativas de login, bloqueio temporário nem sessões.
+- Implementação: `apps/api/src/users/` (`UsersModule`, `UsersController` em `@Controller("users")`). `users/:userId/branch-access` continua no `OrganizationModule` (M3). Sem auditoria (leitura, como as demais listagens).
+- Cadastro, edição, desativação, atribuição de roles e reset de senha: ver "Funcionários: gestão" abaixo.
+
+## Funcionários: gestão (contratos)
+
+- `POST /users`, `PATCH /users/:userId` (só nome), `PUT /users/:userId/roles` (substitui o conjunto), `POST /users/:userId/deactivate|activate|reset-password|unlock`, todos com `user.manage` no tenant; `GET /roles` com `role.read`. Detalhes e erros em `packages/contracts/src/users.ts` e `roles.ts`.
+- Decisões de produto: matrícula digitada pelo gestor e imutável; senha temporária digitada pelo gestor, com troca obrigatória; dono e gerente gerenciam, mas nunca acima da própria autoridade; desativar derruba as sessões na hora, sem exclusão física, nunca a si mesmo nem o último Proprietário; o reset de senha destrava e derruba as sessões; desbloquear destrava sem trocar senha.
+- Novos códigos 409: `employee_number_already_exists`, `cannot_target_self`, `last_owner_required`, `user_has_open_cash_session`, `role_inactive`, `branch_access_required`.
+
+### Implementação da gestão
+
+- Rotas de funcionário em `UsersController` (`apps/api/src/users/`), regras em `UserManagementService`. `GET /roles` ficou em módulo próprio (`apps/api/src/roles/roles.module.ts`, `RolesModule`), só leitura.
+- **Ordem das checagens:** corpo (400, no controller, antes de qualquer consulta) → alvo no tenant (404) → autoridade sobre o alvo (403) → roles do corpo existem no tenant (400 `roles[i].roleId`, só `PUT /roles`) → autoridade sobre cada role que entra/sai (403) → regras de negócio (409). Entre os 409: `cannot_target_self` (antes de abrir a transação), depois `role_inactive`, `branch_access_required`, `last_owner_required`, `user_has_open_cash_session`.
+- `POST /users` responde 201; as demais respondem 200 com o `UserDto` atualizado (inclusive na chamada idempotente, sem gravar nada).
+- `PUT /roles`: atribuição já existente (mesma role e escopo) não é tocada, nem se a role estiver inativa; só as que entram precisam de role ACTIVE. Violação da FK composta (`user_roles` → `user_branch_access`, corrida com a revogação do acesso) vira 409 `branch_access_required`; violação da unique de matrícula (corrida no cadastro) vira 409 `employee_number_already_exists`.
+- `GET /roles`: todas as roles do tenant, `isSystem` primeiro e depois `code` (comparação por código), permissões por código, `ARCHIVED` como `INACTIVE`.

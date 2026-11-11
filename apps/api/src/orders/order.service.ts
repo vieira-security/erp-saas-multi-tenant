@@ -3,11 +3,16 @@ import type { OrderDto, OrderStatus, OrderSummaryDto, Page } from "@erp/contract
 import { AuthContextService } from "../auth/context/auth-context.js";
 import { PermissionDeniedError } from "../auth/errors.js";
 import { AuthorizationService, branchScope } from "../authorization/authorization.service.js";
+import { loadSessionSummary } from "../cash/cash-ledger.js";
+import { lockOpenSessionOf } from "../cash/cash-lock.js";
+import { changeOf, paymentsMatchTotal } from "../cash/cash-math.js";
+import type { PaymentValue } from "../cash/validation.js";
 import { CLOCK, type Clock } from "../clock/clock.js";
 import { PRISMA_CLIENT } from "../database/database.module.js";
 import { uuidV7 } from "../database/uuid-v7.js";
 import { OrderStatus as DbStatus, type Prisma, type PrismaClient } from "../generated/prisma/client.js";
 import { ConflictError, ConflictWithDetailsError, NotFoundError, ValidationFailedError } from "../http/api-error.js";
+import { moneyToCents, toMoney } from "../http/money.js";
 import { toPage, type PageRequest } from "../http/paging.js";
 import { BranchProductService } from "../products/branch-product.service.js";
 import { TenantScope } from "../tenancy/tenant-scope.js";
@@ -34,8 +39,10 @@ const STATE_TIMESTAMP: Readonly<Record<"start" | "ready" | "deliver", "preparing
  * O acesso à filial já foi exigido pelo PermissionGuard (`@RequireBranchPermissions`).
  * - Itens são validados e precificados com o cardápio da filial do M4 (BranchProductService.menu + pricing.ts), dentro da
  *   própria transação; na confirmação tudo é recalculado a partir do cardápio vigente.
- * - Confirmação: pedido travado FOR UPDATE, filial/empresa FOR SHARE (ACTIVE), dia no fuso da filial, número pelo
- *   contador atômico. Transições travam o pedido e seguem order-state.ts.
+ * - Confirmação (M6: paga antes de confirmar): pedido FOR UPDATE -> filial/empresa FOR SHARE (ACTIVE) -> caixa aberto
+ *   do ator FOR UPDATE -> recálculo dos itens -> soma dos pagamentos = total -> número (contador atômico) -> itens,
+ *   pagamentos e status. Qualquer erro desfaz tudo. Transições travam o pedido e seguem order-state.ts.
+ * - Cancelamento de pedido pago (M6): um estorno total por pagamento; dinheiro sai do caixa aberto de quem cancela.
  * - Cancelamento depende do estado e de quem criou: a rota exige só `order.read` na filial e ESTE service decide com as
  *   permissões efetivas do ator naquela filial (exceção documentada ao padrão declarativo, ver docs/security.md).
  */
@@ -101,9 +108,10 @@ export class OrderService {
     });
   }
 
-  async confirm(branchId: string, orderId: string): Promise<OrderDto> {
+  async confirm(branchId: string, orderId: string, payments: readonly PaymentValue[]): Promise<OrderDto> {
     const tenantId = this.scope.tenantId();
-    return this.prisma.$transaction(async (tx) => {
+    const { userId } = this.auth.require();
+    const result = await this.prisma.$transaction(async (tx): Promise<OrderDto | "payment_total_mismatch"> => {
       const order = await this.lock(tx, branchId, orderId);
       if (nextStatus(order.status, "confirm") === null) throw new ConflictError("order_invalid_transition");
       const stored = await tx.orderItem.findMany({
@@ -113,6 +121,10 @@ export class OrderService {
       });
       if (stored.length === 0) throw new ConflictError("order_empty");
       const branch = await this.requireActiveBranch(tx, branchId);
+      // Os pagamentos caem no caixa ABERTO de quem confirma (travado até o commit: um fechamento em paralelo espera, e
+      // se fechou antes, o caixa não é mais encontrado).
+      const session = await lockOpenSessionOf(tx, tenantId, branchId, userId);
+      if (!session) throw new ConflictError("cash_session_required");
       // Recalcula tudo com o cardápio vigente: vale o preço/disponibilidade da confirmação, não o do rascunho.
       const items = stored.map((item) => ({
         productId: item.productId,
@@ -121,18 +133,46 @@ export class OrderService {
         note: item.note,
       }));
       const priced = await this.price(tx, branchId, items, "confirm");
+      // A soma tem que bater com o total RECALCULADO. Divergência: nada financeiro é gravado e o pedido segue EDITING, mas o
+      // rascunho é atualizado com os preços vigentes (itens + total) para que o GET devolva o total a pagar — contrato
+      // ConfirmOrderRequest ("reenviar com o total devolvido em GET"); default técnico documentado em open-questions.md.
+      if (!paymentsMatchTotal(payments, priced.total)) {
+        await this.deleteItems(tx, orderId);
+        await this.writeItems(tx, orderId, priced.items);
+        await tx.order.update({ where: this.scope.where({ id: orderId }), data: { total: priced.total } });
+        return "payment_total_mismatch";
+      }
       const now = this.clock.now();
       const day = businessDate(now, branch.timezone);
       const number = await nextOrderNumber(tx, tenantId, branchId, day, uuidV7(now.getTime()));
       // Itens regravados ANTES de sair de EDITING (o trigger só aceita mudança de itens com o pedido EDITING).
       await this.deleteItems(tx, orderId);
       await this.writeItems(tx, orderId, priced.items);
+      // Pagamentos gravados com o pedido ainda EDITING (o trigger só aceita pagamento durante a confirmação).
+      if (payments.length > 0) {
+        await tx.payment.createMany({
+          data: payments.map((p) =>
+            this.scope.data({
+              branchId,
+              orderId,
+              cashSessionId: session.id,
+              method: p.method,
+              amount: p.amount,
+              receivedAmount: p.receivedAmount,
+              change: changeOf(p),
+              reference: p.reference,
+            }),
+          ),
+        });
+      }
       await tx.order.update({
         where: this.scope.where({ id: orderId }),
         data: { status: DbStatus.CONFIRMED, total: priced.total, number, businessDate: dateColumn(day), confirmedAt: now },
       });
       return this.load(tx, branchId, orderId);
     });
+    if (result === "payment_total_mismatch") throw new ConflictError("payment_total_mismatch");
+    return result;
   }
 
   /** start/ready/deliver: trava, valida a transição (repetir = 409) e grava o timestamp do novo estado. */
@@ -148,7 +188,9 @@ export class OrderService {
 
   /**
    * EDITING: quem criou (com `order.create`) ou quem tem `order.cancel`; motivo opcional.
-   * CONFIRMED/PREPARING/READY: só `order.cancel` NA FILIAL, motivo obrigatório. DELIVERED/CANCELLED: 409.
+   * CONFIRMED/PREPARING/READY/DELIVERED: só `order.cancel` NA FILIAL, motivo obrigatório. CANCELLED: 409.
+   * M6: pedido pago gera um estorno total por pagamento; estorno em dinheiro sai do caixa aberto de quem cancela (sem
+   * caixa aberto -> 409 `cash_session_required`, nada muda); PIX/cartão = devolução manual (`cashSessionId` null).
    */
   async cancel(branchId: string, orderId: string, reason: string | undefined): Promise<OrderDto> {
     const { userId } = this.auth.require();
@@ -161,6 +203,32 @@ export class OrderService {
         : permissions.has("order.cancel") || (order.createdBy === userId && permissions.has("order.create"));
       if (!allowed) throw new PermissionDeniedError();
       if (isConfirmed(order.status) && reason === undefined) throw new ValidationFailedError([{ field: "reason", issue: "required" }]);
+      const paid = await tx.payment.findMany({ where: this.scope.where({ branchId, orderId }), select: { id: true, method: true, amount: true } });
+      if (paid.length > 0) {
+        const cashSession = paid.some((p) => p.method === "CASH") ? await lockOpenSessionOf(tx, this.scope.tenantId(), branchId, userId) : null;
+        if (paid.some((p) => p.method === "CASH") && !cashSession) throw new ConflictError("cash_session_required");
+        if (cashSession) {
+          // O estorno em dinheiro sai do caixa de QUEM CANCELA (não do caixa da venda): precisa caber no dinheiro dele,
+          // como a sangria. Sem isso o esperado ficaria negativo e o caixa não fecharia. Caixa já travado FOR UPDATE.
+          const cashRefund = paid.filter((p) => p.method === "CASH").reduce((total, p) => total + moneyToCents(toMoney(p.amount)), 0n);
+          const { expectedCashCents } = await loadSessionSummary(tx, this.scope, branchId, cashSession.id);
+          if (cashRefund > expectedCashCents) throw new ConflictError("insufficient_cash");
+        }
+        // Estornos gravados antes de sair do estado confirmado (o trigger só aceita estorno durante o cancelamento).
+        await tx.refund.createMany({
+          data: paid.map((p) =>
+            this.scope.data({
+              branchId,
+              paymentId: p.id,
+              orderId,
+              method: p.method,
+              amount: p.amount,
+              cashSessionId: p.method === "CASH" ? cashSession!.id : null,
+              createdBy: userId,
+            }),
+          ),
+        });
+      }
       await tx.order.update({
         where: this.scope.where({ id: orderId }),
         data: { status: DbStatus.CANCELLED, cancelledAt: this.clock.now(), cancelledBy: userId, cancelReason: reason ?? null },

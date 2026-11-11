@@ -223,3 +223,37 @@ Contratos em `packages/contracts/src/orders.ts`.
 
 **Defaults técnicos do contrato (revisar):** estorno em dinheiro sai do caixa aberto de quem cancela; estorno de PIX/cartão é registrado como devolução manual na maquininha; quem não tem `cash.close` só vê os próprios caixas; até 10 pagamentos por pedido; sangria maior que o dinheiro esperado é recusada.
 Contratos em `packages/contracts/src/cash.ts` e mudanças em `orders.ts`.
+
+**Implementado (backend):** migrations `20261110000000_create_cash_and_payments` e `20261110010000_adjust_order_immutability` (ver [database.md](database.md)); grants em `03-runtime-grants.sql`; módulo `cash` e confirmação/cancelamento do módulo `orders` com pagamentos e estornos.
+
+**Defaults técnicos do M6 (revisar com o produto):**
+1. Confirmar exige caixa aberto de quem confirma mesmo com total `"0.00"` (lista de pagamentos vazia).
+2. Em `payment_total_mismatch`, o rascunho é atualizado com os preços vigentes (itens + total) antes do 409, para o `GET` devolver o total a pagar (o contrato manda "reenviar com o total devolvido em GET"); nada financeiro é gravado. Os demais erros desfazem tudo.
+3. Pagamentos de um pedido saem ordenados por criação e id (gravados juntos; a ordem do split não é preservada).
+4. Fechar caixa com permissão é checado antes do estado (caixa alheio fechado sem `cash.close` = 403, não 409).
+5. Índice de busca de pagamento por pedido é `(tenant_id, branch_id, order_id)` (a filial é sempre conhecida e cobre a FK composta) em vez de `(tenant_id, order_id)`.
+6. As tabelas append-only (`payments`, `refunds`, `cash_movements`) têm o trigger genérico de `tenant_id` além do append-only (regra geral do prompt); o padrão `SPECIAL_TENANT_ID_POLICIES` de `audit_logs` não foi usado porque proíbe outros triggers (o insert guard é necessário).
+
+**Pendente / fora do M6:**
+- Auditoria (`audit_logs`) de abertura/fechamento, sangria, suprimento, pagamento e estorno: catálogo de ações em aberto (#8, KAN-41); nada é gravado.
+- PSP/TEF (PIX e cartão integrados), conciliação de maquininha, estorno parcial, troca de forma de pagamento.
+- Fiscal (M9). Relatórios de caixa (fora do contrato).
+- **Merge:** este backend foi aberto contra `feat/m6-contracts`; ao fazer merge do #17, apagar a branch `feat/m6-contracts` (ou trocar a base do PR do backend para `develop`) antes do merge do backend.
+
+**Auditoria final do M6 (09/11/2026):** estorno em dinheiro passou a exigir dinheiro esperado suficiente no caixa de quem cancela (409 `insufficient_cash`, como a sangria). Antes, um estorno maior que o caixa do gerente deixava o esperado negativo: o GET do caixa respondia 500 e o caixa não fechava mais.
+
+## Gestão de funcionários e `GET /roles` (10/11/2026)
+
+**DECISION REQUIRED:**
+1. ~~**Autoridade igual (gerente × gerente).**~~ **Resolvido na auditoria (10/11/2026), opção (b):** quem toca `user.manage` (alvo que o tem em qualquer escopo, ou role que entra/sai com ela) precisa também de `role.manage` no tenant. Pela matriz padrão, só o dono cria, promove ou gerencia gerentes; o gerente gerencia atendentes e cozinha. Decorre da decisão de produto "gerente não cria nem promove ninguém a Proprietário/Gerente". Vale só para a gestão de funcionários; o acesso a filiais (M3) segue só a regra de permissões.
+2. **Role `ARCHIVED`.** Existe no banco, não no contrato (`ROLE_STATUSES` = `ACTIVE | INACTIVE`). `GET /users/:userId` e `GET /roles` mostram `ARCHIVED` como `INACTIVE` (não concede permissão em nenhum dos dois). Alternativas: esconder as arquivadas ou incluir `ARCHIVED` no contrato.
+
+**Respondido nesta entrega:**
+- **Janela do access token depois de desativar/resetar:** não existe. O AuthGuard relê a sessão (`revoked_at`) e o status do usuário a cada request; o access token antigo falha no request seguinte.
+
+**Defaults técnicos (revisar):**
+- O reset administrativo usa o evento já existente `auth.password.reset` (ator + alvo) em vez de criar `user.password_reset`.
+- A revogação de sessões na desativação usa o motivo novo `user_disabled` em `auth.sessions.revoked`.
+- "Proprietário" = role com código `OWNER` atribuída no tenant inteiro (sem exigir `is_system`); OWNER escopada a filial não conta.
+- Corrida residual: um caixa aberto pelo alvo **depois** da checagem de caixa aberto e antes do commit da desativação não é detectado (a abertura de caixa não trava a linha do usuário). A sessão do alvo é revogada no mesmo commit, então ele não opera mais; o caixa fica OPEN para quem tem `cash.close` fechar.
+- O M6 permite que quem tem `cash.close` feche o caixa de outro operador (o prompt dizia "só o próprio operador fecha"); a regra 409 `user_has_open_cash_session` vale do mesmo jeito.
