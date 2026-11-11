@@ -44,6 +44,7 @@ describe("migrations on a clean PostgreSQL database", () => {
       { name: "20261109000000_create_orders", finished: true, rolledBack: false },
       { name: "20261110000000_create_cash_and_payments", finished: true, rolledBack: false },
       { name: "20261110010000_adjust_order_immutability", finished: true, rolledBack: false },
+      { name: "20261110020000_create_kitchen", finished: true, rolledBack: false },
     ]);
   });
 
@@ -54,6 +55,7 @@ describe("migrations on a clean PostgreSQL database", () => {
     expect(tables.map((t) => t.name)).toEqual([
       "_prisma_migrations",
       "audit_logs",
+      "branch_kitchen_sectors",
       "branch_order_counters",
       "branch_product_settings",
       "branches",
@@ -61,6 +63,9 @@ describe("migrations on a clean PostgreSQL database", () => {
       "cash_sessions",
       "companies",
       "devices",
+      "kitchen_sectors",
+      "kitchen_ticket_items",
+      "kitchen_tickets",
       "order_item_options",
       "order_items",
       "orders",
@@ -749,10 +754,13 @@ describe("migrations on a clean PostgreSQL database", () => {
       "forbid_order_mutation_after_confirmation",
       "forbid_sales_truncate",
       "forbid_tenant_id_change",
+      "guard_kitchen_ticket",
+      "guard_kitchen_ticket_item",
     ]);
     expect(triggers).toEqual([
       { table: "audit_logs", name: "audit_logs_append_only" },
       { table: "audit_logs", name: "audit_logs_no_truncate" },
+      { table: "branch_kitchen_sectors", name: "branch_kitchen_sectors_tenant_id_immutable" },
       { table: "branch_order_counters", name: "branch_order_counters_tenant_id_immutable" },
       { table: "branch_product_settings", name: "branch_product_settings_tenant_id_immutable" },
       { table: "branches", name: "branches_tenant_id_immutable" },
@@ -765,6 +773,13 @@ describe("migrations on a clean PostgreSQL database", () => {
       { table: "cash_sessions", name: "cash_sessions_tenant_id_immutable" },
       { table: "companies", name: "companies_tenant_id_immutable" },
       { table: "devices", name: "devices_tenant_id_immutable" },
+      { table: "kitchen_sectors", name: "kitchen_sectors_tenant_id_immutable" },
+      { table: "kitchen_ticket_items", name: "kitchen_ticket_items_guard" },
+      { table: "kitchen_ticket_items", name: "kitchen_ticket_items_no_truncate" },
+      { table: "kitchen_ticket_items", name: "kitchen_ticket_items_tenant_id_immutable" },
+      { table: "kitchen_tickets", name: "kitchen_tickets_guard" },
+      { table: "kitchen_tickets", name: "kitchen_tickets_no_truncate" },
+      { table: "kitchen_tickets", name: "kitchen_tickets_tenant_id_immutable" },
       { table: "order_item_options", name: "order_item_options_editing_only" },
       { table: "order_item_options", name: "order_item_options_no_truncate" },
       { table: "order_item_options", name: "order_item_options_tenant_id_immutable" },

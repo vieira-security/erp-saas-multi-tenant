@@ -48,6 +48,11 @@ describe("schema hardening (PostgreSQL catalog)", () => {
           "audit_logs_tenant_id_resource_type_resource_id_created_at_idx",
           "audit_logs_tenant_id_user_id_created_at_idx",
         ],
+        branch_kitchen_sectors: [
+          "branch_kitchen_sectors_pkey",
+          "branch_kitchen_sectors_tenant_id_branch_id_sector_id_key",
+          "branch_kitchen_sectors_tenant_id_sector_id_idx",
+        ],
         branch_order_counters: ["branch_order_counters_pkey", "branch_order_counters_tenant_id_branch_id_business_date_key"],
         branch_product_settings: [
           "branch_product_settings_pkey",
@@ -79,12 +84,37 @@ describe("schema hardening (PostgreSQL catalog)", () => {
           "devices_tenant_id_id_key",
           "devices_tenant_id_status_idx",
         ],
+        kitchen_sectors: [
+          "kitchen_sectors_one_default_per_tenant_key",
+          "kitchen_sectors_pkey",
+          "kitchen_sectors_tenant_id_code_key",
+          "kitchen_sectors_tenant_id_id_key",
+        ],
+        kitchen_ticket_items: [
+          "kitchen_ticket_items_pkey",
+          "kitchen_ticket_items_tenant_id_order_id_order_item_id_key",
+          "kitchen_ticket_items_tenant_id_order_id_ticket_id_idx",
+        ],
+        kitchen_tickets: [
+          "kitchen_tickets_pkey",
+          "kitchen_tickets_tenant_id_branch_id_created_at_idx",
+          "kitchen_tickets_tenant_id_branch_id_order_id_idx",
+          "kitchen_tickets_tenant_id_order_id_id_key",
+          "kitchen_tickets_tenant_id_order_id_sector_id_key",
+          "kitchen_tickets_tenant_id_sector_id_idx",
+        ],
         order_item_options: [
           "order_item_options_pkey",
           "order_item_options_tenant_id_order_item_id_option_id_key",
           "order_item_options_tenant_id_order_item_id_sort_order_key",
         ],
-        order_items: ["order_items_pkey", "order_items_tenant_id_id_key", "order_items_tenant_id_order_id_sort_order_key", "order_items_tenant_id_product_id_idx"],
+        order_items: [
+          "order_items_pkey",
+          "order_items_tenant_id_id_key",
+          "order_items_tenant_id_order_id_id_key",
+          "order_items_tenant_id_order_id_sort_order_key",
+          "order_items_tenant_id_product_id_idx",
+        ],
         orders: [
           "orders_pkey",
           "orders_tenant_id_branch_id_business_date_number_key",
@@ -118,6 +148,7 @@ describe("schema hardening (PostgreSQL catalog)", () => {
           "products_tenant_id_category_id_idx",
           "products_tenant_id_code_key",
           "products_tenant_id_id_key",
+          "products_tenant_id_kitchen_sector_id_idx",
           "products_tenant_id_status_idx",
         ],
         refunds: [
@@ -233,6 +264,7 @@ describe("schema hardening (PostgreSQL catalog)", () => {
           index: "branches_tenant_id_id_key",
           fks: [
             "audit_logs_tenant_id_branch_id_fkey",
+            "branch_kitchen_sectors_tenant_id_branch_id_fkey",
             "branch_order_counters_tenant_id_branch_id_fkey",
             "branch_product_settings_tenant_id_branch_id_fkey",
             "cash_sessions_tenant_id_branch_id_fkey",
@@ -243,6 +275,10 @@ describe("schema hardening (PostgreSQL catalog)", () => {
         },
         { index: "companies_tenant_id_id_key", fks: ["branches_tenant_id_company_id_fkey"] },
         { index: "devices_tenant_id_id_key", fks: ["audit_logs_tenant_id_device_id_fkey", "sessions_tenant_id_device_id_fkey"] },
+        {
+          index: "kitchen_sectors_tenant_id_id_key",
+          fks: ["branch_kitchen_sectors_tenant_id_sector_id_fkey", "kitchen_tickets_tenant_id_sector_id_fkey", "products_tenant_id_kitchen_sector_id_fkey"],
+        },
         { index: "order_items_tenant_id_id_key", fks: ["order_item_options_tenant_id_order_item_id_fkey"] },
         { index: "orders_tenant_id_id_key", fks: ["order_items_tenant_id_order_id_fkey"] },
         { index: "product_categories_tenant_id_id_key", fks: ["products_tenant_id_category_id_fkey"] },
@@ -287,7 +323,12 @@ describe("schema hardening (PostgreSQL catalog)", () => {
 
   describe("manual partial indexes (UserRole scopes)", () => {
     it("pins both scope indexes: columns, order, uniqueness, B-tree and predicate", async () => {
-      expect(Object.keys(MANUAL_PARTIAL_INDEXES)).toEqual(["cash_sessions_open_per_operator_key", "user_roles_branch_scope_key", "user_roles_tenant_scope_key"]);
+      expect(Object.keys(MANUAL_PARTIAL_INDEXES)).toEqual([
+        "cash_sessions_open_per_operator_key",
+        "kitchen_sectors_one_default_per_tenant_key",
+        "user_roles_branch_scope_key",
+        "user_roles_tenant_scope_key",
+      ]);
       expect(await partialIndexViolations(prisma)).toEqual([]);
     });
 
@@ -313,7 +354,7 @@ describe("schema hardening (PostgreSQL catalog)", () => {
 
   describe("manual CHECK constraints", () => {
     it("pins every CHECK of the schema with its exact definition", async () => {
-      expect(Object.keys(MANUAL_CHECK_CONSTRAINTS)).toHaveLength(68);
+      expect(Object.keys(MANUAL_CHECK_CONSTRAINTS)).toHaveLength(76);
       expect(await checkConstraintViolations(prisma)).toEqual([]);
     });
 

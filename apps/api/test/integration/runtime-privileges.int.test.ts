@@ -50,6 +50,7 @@ describe("PostgreSQL privilege model (catalog audit)", () => {
       expect(RUNTIME_TABLE_PRIVILEGES).toEqual({
         _prisma_migrations: [],
         audit_logs: ["SELECT", "INSERT"],
+        branch_kitchen_sectors: ["SELECT", "INSERT", "UPDATE"],
         branch_order_counters: ["SELECT", "INSERT", "UPDATE"],
         branch_product_settings: ["SELECT", "INSERT", "UPDATE", "DELETE"],
         branches: ["SELECT", "INSERT", "UPDATE"],
@@ -57,6 +58,9 @@ describe("PostgreSQL privilege model (catalog audit)", () => {
         cash_sessions: ["SELECT", "INSERT", "UPDATE"],
         companies: ["SELECT", "INSERT", "UPDATE"],
         devices: ["SELECT", "INSERT", "UPDATE"],
+        kitchen_sectors: ["SELECT", "INSERT", "UPDATE"],
+        kitchen_ticket_items: ["SELECT", "INSERT"],
+        kitchen_tickets: ["SELECT", "INSERT", "UPDATE"],
         order_item_options: ["SELECT", "INSERT", "DELETE"],
         order_items: ["SELECT", "INSERT", "DELETE"],
         orders: ["SELECT", "INSERT", "UPDATE"],
@@ -90,9 +94,9 @@ describe("PostgreSQL privilege model (catalog audit)", () => {
           FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public'
         ) o GROUP BY kind, owner ORDER BY kind`;
       expect(owners).toEqual([
-        { kind: "enum", owner: roles.migrator, count: 13 },
-        { kind: "function", owner: roles.migrator, count: 8 },
-        { kind: "table", owner: roles.migrator, count: 26 },
+        { kind: "enum", owner: roles.migrator, count: 15 },
+        { kind: "function", owner: roles.migrator, count: 10 },
+        { kind: "table", owner: roles.migrator, count: 30 },
       ]);
       // Triggers have no owner of their own: they belong to their table, hence to the migrator.
       const [schema] = await owner.$queryRaw<{ owner: string }[]>`
@@ -126,6 +130,8 @@ describe("PostgreSQL privilege model (catalog audit)", () => {
         { name: "forbid_order_mutation_after_confirmation", acl: `{${roles.migrator}=X/${roles.migrator}}`, app: false },
         { name: "forbid_sales_truncate", acl: `{${roles.migrator}=X/${roles.migrator}}`, app: false },
         { name: "forbid_tenant_id_change", acl: `{${roles.migrator}=X/${roles.migrator}}`, app: false },
+        { name: "guard_kitchen_ticket", acl: `{${roles.migrator}=X/${roles.migrator}}`, app: false },
+        { name: "guard_kitchen_ticket_item", acl: `{${roles.migrator}=X/${roles.migrator}}`, app: false },
       ]);
       const defaults = await owner.$queryRaw<{ objtype: string; acl: string }[]>`
         SELECT defaclobjtype::text AS objtype, defaclacl::text AS acl FROM pg_default_acl
