@@ -51,7 +51,7 @@ import type { PageQuery } from "./common.js";
  * POST /branches/:branchId/kitchen-tickets/:ticketId/ready  `order.prepare` -> 200 KitchenTicketDto (READY)
  *        transição fora da ordem (inclusive repetir, ou comanda CANCELLED) -> 409 kitchen_ticket_invalid_transition
  * POST /branches/:branchId/kitchen-tickets/:ticketId/print  `order.read`    -> 200 KitchenTicketPrintDto
- *        Toda chamada conta uma via (`copyNumber` 1 = original, ≥ 2 = "2ª VIA"…); comanda CANCELLED imprime o aviso.
+ *        Toda chamada conta uma via (`copyNumber` 1 = original; a partir da 2ª, cabeçalho com o número da via: "2ª VIA", "3ª VIA"…); comanda CANCELLED imprime o aviso.
  */
 
 export const KITCHEN_SECTOR_STATUSES = ["ACTIVE", "INACTIVE"] as const;
@@ -77,7 +77,7 @@ export interface CreateKitchenSectorRequest {
   readonly sortOrder?: number;
 }
 
-/** Pelo menos um campo. `status` e padrão só pelas ações próprias. */
+/** Campos opcionais; corpo vazio = 200 sem mudança (padrão das PATCH do repo). `status` e padrão só pelas ações próprias. */
 export interface UpdateKitchenSectorRequest {
   readonly name?: string;
   readonly code?: string;
@@ -163,7 +163,7 @@ export interface KitchenTicketPrintDto {
   /**
    * Texto pronto para térmica 80 mm: cada linha com no máximo 48 caracteres (fonte monoespaçada), acentos
    * mantidos (UTF-8). Inclui setor, número do pedido, data/hora no fuso da filial, itens com quantidade, opções e
-   * observação, e o cabeçalho "2ª VIA" (via ≥ 2) ou "*** CANCELADO ***" (comanda CANCELLED). Sem preços.
+   * observação, e o cabeçalho "Nª VIA" com o número da via (via ≥ 2) ou "*** CANCELADO ***" (comanda CANCELLED). Sem preços.
    */
   readonly lines: readonly string[];
 }

@@ -1,7 +1,8 @@
 import type { OrderDto, OrderItemDto, OrderSummaryDto, PaymentDto, RefundDto } from "@erp/contracts";
 import { sumMoney } from "../cash/cash-math.js";
-import type { Order, OrderItem, OrderItemOption, Payment, Refund } from "../generated/prisma/client.js";
+import type { KitchenTicket, Order, OrderItem, OrderItemOption, Payment, Refund } from "../generated/prisma/client.js";
 import { toMoney } from "../http/money.js";
+import { toOrderKitchenTicketDtos } from "../kitchen/dto.js";
 import { fromDateColumn } from "./business-date.js";
 
 /** Model Prisma -> contrato HTTP. Só campos do contrato: `tenantId` nunca sai. */
@@ -13,6 +14,8 @@ export const ORDER_DETAIL_INCLUDE = {
   canceller: { select: { id: true, name: true } },
   // M6: pagamentos com o estorno de cada um (no máximo um), na mesma leitura.
   payments: { include: { refund: true } },
+  // M7: resumo das comandas (setor copiado e status), na mesma leitura.
+  kitchenTickets: { select: { id: true, sectorId: true, sectorName: true, sectorCode: true, status: true, createdAt: true } },
 } as const;
 
 export type OrderWithDetail = Order & {
@@ -20,6 +23,7 @@ export type OrderWithDetail = Order & {
   creator: { id: string; name: string };
   canceller: { id: string; name: string } | null;
   payments: (Payment & { refund: Refund | null })[];
+  kitchenTickets: Pick<KitchenTicket, "id" | "sectorId" | "sectorName" | "sectorCode" | "status" | "createdAt">[];
 };
 
 function iso(value: Date | null): string | null {
@@ -93,7 +97,6 @@ export function toOrderDto(order: OrderWithDetail): OrderDto {
     payments: payments.map(toPaymentDto),
     refunds: payments.flatMap((p) => (p.refund ? [p.refund] : [])).sort(byCreation).map(toRefundDto),
     changeGiven: sumMoney(payments.map((p) => toMoney(p.change))),
-    // M7 (contrato #26): placeholder até a implementação das comandas.
-    kitchenTickets: [],
+    kitchenTickets: toOrderKitchenTicketDtos(order.kitchenTickets),
   };
 }

@@ -208,7 +208,7 @@ Contratos em `packages/contracts/src/orders.ts`.
 
 **Pendente / fora do M5:**
 - Auditoria (`audit_logs`) de criação, confirmação e cancelamento: catálogo de ações ainda em aberto (#8); nada é gravado.
-- Permissão própria da cozinha (start/ready/deliver hoje usam `order.create`): M7.
+- ~~Permissão própria da cozinha (start/ready/deliver hoje usam `order.create`): M7.~~ Resolvido no M7: `start`/`ready` usam `order.prepare`; `deliver` segue com `order.create`.
 - Pagamento e estorno (M6), fiscal (M9), idempotency key do PDV offline (#4).
 - `TRUNCATE` em `orders`/itens não tem trigger próprio (só a falta de privilégio de `erp_app` impede); avaliar guarda como a de `audit_logs`.
 
@@ -257,3 +257,31 @@ Contratos em `packages/contracts/src/cash.ts` e mudanças em `orders.ts`.
 - "Proprietário" = role com código `OWNER` atribuída no tenant inteiro (sem exigir `is_system`); OWNER escopada a filial não conta.
 - Corrida residual: um caixa aberto pelo alvo **depois** da checagem de caixa aberto e antes do commit da desativação não é detectado (a abertura de caixa não trava a linha do usuário). A sessão do alvo é revogada no mesmo commit, então ele não opera mais; o caixa fica OPEN para quem tem `cash.close` fechar.
 - O M6 permite que quem tem `cash.close` feche o caixa de outro operador (o prompt dizia "só o próprio operador fecha"); a regra 409 `user_has_open_cash_session` vale do mesmo jeito.
+
+## M7 — Cozinha: setores, comandas por setor e impressão (decisões de produto de 10/11/2026)
+Decisões já no contrato (`packages/contracts/src/kitchen.ts`): permissão `order.prepare` (dono, gerente, atendente, cozinha); setores do tenant com liga/desliga por filial e um padrão "Cozinha" por tenant; uma comanda por setor na confirmação (combo inteiro no setor do principal); status do pedido derivado das comandas; `start`/`ready` do pedido como atalho; cancelamento cancela as comandas; impressão pelo navegador com 48 colunas e contagem de vias.
+
+**Implementado (backend):** migration `20261110020000_create_kitchen` (ver [database.md](database.md)); grants em `03-runtime-grants.sql`; módulo `apps/api/src/kitchen/`; confirmação, atalhos e cancelamento do módulo `orders`; `kitchenSectorId` no produto; `order.prepare` no catálogo, na matriz, em `PERMISSION_CODES` e no backfill.
+
+**DECISION REQUIRED:**
+1. **Cabeçalho da 3ª via em diante.** O contrato diz `"2ª VIA" (via ≥ 2)`; implementado assim (toda reimpressão sai com `2ª VIA`; o número real está em `copyNumber`). Alternativa: numerar (`3ª VIA`, `4ª VIA`...).
+2. **Desativar (ou desligar na filial) um setor com comandas abertas.** Hoje é permitido: as comandas WAITING/PREPARING continuam no setor (cópia da confirmação) e só os pedidos seguintes vão para o padrão. Alternativas: bloquear com 409 enquanto houver comanda aberta, ou mover as abertas para o padrão.
+
+**Defaults técnicos (revisar):**
+1. `PATCH /kitchen-sectors/:id` com corpo vazio devolve o setor sem gravar (convenção das demais PATCH do repo: categorias, produtos, organização); o contrato diz "Pelo menos um campo". Trocar para 400 é local no controller.
+2. `ready` do pedido a partir de WAITING grava `startedAt = readyAt` na comanda (o CHECK exige início em READY) e o pedido passa por PREPARING e READY no mesmo instante (`preparingAt = readyAt`).
+3. Depois de `make-default`, o novo padrão sempre recebe comandas na filial, mesmo que um ajuste antigo o tenha desligado (o contrato manda o padrão aparecer sempre ligado); o ajuste antigo fica gravado e volta a valer se o padrão mudar de novo.
+4. Item cujo produto aponta para setor inexistente (impossível pela FK) ou INACTIVE vai para o padrão; o produto aceita setor em qualquer status (contrato).
+5. Data/hora impressa = criação da comanda (= confirmação do pedido), no fuso da filial; nome do setor em maiúsculas no cabeçalho.
+6. Na listagem de comandas, `businessDate` filtra pelo dia de operação do pedido; `GET /kitchen-sectors` não aceita query (parâmetro desconhecido = 400).
+7. Liga/desliga por filial grava a linha também para o padrão ligado (`enabled: true`); sem DELETE (o ajuste fica, `enabled` alterna).
+
+**Pendente / fora do M7:**
+- Auditoria (`audit_logs`) de setores, comandas e impressões: catálogo de ações em aberto (KAN-41); nada é gravado.
+- Agente local de impressão ESC/POS (reaproveita `lines`); M8 (fiscal) não iniciado.
+- Tela da cozinha (KDS) e tempo real (polling/SSE) ficam com o frontend.
+
+**Decisões do M7 na auditoria (10/11/2026):**
+1. Reimpressão numera a via de verdade: "2ª VIA", "3ª VIA"... (antes toda reimpressão saía "2ª VIA").
+2. Setor desativado no tenant ou desligado na filial com comandas abertas: **permitido**; as comandas abertas continuam no setor original (a cozinha termina o que já começou) e só os pedidos confirmados depois vão para o setor padrão.
+3. `PATCH /kitchen-sectors/:id` com corpo vazio responde 200 sem mudança (padrão das PATCH do repo); contrato ajustado.

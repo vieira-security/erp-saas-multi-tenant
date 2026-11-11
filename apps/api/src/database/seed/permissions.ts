@@ -24,6 +24,9 @@ export const PERMISSION_CATALOG: readonly PermissionDefinition[] = [
   { code: "order.read", module: "orders", description: "Visualizar pedidos" },
   { code: "order.create", module: "orders", description: "Criar pedidos" },
   { code: "order.cancel", module: "orders", description: "Cancelar pedidos" },
+  // M7 (decisão de 10/11/2026): iniciar/terminar o preparo (comandas e atalho do pedido). Também inserida pela migration
+  // 20261110020000_create_kitchen (backfill das roles padrão); a descrição precisa ser a mesma.
+  { code: "order.prepare", module: "orders", description: "Preparar pedidos (cozinha)" },
   { code: "cash.read", module: "cash", description: "Visualizar caixa" },
   { code: "cash.open", module: "cash", description: "Abrir caixa" },
   { code: "cash.close", module: "cash", description: "Fechar caixa" },

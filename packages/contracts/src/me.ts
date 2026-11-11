@@ -31,6 +31,7 @@ export const PERMISSION_CODES = [
   "order.read",
   "order.create",
   "order.cancel",
+  "order.prepare",
   "cash.read",
   "cash.open",
   "cash.close",

@@ -23,6 +23,7 @@ function optionalBody(body: unknown): unknown {
  * HTTP do M5 (contrato em `@erp/contracts`, orders.ts). TODAS as rotas são de FILIAL: o PermissionGuard exige a
  * permissão NA filial `:branchId` (UserBranchAccess), mesmo para role tenant-wide; sem acesso, filial de outro tenant ou
  * inexistente = 403. Exceção documentada: `cancel` declara só `order.read` na filial e o service decide pelo estado.
+ * M7: start/ready exigem `order.prepare` (Proprietário, Gerente, Atendente e Cozinha); deliver continua com `order.create`.
  */
 @Controller("branches/:branchId/orders")
 export class OrdersController {
@@ -78,14 +79,14 @@ export class OrdersController {
 
   @Post(":orderId/start")
   @HttpCode(200)
-  @RequireBranchPermissions("branchId", "order.create")
+  @RequireBranchPermissions("branchId", "order.prepare")
   start(@Param("branchId") branchId: string, @Param("orderId") orderId: string): Promise<OrderDto> {
     return this.orders.advance(routeId(branchId, "Branch"), routeId(orderId, "Order"), "start");
   }
 
   @Post(":orderId/ready")
   @HttpCode(200)
-  @RequireBranchPermissions("branchId", "order.create")
+  @RequireBranchPermissions("branchId", "order.prepare")
   ready(@Param("branchId") branchId: string, @Param("orderId") orderId: string): Promise<OrderDto> {
     return this.orders.advance(routeId(branchId, "Branch"), routeId(orderId, "Order"), "ready");
   }

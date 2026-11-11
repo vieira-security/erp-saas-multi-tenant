@@ -77,7 +77,11 @@ describe("M6 cash and payments over HTTP (PostgreSQL, as erp_app)", () => {
 
   async function shop(name: string) {
     const org = await seedOrg(owner, name);
-    await h.tenants.run({ tenantId: org.tenantId }, () => new TenantProvisioningService(prisma, h.scope).provisionDefaultRoles());
+    await h.tenants.run({ tenantId: org.tenantId }, async () => {
+      const provisioning = new TenantProvisioningService(prisma, h.scope);
+      await provisioning.provisionDefaultRoles();
+      await provisioning.provisionDefaultKitchenSector(); // M7: confirmation routes items to the default sector
+    });
     const actors = {
       owner: await login(org, "OWNER", [org.branchId, org.otherBranchId]),
       manager: await login(org, "MANAGER", [org.branchId, org.otherBranchId]),
