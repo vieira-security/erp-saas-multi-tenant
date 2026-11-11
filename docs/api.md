@@ -104,3 +104,8 @@ campos e códigos de erro de cada módulo estão nos comentários dos próprios 
 - **Listagens:** `GET /kitchen-sectors` e `GET /branches/:branchId/kitchen-sectors` (padrão primeiro, `sortOrder`, `name` por código, `id`); `GET /kitchen-tickets` em ordem de chegada (`createdAt`, `id`), filtros `sectorId` (UUID), `status` (CSV de `KITCHEN_TICKET_STATUSES`; inválido = 400 `invalid_value`) e `businessDate` (dia do pedido), paginação padrão; itens, número e dia do pedido na mesma leitura (sem N+1). `OrderDto.kitchenTickets` vem no `include` do detalhe do pedido.
 - **Produto:** `kitchenSectorId` no create/update e nos DTOs; setor inexistente ou de outro tenant = 400 `invalid_value` em `kitchenSectorId` (qualquer status é aceito; setor INACTIVE manda o item para o padrão na confirmação).
 - `PATCH /kitchen-sectors/:id` com corpo vazio devolve o setor sem gravar (mesma convenção das outras PATCH do repo; ver open-questions).
+
+## Histórico de auditoria e preferências (contratos, KAN-41 e KAN-42)
+
+- `GET /audit-logs` (`audit.read`): eventos com filial nas filiais do usuário; eventos do tenant exigem também `audit.read_tenant` (só o dono). Ordem: mais recente primeiro. Catálogo de ações em `AUDIT_ACTIONS` (`packages/contracts/src/audit.ts`); alterações guardam antes e depois dos campos que mudaram.
+- `GET/PUT /me/preferences`: `catalogView` `GRID` (default) ou `LIST`, por usuário.
