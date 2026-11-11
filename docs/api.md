@@ -70,10 +70,18 @@ campos e códigos de erro de cada módulo estão nos comentários dos próprios 
   - Roles numa única leitura com relações aninhadas (sem query por role), ordenadas em memória por código: tenant inteiro primeiro, depois `branch.code`, depois `code`. Role `ARCHIVED` (existe no banco, não no contrato) sai como `INACTIVE`.
 - Nunca expõe hash de senha, tentativas de login, bloqueio temporário nem sessões.
 - Implementação: `apps/api/src/users/` (`UsersModule`, `UsersController` em `@Controller("users")`). `users/:userId/branch-access` continua no `OrganizationModule` (M3). Sem auditoria (leitura, como as demais listagens).
-- Cadastro/edição/desativação de funcionário, atribuição de roles e reset de senha: fora desta fase (próximo módulo, com decisão de produto).
+- Cadastro, edição, desativação, atribuição de roles e reset de senha: ver "Funcionários: gestão" abaixo.
 
 ## Funcionários: gestão (contratos)
 
 - `POST /users`, `PATCH /users/:userId` (só nome), `PUT /users/:userId/roles` (substitui o conjunto), `POST /users/:userId/deactivate|activate|reset-password|unlock`, todos com `user.manage` no tenant; `GET /roles` com `role.read`. Detalhes e erros em `packages/contracts/src/users.ts` e `roles.ts`.
 - Decisões de produto: matrícula digitada pelo gestor e imutável; senha temporária digitada pelo gestor, com troca obrigatória; dono e gerente gerenciam, mas nunca acima da própria autoridade; desativar derruba as sessões na hora, sem exclusão física, nunca a si mesmo nem o último Proprietário; o reset de senha destrava e derruba as sessões; desbloquear destrava sem trocar senha.
 - Novos códigos 409: `employee_number_already_exists`, `cannot_target_self`, `last_owner_required`, `user_has_open_cash_session`, `role_inactive`, `branch_access_required`.
+
+### Implementação da gestão
+
+- Rotas de funcionário em `UsersController` (`apps/api/src/users/`), regras em `UserManagementService`. `GET /roles` ficou em módulo próprio (`apps/api/src/roles/roles.module.ts`, `RolesModule`), só leitura.
+- **Ordem das checagens:** corpo (400, no controller, antes de qualquer consulta) → alvo no tenant (404) → autoridade sobre o alvo (403) → roles do corpo existem no tenant (400 `roles[i].roleId`, só `PUT /roles`) → autoridade sobre cada role que entra/sai (403) → regras de negócio (409). Entre os 409: `cannot_target_self` (antes de abrir a transação), depois `role_inactive`, `branch_access_required`, `last_owner_required`, `user_has_open_cash_session`.
+- `POST /users` responde 201; as demais respondem 200 com o `UserDto` atualizado (inclusive na chamada idempotente, sem gravar nada).
+- `PUT /roles`: atribuição já existente (mesma role e escopo) não é tocada, nem se a role estiver inativa; só as que entram precisam de role ACTIVE. Violação da FK composta (`user_roles` → `user_branch_access`, corrida com a revogação do acesso) vira 409 `branch_access_required`; violação da unique de matrícula (corrida no cadastro) vira 409 `employee_number_already_exists`.
+- `GET /roles`: todas as roles do tenant, `isSystem` primeiro e depois `code` (comparação por código), permissões por código, `ARCHIVED` como `INACTIVE`.

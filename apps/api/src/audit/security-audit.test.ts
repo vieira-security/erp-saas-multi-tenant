@@ -85,4 +85,30 @@ describe("security audit metadata", () => {
     expect(normalizeIp("::1")).toBe("::1");
     for (const ip of ["", "not-an-ip", "10.0.0.1, 10.0.0.2", undefined, null]) expect(normalizeIp(ip)).toBeNull();
   });
+
+  it("records the user management events with the actor in user_id and the target in resource_id", async () => {
+    const { rows, record } = writer();
+    const A = "0199a000-0000-7000-8000-0000000000a3";
+    for (const action of ["user.created", "user.updated", "user.deactivated", "user.activated", "user.unlocked"] as const) {
+      await record({ action, targetUserId: U, actorUserId: A });
+    }
+    for (const row of rows) expect(row).toMatchObject({ resourceType: "user", resourceId: U, userId: A, deviceId: null });
+    expect(rows.every((row) => !("metadata" in row))).toBe(true);
+  });
+
+  it("stores the role assignments that entered and left as uuid references only", async () => {
+    const { rows, record } = writer();
+    const R = "0199a000-0000-7000-8000-0000000000c1";
+    const B = "0199a000-0000-7000-8000-0000000000b1";
+    await record({ action: "user.roles_replaced", targetUserId: U, actorUserId: S, added: [R, `${R}:${B}`], removed: [] });
+    expect(rows[0]).toMatchObject({ action: "user.roles_replaced", resourceId: U, userId: S, metadata: { roles_added: [R, `${R}:${B}`], roles_removed: [] } });
+
+    for (const bad of [["OWNER"], [`${R}:OWNER`], [R.toUpperCase()], ["Senha-123"], Array.from({ length: 51 }, () => R), [1]]) {
+      await expect(record({ action: "user.roles_replaced", targetUserId: U, actorUserId: S, added: bad as string[], removed: [] }), JSON.stringify(bad).slice(0, 40)).rejects.toThrow(
+        UnsafeAuditMetadataError,
+      );
+    }
+    expect(() => assertSafeAuditMetadata({ roles_added: R })).toThrow(UnsafeAuditMetadataError);
+    expect(() => assertSafeAuditMetadata({ reason: [R] })).toThrow(UnsafeAuditMetadataError);
+  });
 });

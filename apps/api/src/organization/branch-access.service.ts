@@ -1,10 +1,10 @@
 import { Inject, Injectable } from "@nestjs/common";
 import type { BranchAccessDto } from "@erp/contracts";
 import { AuthContextService } from "../auth/context/auth-context.js";
-import { PermissionDeniedError } from "../auth/errors.js";
-import { AuthorizationService, branchScope } from "../authorization/authorization.service.js";
+import { AuthorityService } from "../authorization/authority.js";
+import { branchScope } from "../authorization/authorization.service.js";
 import { PRISMA_CLIENT } from "../database/database.module.js";
-import { BranchStatus, RoleStatus, type PrismaClient } from "../generated/prisma/client.js";
+import { BranchStatus, type PrismaClient } from "../generated/prisma/client.js";
 import { ConflictError, NotFoundError } from "../http/api-error.js";
 import { TenantScope } from "../tenancy/tenant-scope.js";
 import { BRANCH_SUMMARY_SELECT, toBranchAccessDto } from "./dto.js";
@@ -23,7 +23,7 @@ export class BranchAccessService {
   constructor(
     @Inject(PRISMA_CLIENT) private readonly prisma: PrismaClient,
     @Inject(TenantScope) private readonly scope: TenantScope,
-    @Inject(AuthorizationService) private readonly authorization: AuthorizationService,
+    @Inject(AuthorityService) private readonly authority: AuthorityService,
     @Inject(AuthContextService) private readonly auth: AuthContextService,
   ) {}
 
@@ -69,14 +69,9 @@ export class BranchAccessService {
     }
   }
 
-  /** 403 se o alvo tiver, em qualquer role ACTIVE, alguma permissão que o ator não tem na filial. */
+  /** 403 se o alvo tiver, em qualquer role ACTIVE, alguma permissão que o ator não tem na filial (AuthorityService). */
   private async requireNoGreaterAuthority(targetUserId: string, branchId: string): Promise<void> {
-    const actor = await this.authorization.getEffectivePermissions(this.auth.require().userId, branchScope(branchId));
-    const target = await this.prisma.rolePermission.findMany({
-      where: this.scope.where({ role: { status: RoleStatus.ACTIVE, userRoles: { some: { userId: targetUserId } } } }),
-      select: { permission: { select: { code: true } } },
-    });
-    if (target.some((row) => !actor.has(row.permission.code))) throw new PermissionDeniedError();
+    await this.authority.requireNoGreaterAuthority(this.auth.require().userId, targetUserId, branchScope(branchId));
   }
 
   private async requireUser(userId: string): Promise<void> {
