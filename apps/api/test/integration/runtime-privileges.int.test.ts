@@ -76,6 +76,7 @@ describe("PostgreSQL privilege model (catalog audit)", () => {
         sessions: ["SELECT", "INSERT", "UPDATE"],
         tenants: ["SELECT", "INSERT", "UPDATE"],
         user_branch_access: ["SELECT", "INSERT", "DELETE"],
+        user_preferences: ["SELECT", "INSERT", "UPDATE"],
         user_roles: ["SELECT", "INSERT", "DELETE"],
         users: ["SELECT", "INSERT", "UPDATE"],
       });
@@ -96,7 +97,7 @@ describe("PostgreSQL privilege model (catalog audit)", () => {
       expect(owners).toEqual([
         { kind: "enum", owner: roles.migrator, count: 15 },
         { kind: "function", owner: roles.migrator, count: 10 },
-        { kind: "table", owner: roles.migrator, count: 30 },
+        { kind: "table", owner: roles.migrator, count: 31 },
       ]);
       // Triggers have no owner of their own: they belong to their table, hence to the migrator.
       const [schema] = await owner.$queryRaw<{ owner: string }[]>`

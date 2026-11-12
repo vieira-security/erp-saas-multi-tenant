@@ -56,7 +56,8 @@ describe("M7 migration on a database with M6 data (incremental path)", () => {
     partial = mkdtempSync(join(tmpdir(), "erp-m6-"));
     const migrations = join(apiRoot, "prisma", "migrations");
     for (const entry of readdirSync(migrations)) {
-      if (entry !== M7_MIGRATION) cpSync(join(migrations, entry), join(partial, "migrations", entry), { recursive: true });
+      // Only what came BEFORE M7 (later migrations, like KAN-41/42, are applied by the real deploy below, after M7).
+      if (entry < M7_MIGRATION) cpSync(join(migrations, entry), join(partial, "migrations", entry), { recursive: true });
     }
     const config = join(partial, "prisma.config.mjs");
     writeFileSync(
@@ -68,12 +69,14 @@ describe("M7 migration on a database with M6 data (incremental path)", () => {
 
     // 2. M6 data (raw SQL where the M7 Prisma client would touch new columns).
     db = createPrismaClient(migratorUrl);
-    const preM7 = PERMISSION_CATALOG.filter((p) => p.code !== "order.prepare");
+    // Catalog as it was at M6: without order.prepare (M7) and the audit permissions (KAN-41, a later migration).
+    const later = new Set(["order.prepare", "audit.read", "audit.read_tenant"]);
+    const preM7 = PERMISSION_CATALOG.filter((p) => !later.has(p.code));
     for (const p of preM7) await db.permission.create({ data: { code: p.code, module: p.module, description: p.description } });
     const permissions = new Map((await db.permission.findMany()).map((p) => [p.code, p.id]));
     const role = async (tenantId: string, code: string, isSystem: boolean, codes: readonly string[]) => {
       const r = await db.role.create({ data: { tenantId, code, name: code, isSystem, status: RoleStatus.ACTIVE } });
-      for (const c of codes.filter((x) => x !== "order.prepare")) await db.rolePermission.create({ data: { tenantId, roleId: r.id, permissionId: permissions.get(c)! } });
+      for (const c of codes.filter((x) => !later.has(x))) await db.rolePermission.create({ data: { tenantId, roleId: r.id, permissionId: permissions.get(c)! } });
       return r.id;
     };
     const tenantA = await db.tenant.create({ data: { name: "M6 A", status: TenantStatus.ACTIVE } });
@@ -104,7 +107,7 @@ describe("M7 migration on a database with M6 data (incremental path)", () => {
     await db.$executeRaw`UPDATE orders SET status = 'CONFIRMED', number = 1, business_date = '2026-11-09', confirmed_at = now() WHERE id = ${order.id}::uuid`;
     ids.order = order.id;
 
-    // 3. The real deploy: pending migrations (only M7), runtime grants, then the seed.
+    // 3. The real deploy: pending migrations (M7 and the ones after it), runtime grants, then the seed.
     deploy = await runPrisma(["migrate", "deploy"], migratorUrl);
     if (deploy.code !== 0) throw new Error(`migrate deploy (M7) failed:\n${deploy.output}`);
     await runInfrastructureScript(migratorUrl, "03-runtime-grants.sql", roles);
@@ -118,10 +121,10 @@ describe("M7 migration on a database with M6 data (incremental path)", () => {
     if (roles) await dropRoles(serverUrl, roles);
   });
 
-  it("applies only the M7 migration on top of M6", async () => {
+  it("applies the M7 migration on top of M6 (then the later ones, in order)", async () => {
     expect(deploy.output).toContain(M7_MIGRATION);
-    const rows = await db.$queryRaw<{ name: string }[]>`SELECT migration_name AS name FROM _prisma_migrations WHERE finished_at IS NOT NULL ORDER BY migration_name DESC LIMIT 2`;
-    expect(rows.map((r) => r.name)).toEqual([M7_MIGRATION, "20261110010000_adjust_order_immutability"]);
+    const rows = await db.$queryRaw<{ name: string }[]>`SELECT migration_name AS name FROM _prisma_migrations WHERE finished_at IS NOT NULL ORDER BY migration_name DESC LIMIT 3`;
+    expect(rows.map((r) => r.name)).toEqual(["20261111000000_audit_read_and_user_preferences", M7_MIGRATION, "20261110010000_adjust_order_immutability"]);
   });
 
   it("gives every existing tenant exactly one default sector 'Cozinha' (COZINHA), ACTIVE, with a UUIDv7 id", async () => {
@@ -156,11 +159,11 @@ describe("M7 migration on a database with M6 data (incremental path)", () => {
     expect((await db.product.findFirstOrThrow({ where: { tenantId: ids.tenantA } })).kitchenSectorId).toBeNull();
   });
 
-  it("keeps the seed idempotent and aligned with the migration (20 permissions, same description), and a re-deploy is a no-op", async () => {
+  it("keeps the seed idempotent and aligned with the migrations (22 permissions, same description), and a re-deploy is a no-op", async () => {
     const before = await db.permission.findUniqueOrThrow({ where: { code: "order.prepare" } });
-    expect(await seedPermissions(db)).toBe(20);
-    expect(await seedPermissions(db)).toBe(20);
-    expect(await db.permission.count()).toBe(20);
+    expect(await seedPermissions(db)).toBe(22);
+    expect(await seedPermissions(db)).toBe(22);
+    expect(await db.permission.count()).toBe(22);
     expect(await db.permission.findUniqueOrThrow({ where: { code: "order.prepare" } })).toEqual(before);
     const again = await runPrisma(["migrate", "deploy"], migratorUrl);
     expect(again.code, again.output).toBe(0);

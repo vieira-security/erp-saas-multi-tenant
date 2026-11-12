@@ -236,7 +236,7 @@ describe("runtime role erp_app (PostgreSQL, logged in as erp_app)", () => {
         SELECT count(*) FILTER (WHERE tgenabled = 'O')::int AS enabled, count(*)::int AS total,
                count(*) FILTER (WHERE tgname = 'probe')::int AS probes
         FROM pg_trigger WHERE NOT tgisinternal`;
-      expect(row).toEqual({ enabled: 49, total: 49, probes: 0 });
+      expect(row).toEqual({ enabled: 50, total: 50, probes: 0 });
       const [replication] = await app.$queryRaw<{ value: string }[]>`SELECT current_setting('session_replication_role') AS value`;
       expect(replication?.value).toBe("origin");
       const functions = await owner.$queryRaw<{ name: string; body: string }[]>`

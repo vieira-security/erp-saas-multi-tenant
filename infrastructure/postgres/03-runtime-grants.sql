@@ -68,10 +68,15 @@ GRANT SELECT, INSERT, UPDATE ON kitchen_tickets TO erp_app;
 -- M7, itens da comanda: append-only também por privilégio (independente do trigger kitchen_ticket_items_guard).
 GRANT SELECT, INSERT ON kitchen_ticket_items TO erp_app;
 
+-- KAN-42, preferências do próprio usuário: upsert (INSERT ... ON CONFLICT DO UPDATE). Sem DELETE (sem linha = defaults;
+-- nenhuma rota apaga), sem TRUNCATE.
+GRANT SELECT, INSERT, UPDATE ON user_preferences TO erp_app;
+
 -- Catálogo técnico global: mantido pelo deploy (seed como erp_migrator); somente leitura em runtime.
 GRANT SELECT ON permissions TO erp_app;
 
--- Trilha de auditoria: append-only também na camada de privilégios (independente dos triggers audit_logs_*).
+-- Trilha de auditoria: append-only também na camada de privilégios (independente dos triggers audit_logs_*). KAN-41 grava
+-- eventos de negócio (INSERT) e lê o histórico (SELECT); não existe rota de alteração ou exclusão.
 GRANT SELECT, INSERT ON audit_logs TO erp_app;
 
 -- _prisma_migrations: sem acesso runtime (coberto pelo REVOKE acima).

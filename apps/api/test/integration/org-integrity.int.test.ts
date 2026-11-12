@@ -75,6 +75,7 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
         sessions: "tenant",
         tenants: "root",
         user_branch_access: "tenant",
+        user_preferences: "tenant",
         user_roles: "tenant",
         users: "tenant",
       });
@@ -141,6 +142,7 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
         "roles",
         "sessions",
         "user_branch_access",
+        "user_preferences",
         "user_roles",
         "users",
       ]);
@@ -471,6 +473,14 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
             "FOREIGN KEY (tenant_id, user_id) REFERENCES users(tenant_id, id) ON UPDATE RESTRICT ON DELETE RESTRICT",
         },
         {
+          name: "user_preferences_tenant_id_fkey",
+          definition: "FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+        },
+        {
+          name: "user_preferences_tenant_id_user_id_fkey",
+          definition: "FOREIGN KEY (tenant_id, user_id) REFERENCES users(tenant_id, id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+        },
+        {
           name: "user_roles_tenant_id_fkey",
           definition: "FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON UPDATE RESTRICT ON DELETE RESTRICT",
         },
@@ -594,6 +604,7 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
         ["sessions_tenant_id_user_id_fkey", "tenant -> tenant"],
         ["user_branch_access_tenant_id_branch_id_fkey", "tenant -> tenant"],
         ["user_branch_access_tenant_id_user_id_fkey", "tenant -> tenant"],
+        ["user_preferences_tenant_id_user_id_fkey", "tenant -> tenant"],
         ["user_roles_tenant_id_role_id_fkey", "tenant -> tenant"],
         ["user_roles_tenant_id_user_id_branch_id_fkey", "tenant -> tenant"],
         ["user_roles_tenant_id_user_id_fkey", "tenant -> tenant"],
@@ -742,6 +753,7 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
         "roles",
         "sessions",
         "user_branch_access",
+        "user_preferences",
         "user_roles",
         "users",
       ]);
