@@ -33,6 +33,11 @@ export const PERMISSION_CATALOG: readonly PermissionDefinition[] = [
   { code: "fiscal.read", module: "fiscal", description: "Visualizar documentos fiscais" },
   { code: "fiscal.issue", module: "fiscal", description: "Emitir documentos fiscais" },
   { code: "fiscal.cancel", module: "fiscal", description: "Cancelar documentos fiscais" },
+  // KAN-41 (decisão de 10/11/2026): histórico de auditoria. `audit.read` = eventos COM filial nas filiais onde vale;
+  // `audit.read_tenant` = também os eventos SEM filial (tenant). Inseridas também pela migration
+  // 20261111000000_audit_read_and_user_preferences (backfill das roles padrão); a descrição precisa ser a mesma.
+  { code: "audit.read", module: "audit", description: "Visualizar histórico de auditoria" },
+  { code: "audit.read_tenant", module: "audit", description: "Visualizar auditoria do tenant (eventos sem filial)" },
 ];
 
 /**

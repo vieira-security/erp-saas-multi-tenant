@@ -166,6 +166,7 @@ describe("schema hardening (PostgreSQL catalog)", () => {
           "user_branch_access_tenant_id_branch_id_idx",
           "user_branch_access_tenant_id_user_id_branch_id_key",
         ],
+        user_preferences: ["user_preferences_pkey", "user_preferences_tenant_id_user_id_key"],
         user_roles: [
           "user_roles_branch_scope_key",
           "user_roles_pkey",
@@ -304,6 +305,7 @@ describe("schema hardening (PostgreSQL catalog)", () => {
             "refunds_tenant_id_created_by_fkey",
             "sessions_tenant_id_user_id_fkey",
             "user_branch_access_tenant_id_user_id_fkey",
+            "user_preferences_tenant_id_user_id_fkey",
             "user_roles_tenant_id_user_id_fkey",
           ],
         },
@@ -354,7 +356,7 @@ describe("schema hardening (PostgreSQL catalog)", () => {
 
   describe("manual CHECK constraints", () => {
     it("pins every CHECK of the schema with its exact definition", async () => {
-      expect(Object.keys(MANUAL_CHECK_CONSTRAINTS)).toHaveLength(76);
+      expect(Object.keys(MANUAL_CHECK_CONSTRAINTS)).toHaveLength(77);
       expect(await checkConstraintViolations(prisma)).toEqual([]);
     });
 

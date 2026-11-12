@@ -1,5 +1,9 @@
 import { Inject, Injectable } from "@nestjs/common";
 import type { BranchKitchenSectorDto, KitchenSectorDto } from "@erp/contracts";
+import { lockRowForAudit } from "../audit/audit-lock.js";
+import { BusinessAuditWriter, auditActorOf } from "../audit/business-audit.js";
+import { diffChanges } from "../audit/changes.js";
+import { AuthContextService } from "../auth/context/auth-context.js";
 import { PRISMA_CLIENT } from "../database/database.module.js";
 import { uuidV7 } from "../database/uuid-v7.js";
 import { KitchenSectorStatus as DbStatus, type PrismaClient } from "../generated/prisma/client.js";
@@ -30,12 +34,15 @@ export interface KitchenSectorChanges {
  * - `make-default` troca o padrão atomicamente (trava todos os setores do tenant, desmarca o antigo, marca o novo); setor
  *   INACTIVE não vira padrão (409 `kitchen_sector_inactive`). Ativar/desativar/tornar padrão são idempotentes.
  * Ordem de travas e interação com a confirmação: kitchen-lock.ts.
+ * KAN-41: `kitchen_sector.*` (tenant) e `branch_kitchen_sector.updated` (filial da rota) na mesma transação; operações
+ * idempotentes sem mudança não auditam.
  */
 @Injectable()
 export class KitchenSectorService {
   constructor(
     @Inject(PRISMA_CLIENT) private readonly prisma: PrismaClient,
     @Inject(TenantScope) private readonly scope: TenantScope,
+    @Inject(AuthContextService) private readonly auth: AuthContextService,
   ) {}
 
   /** Padrão primeiro, depois `sortOrder`, `name` por código (sem collation) e `id`. */
@@ -45,11 +52,21 @@ export class KitchenSectorService {
   }
 
   async create(input: CreateKitchenSectorInput): Promise<KitchenSectorDto> {
+    const actor = auditActorOf(this.auth);
     try {
-      const sector = await this.prisma.kitchenSector.create({
-        data: this.scope.data({ name: input.name, code: input.code, sortOrder: input.sortOrder ?? 0, isDefault: false, status: DbStatus.ACTIVE }),
+      return await this.prisma.$transaction(async (tx) => {
+        const sector = await tx.kitchenSector.create({
+          data: this.scope.data({ name: input.name, code: input.code, sortOrder: input.sortOrder ?? 0, isDefault: false, status: DbStatus.ACTIVE }),
+        });
+        await new BusinessAuditWriter(tx, this.scope).record(actor, {
+          action: "kitchen_sector.created",
+          sectorId: sector.id,
+          name: sector.name,
+          code: sector.code,
+          sortOrder: sector.sortOrder,
+        });
+        return toKitchenSectorDto(sector);
       });
-      return toKitchenSectorDto(sector);
     } catch (error) {
       if (isUniqueViolation(error)) throw await this.codeConflict(error, input.code);
       throw error;
@@ -64,8 +81,19 @@ export class KitchenSectorService {
       ...(changes.sortOrder !== undefined ? { sortOrder: changes.sortOrder } : {}),
     };
     if (Object.keys(data).length === 0) return toKitchenSectorDto(await this.find(id));
+    const actor = auditActorOf(this.auth);
     try {
-      return toKitchenSectorDto(await this.prisma.kitchenSector.update({ where: this.scope.where({ id }), data }));
+      return await this.prisma.$transaction(async (tx) => {
+        if (!(await lockRowForAudit(tx, "kitchen_sectors", this.scope.tenantId(), id))) throw new NotFoundError("Kitchen sector");
+        const before = await tx.kitchenSector.findUniqueOrThrow({ where: this.scope.where({ id }) });
+        const sector = await tx.kitchenSector.update({ where: this.scope.where({ id }), data });
+        await new BusinessAuditWriter(tx, this.scope).record(actor, {
+          action: "kitchen_sector.updated",
+          sectorId: id,
+          changes: diffChanges(before, data, ["name", "code", "sortOrder"]),
+        });
+        return toKitchenSectorDto(sector);
+      });
     } catch (error) {
       if (isRecordNotFound(error)) throw new NotFoundError("Kitchen sector");
       if (isUniqueViolation(error)) throw await this.codeConflict(error, changes.code ?? null, id);
@@ -81,8 +109,14 @@ export class KitchenSectorService {
       if (!target) throw new NotFoundError("Kitchen sector");
       if (!target.isDefault) {
         if (target.status !== DbStatus.ACTIVE) throw new ConflictError("kitchen_sector_inactive");
+        const previous = sectors.find((sector) => sector.isDefault) ?? null;
         await tx.kitchenSector.updateMany({ where: this.scope.where({ isDefault: true }), data: { isDefault: false } });
         await tx.kitchenSector.update({ where: this.scope.where({ id }), data: { isDefault: true } });
+        await new BusinessAuditWriter(tx, this.scope).record(auditActorOf(this.auth), {
+          action: "kitchen_sector.default_changed",
+          fromSectorId: previous?.id ?? null,
+          toSectorId: id,
+        });
       }
       return toKitchenSectorDto(await tx.kitchenSector.findUniqueOrThrow({ where: this.scope.where({ id }) }));
     });
@@ -96,6 +130,10 @@ export class KitchenSectorService {
       if (sector.status !== status) {
         if (status === DbStatus.INACTIVE && sector.isDefault) throw new ConflictError("kitchen_sector_default_required");
         await tx.kitchenSector.update({ where: this.scope.where({ id }), data: { status } });
+        await new BusinessAuditWriter(tx, this.scope).record(auditActorOf(this.auth), {
+          action: status === DbStatus.ACTIVE ? "kitchen_sector.activated" : "kitchen_sector.deactivated",
+          sectorId: id,
+        });
       }
       return toKitchenSectorDto(await tx.kitchenSector.findUniqueOrThrow({ where: this.scope.where({ id }) }));
     });
@@ -121,12 +159,20 @@ export class KitchenSectorService {
       const locked = await lockSector(tx, tenantId, sectorId);
       if (!locked) throw new NotFoundError("Kitchen sector");
       if (locked.isDefault && !enabled) throw new ConflictError("kitchen_sector_default_required");
+      // Sem linha = ligado. O setor travado acima serializa duas trocas do mesmo setor.
+      const previous = await tx.branchKitchenSector.findFirst({ where: this.scope.where({ branchId, sectorId }), select: { enabled: true } });
       await tx.$executeRaw`
         INSERT INTO branch_kitchen_sectors (id, tenant_id, branch_id, sector_id, enabled, created_at, updated_at)
         VALUES (${uuidV7()}::uuid, ${tenantId}::uuid, ${branchId}::uuid, ${sectorId}::uuid, ${enabled}, now(), now())
         ON CONFLICT (tenant_id, branch_id, sector_id)
         DO UPDATE SET enabled = EXCLUDED.enabled, updated_at = now()
         WHERE branch_kitchen_sectors.enabled IS DISTINCT FROM EXCLUDED.enabled`;
+      await new BusinessAuditWriter(tx, this.scope).record(auditActorOf(this.auth), {
+        action: "branch_kitchen_sector.updated",
+        branchId,
+        sectorId,
+        changes: diffChanges({ enabled: previous?.enabled ?? true }, { enabled }, ["enabled"]),
+      });
       const sector = await tx.kitchenSector.findUniqueOrThrow({ where: this.scope.where({ id: sectorId }) });
       const setting = await tx.branchKitchenSector.findFirst({ where: this.scope.where({ branchId, sectorId }), select: { enabled: true } });
       return toBranchKitchenSectorDto(sector, setting ?? undefined);

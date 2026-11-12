@@ -11,12 +11,13 @@ import {
   MeController,
   OrganizationController,
 } from "./organization.controllers.js";
+import { MePreferencesService } from "./me-preferences.service.js";
 import { MeService } from "./me.service.js";
 import { OrganizationService } from "./organization.service.js";
 
-/** M3: organização (tenant), companies, branches e acesso de usuários a filiais; GET /me e /me/branches. */
+/** M3: organização (tenant), companies, branches e acesso de usuários a filiais; GET /me, /me/branches e /me/preferences (KAN-42). */
 @Module({
   controllers: [OrganizationController, CompaniesController, BranchesController, MeController, BranchAccessController],
-  providers: [OrganizationService, CompanyService, BranchService, BranchAccessService, MeService, { provide: APP_FILTER, useClass: ApiExceptionFilter }],
+  providers: [OrganizationService, CompanyService, BranchService, BranchAccessService, MeService, MePreferencesService, { provide: APP_FILTER, useClass: ApiExceptionFilter }],
 })
 export class OrganizationModule {}

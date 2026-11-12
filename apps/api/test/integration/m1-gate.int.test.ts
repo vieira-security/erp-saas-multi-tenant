@@ -61,6 +61,8 @@ const M5_TENANT_TABLES = ["orders", "order_items", "order_item_options", "branch
 const M6_TENANT_TABLES = ["cash_sessions", "cash_movements", "payments", "refunds"] as const;
 /** M7 tables (tenant-scoped); row-level checks in kitchen-schema tests. */
 const M7_TENANT_TABLES = ["kitchen_sectors", "branch_kitchen_sectors", "kitchen_tickets", "kitchen_ticket_items"] as const;
+/** KAN-42 table (tenant-scoped); row-level checks in user-preferences-schema tests. */
+const PREFERENCES_TENANT_TABLES = ["user_preferences"] as const;
 
 interface Rejection {
   code: string;
@@ -157,6 +159,7 @@ describe("M1 final gate (PostgreSQL)", () => {
         ...Object.fromEntries(M5_TENANT_TABLES.map((t) => [t, "tenant"])),
         ...Object.fromEntries(M6_TENANT_TABLES.map((t) => [t, "tenant"])),
         ...Object.fromEntries(M7_TENANT_TABLES.map((t) => [t, "tenant"])),
+        ...Object.fromEntries(PREFERENCES_TENANT_TABLES.map((t) => [t, "tenant"])),
         audit_logs: "tenant",
       });
     });
@@ -183,7 +186,7 @@ describe("M1 final gate (PostgreSQL)", () => {
       const [row] = await owner.$queryRaw<{ total: number; restrict: number }[]>`
         SELECT count(*)::int AS total, count(*) FILTER (WHERE confupdtype = 'r' AND confdeltype = 'r')::int AS restrict
         FROM pg_constraint WHERE contype = 'f' AND connamespace = 'public'::regnamespace`;
-      expect(row).toEqual({ total: 71, restrict: 71 });
+      expect(row).toEqual({ total: 73, restrict: 73 });
     });
   });
 

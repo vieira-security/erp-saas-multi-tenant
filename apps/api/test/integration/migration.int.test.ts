@@ -45,6 +45,7 @@ describe("migrations on a clean PostgreSQL database", () => {
       { name: "20261110000000_create_cash_and_payments", finished: true, rolledBack: false },
       { name: "20261110010000_adjust_order_immutability", finished: true, rolledBack: false },
       { name: "20261110020000_create_kitchen", finished: true, rolledBack: false },
+      { name: "20261111000000_audit_read_and_user_preferences", finished: true, rolledBack: false },
     ]);
   });
 
@@ -81,6 +82,7 @@ describe("migrations on a clean PostgreSQL database", () => {
       "sessions",
       "tenants",
       "user_branch_access",
+      "user_preferences",
       "user_roles",
       "users",
     ]);
@@ -805,6 +807,7 @@ describe("migrations on a clean PostgreSQL database", () => {
       { table: "roles", name: "roles_tenant_id_immutable" },
       { table: "sessions", name: "sessions_tenant_id_immutable" },
       { table: "user_branch_access", name: "user_branch_access_tenant_id_immutable" },
+      { table: "user_preferences", name: "user_preferences_tenant_id_immutable" },
       { table: "user_roles", name: "user_roles_tenant_id_immutable" },
       { table: "users", name: "users_tenant_id_immutable" },
     ]);

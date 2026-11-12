@@ -49,7 +49,7 @@ describe("TenantScope", () => {
         "AuditLog", "Branch", "BranchKitchenSector", "BranchOrderCounter", "BranchProductSetting", "CashMovement", "CashSession",
         "Company", "Device", "KitchenSector", "KitchenTicket", "KitchenTicketItem", "Order", "OrderItem", "OrderItemOption", "Payment",
         "Product", "ProductCategory", "ProductOption", "ProductOptionGroup", "Refund", "Role", "RolePermission", "Session", "User",
-        "UserBranchAccess", "UserRole",
+        "UserBranchAccess", "UserPreference", "UserRole",
       ],
     );
   });

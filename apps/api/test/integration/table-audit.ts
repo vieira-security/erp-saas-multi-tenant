@@ -38,6 +38,7 @@ export const MODEL_TABLES: Readonly<Record<string, string>> = {
   BranchKitchenSector: "branch_kitchen_sectors",
   KitchenTicket: "kitchen_tickets",
   KitchenTicketItem: "kitchen_ticket_items",
+  UserPreference: "user_preferences",
 };
 
 export type TableKind = "root" | "tooling" | "global" | "tenant";
@@ -370,6 +371,7 @@ export const RUNTIME_TABLE_PRIVILEGES: Readonly<Record<string, readonly TablePri
   sessions: ["SELECT", "INSERT", "UPDATE"],
   tenants: ["SELECT", "INSERT", "UPDATE"],
   user_branch_access: ["SELECT", "INSERT", "DELETE"],
+  user_preferences: ["SELECT", "INSERT", "UPDATE"],
   user_roles: ["SELECT", "INSERT", "DELETE"],
   users: ["SELECT", "INSERT", "UPDATE"],
 };
@@ -773,6 +775,7 @@ export const MANUAL_CHECK_CONSTRAINTS: Readonly<Record<string, string>> = {
   "roles.roles_name_check": "CHECK ((btrim(name) <> ''::text))",
   "sessions.sessions_expires_at_check": "CHECK ((expires_at > created_at))",
   "sessions.sessions_refresh_token_hash_check": "CHECK ((btrim(refresh_token_hash) <> ''::text))",
+  "user_preferences.user_preferences_catalog_view_check": "CHECK ((catalog_view = ANY (ARRAY['GRID'::text, 'LIST'::text])))",
   "users.users_employee_number_check": "CHECK ((employee_number ~ '^[A-Z0-9._-]{1,32}$'::text))",
   "tenants.tenants_login_code_check": "CHECK ((login_code ~ '^[A-Z0-9][A-Z0-9-]{2,30}[A-Z0-9]$'::text))",
   "users.users_failed_login_attempts_check": "CHECK ((failed_login_attempts >= 0))",

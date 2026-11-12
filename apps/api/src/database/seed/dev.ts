@@ -216,11 +216,11 @@ export async function seedDevData(prisma: PrismaClient, options: { password: str
   const authContext = new AuthContextService(tenants);
   const services = {
     provisioning: new TenantProvisioningService(prisma, scope),
-    companies: new CompanyService(prisma, scope),
+    companies: new CompanyService(prisma, scope, authContext),
     branches: new BranchService(prisma, scope, authContext),
-    categories: new CategoryService(prisma, scope),
-    products: new ProductService(prisma, scope),
-    branchProducts: new BranchProductService(prisma, scope),
+    categories: new CategoryService(prisma, scope, authContext),
+    products: new ProductService(prisma, scope, authContext),
+    branchProducts: new BranchProductService(prisma, scope, authContext),
   };
 
   return tenants.run({ tenantId: tenant.id }, async () => {

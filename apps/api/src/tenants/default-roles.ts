@@ -16,7 +16,7 @@ export type RolePermissionMatrix = Readonly<Record<DefaultRoleCode, readonly str
 
 /**
  * Matriz inicial aprovada (decisão de produto do M2). Regras:
- * - OWNER recebe as 20 permissões do catálogo ATUAL, listadas explicitamente. Ele NÃO recebe permissões futuras
+ * - OWNER recebe as 22 permissões do catálogo ATUAL, listadas explicitamente. Ele NÃO recebe permissões futuras
  *   automaticamente: toda permissão nova do catálogo precisa ser adicionada aqui, role a role, por decisão explícita
  *   (um teste falha se uma permissão do catálogo não estiver em nenhuma role).
  * - O provisionamento só ACRESCENTA vínculos (nunca remove) e nunca toca role customizada que use um código padrão.
@@ -25,6 +25,9 @@ export type RolePermissionMatrix = Readonly<Record<DefaultRoleCode, readonly str
  *   ele mesmo não tem).
  * - M7 (decisão de produto de 10/11/2026): `order.prepare` (iniciar/terminar preparo) para Proprietário, Gerente, Atendente
  *   e Cozinha. Tenants existentes recebem o vínculo pela migration 20261110020000_create_kitchen (só roles `is_system`).
+ * - KAN-41 (decisão de produto de 10/11/2026): `audit.read` para Proprietário e Gerente; `audit.read_tenant` (eventos sem
+ *   filial) só para o Proprietário. Tenants existentes recebem os vínculos pela migration
+ *   20261111000000_audit_read_and_user_preferences (só roles `is_system`).
  */
 export const DEFAULT_ROLE_PERMISSIONS: RolePermissionMatrix = Object.freeze({
   OWNER: Object.freeze([
@@ -48,6 +51,8 @@ export const DEFAULT_ROLE_PERMISSIONS: RolePermissionMatrix = Object.freeze({
     "fiscal.read",
     "fiscal.issue",
     "fiscal.cancel",
+    "audit.read",
+    "audit.read_tenant",
   ]),
   MANAGER: Object.freeze([
     "organization.read",
@@ -67,6 +72,7 @@ export const DEFAULT_ROLE_PERMISSIONS: RolePermissionMatrix = Object.freeze({
     "fiscal.read",
     "fiscal.issue",
     "fiscal.cancel",
+    "audit.read",
   ]),
   ATTENDANT: Object.freeze([
     "branch.read",

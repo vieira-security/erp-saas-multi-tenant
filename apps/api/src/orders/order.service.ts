@@ -1,5 +1,6 @@
 import { Inject, Injectable } from "@nestjs/common";
 import type { OrderDto, OrderStatus, OrderSummaryDto, Page } from "@erp/contracts";
+import { BusinessAuditWriter } from "../audit/business-audit.js";
 import { AuthContextService } from "../auth/context/auth-context.js";
 import { PermissionDeniedError } from "../auth/errors.js";
 import { AuthorizationService, branchScope } from "../authorization/authorization.service.js";
@@ -215,7 +216,8 @@ export class OrderService {
    * caixa aberto -> 409 `cash_session_required`, nada muda); PIX/cartão = devolução manual (`cashSessionId` null).
    */
   async cancel(branchId: string, orderId: string, reason: string | undefined): Promise<OrderDto> {
-    const { userId } = this.auth.require();
+    const actor = this.auth.require();
+    const { userId } = actor;
     return this.prisma.$transaction(async (tx) => {
       const order = await this.lock(tx, branchId, orderId);
       if (nextStatus(order.status, "cancel" satisfies OrderAction) === null) throw new ConflictError("order_invalid_transition");
@@ -258,6 +260,17 @@ export class OrderService {
       });
       // M7: todas as comandas do pedido viram CANCELLED (nada é apagado), na mesma transação do estorno.
       await this.kitchen.cancelTickets(tx, orderId, now);
+      // KAN-41: todo cancelamento audita (rascunho também, com `number` null), com os estornos, na mesma transação.
+      const { number } = await tx.order.findFirstOrThrow({ where: this.scope.where({ id: orderId, branchId }), select: { number: true } });
+      await new BusinessAuditWriter(tx, this.scope).record(actor, {
+        action: "order.cancelled",
+        branchId,
+        orderId,
+        number,
+        previousStatus: order.status,
+        reason: reason ?? null,
+        refunds: paid.map((p) => ({ method: p.method, amount: toMoney(p.amount) })),
+      });
       return this.load(tx, branchId, orderId);
     });
   }

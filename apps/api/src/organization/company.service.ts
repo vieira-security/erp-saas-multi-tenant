@@ -1,5 +1,9 @@
 import { Inject, Injectable } from "@nestjs/common";
 import type { CompanyDto, CompanyStatus, Page } from "@erp/contracts";
+import { lockRowForAudit } from "../audit/audit-lock.js";
+import { BusinessAuditWriter, auditActorOf } from "../audit/business-audit.js";
+import { diffChanges } from "../audit/changes.js";
+import { AuthContextService } from "../auth/context/auth-context.js";
 import { CompanyRepository, type CompanyChanges } from "../companies/company.repository.js";
 import { PRISMA_CLIENT } from "../database/database.module.js";
 import { BranchStatus, CompanyStatus as DbCompanyStatus, type PrismaClient } from "../generated/prisma/client.js";
@@ -22,12 +26,14 @@ export interface CreateCompanyInput {
 /**
  * Companies do tenant atual. Tudo passa por TenantScope (direto ou via CompanyRepository); recurso de outro tenant é
  * indistinguível de inexistente (404). Sem exclusão: só status.
+ * KAN-41: `company.*` (eventos do tenant, sem filial) na mesma transação; idempotente sem mudança não audita.
  */
 @Injectable()
 export class CompanyService {
   constructor(
     @Inject(PRISMA_CLIENT) private readonly prisma: PrismaClient,
     @Inject(TenantScope) private readonly scope: TenantScope,
+    @Inject(AuthContextService) private readonly auth: AuthContextService,
   ) {}
 
   private repository(): CompanyRepository {
@@ -50,8 +56,20 @@ export class CompanyService {
   }
 
   async create(input: CreateCompanyInput): Promise<CompanyDto> {
+    const actor = auditActorOf(this.auth);
     try {
-      return toCompanyDto(await this.repository().create({ ...input, status: DbCompanyStatus.ACTIVE }));
+      return await this.prisma.$transaction(async (tx) => {
+        const company = await new CompanyRepository(tx, this.scope).create({ ...input, status: DbCompanyStatus.ACTIVE });
+        await new BusinessAuditWriter(tx, this.scope).record(actor, {
+          action: "company.created",
+          companyId: company.id,
+          legalName: company.legalName,
+          tradeName: company.tradeName,
+          cnpj: company.cnpj,
+          timezone: company.timezone,
+        });
+        return toCompanyDto(company);
+      });
     } catch (error) {
       if (isUniqueViolation(error)) throw new ConflictError("company_cnpj_already_exists");
       throw error;
@@ -67,9 +85,20 @@ export class CompanyService {
       ...(timezone !== undefined ? { timezone } : {}),
     };
     if (Object.keys(data).length === 0) return this.get(id);
-    const company = await this.repository().update(id, data);
-    if (!company) throw new NotFoundError("Company");
-    return toCompanyDto(company);
+    const actor = auditActorOf(this.auth);
+    return this.prisma.$transaction(async (tx) => {
+      if (!(await lockRowForAudit(tx, "companies", this.scope.tenantId(), id))) throw new NotFoundError("Company");
+      const repository = new CompanyRepository(tx, this.scope);
+      const before = await repository.findById(id);
+      const company = await repository.update(id, data);
+      if (!before || !company) throw new NotFoundError("Company");
+      await new BusinessAuditWriter(tx, this.scope).record(actor, {
+        action: "company.updated",
+        companyId: id,
+        changes: diffChanges(before, data, ["legalName", "tradeName", "timezone"]),
+      });
+      return toCompanyDto(company);
+    });
   }
 
   /** Só desativa sem filial ACTIVE (decisão conservadora do M3, ver docs/open-questions.md). Idempotente. */
@@ -81,6 +110,7 @@ export class CompanyService {
         const activeBranches = await tx.branch.count({ where: this.scope.where({ companyId: id, status: BranchStatus.ACTIVE }) });
         if (activeBranches > 0) throw new ConflictError("company_has_active_branches");
         await new CompanyRepository(tx, this.scope).update(id, { status: DbCompanyStatus.INACTIVE });
+        await new BusinessAuditWriter(tx, this.scope).record(auditActorOf(this.auth), { action: "company.deactivated", companyId: id });
       }
       return toCompanyDto((await new CompanyRepository(tx, this.scope).findById(id))!);
     });
@@ -88,12 +118,16 @@ export class CompanyService {
 
   /** Idempotente. */
   async activate(id: string): Promise<CompanyDto> {
-    const repository = this.repository();
-    const company = await repository.findById(id);
-    if (!company) throw new NotFoundError("Company");
-    if (company.status === DbCompanyStatus.ACTIVE) return toCompanyDto(company);
-    const updated = await repository.update(id, { status: DbCompanyStatus.ACTIVE });
-    if (!updated) throw new NotFoundError("Company");
-    return toCompanyDto(updated);
+    const actor = auditActorOf(this.auth);
+    return this.prisma.$transaction(async (tx) => {
+      const locked = await lockCompany(tx, this.scope.tenantId(), id, "update");
+      if (!locked) throw new NotFoundError("Company");
+      const repository = new CompanyRepository(tx, this.scope);
+      if (locked.status !== DbCompanyStatus.ACTIVE) {
+        await repository.update(id, { status: DbCompanyStatus.ACTIVE });
+        await new BusinessAuditWriter(tx, this.scope).record(actor, { action: "company.activated", companyId: id });
+      }
+      return toCompanyDto((await repository.findById(id))!);
+    });
   }
 }

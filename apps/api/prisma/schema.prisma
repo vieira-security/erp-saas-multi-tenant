@@ -65,6 +65,7 @@ model Tenant {
   branchKitchenSectors  BranchKitchenSector[]
   kitchenTickets        KitchenTicket[]
   kitchenTicketItems    KitchenTicketItem[]
+  userPreferences       UserPreference[]
 
   @@map("tenants")
 }
@@ -176,6 +177,7 @@ model User {
   cashMovements       CashMovement[]     @relation("CashMovementCreatedBy")
   refunds             Refund[]           @relation("RefundCreatedBy")
   auditLogs           AuditLog[]
+  preferences         UserPreference?
 
   @@unique([tenantId, employeeNumber])
   // Alvo da FK composta de UserBranchAccess.
@@ -957,4 +959,23 @@ model KitchenTicketItem {
   @@unique([tenantId, orderId, orderItemId])
   @@index([tenantId, orderId, ticketId])
   @@map("kitchen_ticket_items")
+}
+
+// ── KAN-42: preferências do próprio usuário ─────────────────────────────────────────────────────────────────────────
+// Uma linha por usuário (único (tenant_id, user_id), que também é o alvo do upsert). Sem linha = defaults do contrato
+// (`catalogView` GRID). Só o próprio usuário lê/grava (tenant e usuário do AuthContext, nunca do corpo).
+// CHECK (fora do PSL, na migration): catalog_view IN ('GRID', 'LIST'). tenant_id imutável (trigger). Sem DELETE.
+model UserPreference {
+  id          String   @id @default(uuid(7)) @db.Uuid
+  tenantId    String   @map("tenant_id") @db.Uuid
+  userId      String   @map("user_id") @db.Uuid
+  catalogView String   @map("catalog_view")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  user        User     @relation(fields: [tenantId, userId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+
+  // Um registro por usuário; também atende a FK composta para users.
+  @@unique([tenantId, userId])
+  @@map("user_preferences")
 }
