@@ -1,5 +1,6 @@
 import { Inject, Injectable } from "@nestjs/common";
 import type { CashMovementType, CashSessionDto, CashSessionStatus, CashSessionSummaryDto, Money, Page } from "@erp/contracts";
+import { BusinessAuditWriter } from "../audit/business-audit.js";
 import { AuthContextService } from "../auth/context/auth-context.js";
 import { PermissionDeniedError } from "../auth/errors.js";
 import { AuthorizationService, branchScope } from "../authorization/authorization.service.js";
@@ -29,6 +30,8 @@ const iso = (d: Date | null) => (d ? d.toISOString() : null);
  * - fechar: o próprio com `cash.open`; o de outro operador só com `cash.close` (senão 403);
  * - sangria/suprimento: `cash.close` (declarado na rota).
  * Dinheiro sempre em centavos `bigint` (cash-math.ts). Operações que mexem no dinheiro travam o caixa (cash-lock.ts).
+ * KAN-41: abrir, sangria, suprimento e fechar gravam o evento na MESMA transação (dinheiro como `"25.00"`); operação que
+ * falha (ex.: sangria acima do esperado, 409) não deixa evento.
  */
 @Injectable()
 export class CashService {
@@ -42,7 +45,8 @@ export class CashService {
 
   /** Abre o caixa do usuário (fundo ≥ 0). Um OPEN por operador e filial (índice único parcial -> 409). */
   async open(branchId: string, openingAmount: Money): Promise<CashSessionDto> {
-    const { userId } = this.auth.require();
+    const actor = this.auth.require();
+    const { userId } = actor;
     try {
       return await this.prisma.$transaction(async (tx) => {
         const branch = await lockBranchAndCompany(tx, this.scope.tenantId(), branchId);
@@ -51,6 +55,12 @@ export class CashService {
         if (branch.companyStatus !== "ACTIVE") throw new ConflictError("company_inactive");
         const session = await tx.cashSession.create({
           data: this.scope.data({ branchId, status: DbStatus.OPEN, openedBy: userId, openedAt: this.clock.now(), openingAmount }),
+        });
+        await new BusinessAuditWriter(tx, this.scope).record(actor, {
+          action: "cash_session.opened",
+          branchId,
+          cashSessionId: session.id,
+          openingAmount: toMoney(session.openingAmount),
         });
         return this.detail(tx, branchId, session.id);
       });
@@ -99,7 +109,8 @@ export class CashService {
 
   /** Sangria/suprimento (`cash.close` na rota). Sangria acima do dinheiro esperado = 409 `insufficient_cash`. */
   async addMovement(branchId: string, sessionId: string, input: { type: CashMovementType; amount: Money; reason: string }): Promise<CashSessionDto> {
-    const { userId } = this.auth.require();
+    const actor = this.auth.require();
+    const { userId } = actor;
     return this.prisma.$transaction(async (tx) => {
       const session = await lockSession(tx, this.scope.tenantId(), branchId, sessionId);
       if (!session) throw new NotFoundError("Cash session");
@@ -108,8 +119,16 @@ export class CashService {
         const { expectedCashCents } = await this.summarize(tx, branchId, sessionId);
         if (moneyToCents(input.amount) > expectedCashCents) throw new ConflictError("insufficient_cash");
       }
-      await tx.cashMovement.create({
+      const movement = await tx.cashMovement.create({
         data: this.scope.data({ branchId, cashSessionId: sessionId, type: input.type, amount: input.amount, reason: input.reason, createdBy: userId }),
+      });
+      await new BusinessAuditWriter(tx, this.scope).record(actor, {
+        action: input.type === "WITHDRAWAL" ? "cash_movement.withdrawal" : "cash_movement.supply",
+        branchId,
+        cashMovementId: movement.id,
+        cashSessionId: sessionId,
+        amount: toMoney(movement.amount),
+        reason: movement.reason,
       });
       return this.detail(tx, branchId, sessionId);
     });
@@ -120,7 +139,8 @@ export class CashService {
    * operador: `cash.close` (403). Já fechado: 409. Diferença ≠ 0 sem justificativa: 400 `justification`/`required`.
    */
   async close(branchId: string, sessionId: string, input: { countedCash: Money; justification: string | null }): Promise<CashSessionDto> {
-    const { userId } = this.auth.require();
+    const actor = this.auth.require();
+    const { userId } = actor;
     return this.prisma.$transaction(async (tx) => {
       const session = await lockSession(tx, this.scope.tenantId(), branchId, sessionId);
       if (!session) throw new NotFoundError("Cash session");
@@ -141,6 +161,15 @@ export class CashService {
           difference: difference.money,
           justification: input.justification,
         },
+      });
+      await new BusinessAuditWriter(tx, this.scope).record(actor, {
+        action: "cash_session.closed",
+        branchId,
+        cashSessionId: sessionId,
+        expectedCash,
+        countedCash: input.countedCash,
+        difference: difference.money,
+        justification: input.justification,
       });
       return this.detail(tx, branchId, sessionId);
     });

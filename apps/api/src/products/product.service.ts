@@ -1,5 +1,9 @@
 import { Inject, Injectable } from "@nestjs/common";
 import type { Money, Page, ProductDto, ProductStatus, ProductSummaryDto } from "@erp/contracts";
+import { lockRowForAudit } from "../audit/audit-lock.js";
+import { BusinessAuditWriter, auditActorOf, type OptionGroupCount } from "../audit/business-audit.js";
+import { diffChanges } from "../audit/changes.js";
+import { AuthContextService } from "../auth/context/auth-context.js";
 import { PRISMA_CLIENT } from "../database/database.module.js";
 import { ProductStatus as DbStatus, type Prisma, type PrismaClient } from "../generated/prisma/client.js";
 import { ConflictError, NotFoundError, ValidationFailedError } from "../http/api-error.js";
@@ -46,12 +50,15 @@ type Tx = Prisma.TransactionClient;
  * - combo: produto vinculado do tenant (404), ACTIVE, diferente do próprio e sem grupos; produto que já é vinculado não
  *   recebe grupos (409 `linked_product_invalid`). Corrida tratada com trava das linhas de products (product-lock.ts).
  * - desativar não mexe em grupos de outros produtos: o cardápio é que esconde a opção vinculada.
+ * KAN-41: `product.*` (eventos do tenant) na mesma transação; `product.updated` só com os campos que mudaram (preço como
+ * `"25.00"`); ativar/desativar idempotente e PATCH sem mudança não auditam.
  */
 @Injectable()
 export class ProductService {
   constructor(
     @Inject(PRISMA_CLIENT) private readonly prisma: PrismaClient,
     @Inject(TenantScope) private readonly scope: TenantScope,
+    @Inject(AuthContextService) private readonly auth: AuthContextService,
   ) {}
 
   /** Ordem de listagem do contrato (PageQuery): criação crescente, `id` para desempate estável. */
@@ -80,6 +87,7 @@ export class ProductService {
 
   async create(input: CreateProductInput): Promise<ProductDto> {
     const groups = input.optionGroups ?? [];
+    const actor = auditActorOf(this.auth);
     try {
       return await this.prisma.$transaction(async (tx) => {
         if (input.categoryId) await this.requireCategory(tx, input.categoryId);
@@ -98,6 +106,17 @@ export class ProductService {
           }),
         });
         await this.insertGroups(tx, product.id, groups);
+        await new BusinessAuditWriter(tx, this.scope).record(actor, {
+          action: "product.created",
+          productId: product.id,
+          name: product.name,
+          code: product.code,
+          categoryId: product.categoryId,
+          kitchenSectorId: product.kitchenSectorId,
+          basePrice: input.basePrice,
+          sortOrder: product.sortOrder,
+          optionGroups: countOf(groups),
+        });
         return toProductDto(await this.load(tx, product.id));
       });
     } catch (error) {
@@ -119,14 +138,21 @@ export class ProductService {
       ...(sortOrder !== undefined ? { sortOrder } : {}),
     };
     if (Object.keys(data).length === 0) return this.get(id);
+    const actor = auditActorOf(this.auth);
     try {
       return await this.prisma.$transaction(async (tx) => {
         // A existência do produto vem antes da categoria: produto de outro tenant é 404 qualquer que seja o corpo.
-        const current = await tx.product.findUnique({ where: this.scope.where({ id }), select: { id: true } });
-        if (!current) throw new NotFoundError("Product");
+        // Travado: o "antes" da auditoria é o estado real no momento da alteração.
+        if (!(await lockRowForAudit(tx, "products", this.scope.tenantId(), id))) throw new NotFoundError("Product");
+        const before = await tx.product.findUniqueOrThrow({ where: this.scope.where({ id }) });
         if (categoryId) await this.requireCategory(tx, categoryId);
         if (kitchenSectorId) await this.requireKitchenSector(tx, kitchenSectorId);
         await tx.product.update({ where: this.scope.where({ id }), data });
+        await new BusinessAuditWriter(tx, this.scope).record(actor, {
+          action: "product.updated",
+          productId: id,
+          changes: diffChanges(before, changes, ["name", "description", "code", "categoryId", "kitchenSectorId", "basePrice", "sortOrder"]),
+        });
         return toProductDto(await this.load(tx, id));
       });
     } catch (error) {
@@ -138,28 +164,38 @@ export class ProductService {
 
   /** Substitui TODOS os grupos/opções (lista vazia remove todos) numa transação, com o produto travado. */
   async replaceOptionGroups(id: string, groups: readonly OptionGroupValue[]): Promise<ProductDto> {
+    const actor = auditActorOf(this.auth);
     return this.prisma.$transaction(async (tx) => {
       await this.checkCombos(tx, id, groups);
+      const before: OptionGroupCount = {
+        groups: await tx.productOptionGroup.count({ where: this.scope.where({ productId: id }) }),
+        options: await tx.productOption.count({ where: this.scope.where({ productId: id }) }),
+      };
       await tx.productOption.deleteMany({ where: this.scope.where({ productId: id }) });
       await tx.productOptionGroup.deleteMany({ where: this.scope.where({ productId: id }) });
       await this.insertGroups(tx, id, groups);
-      // Os grupos fazem parte do ProductDto: a substituição conta como alteração do produto.
+      // Os grupos fazem parte do ProductDto: a substituição conta como alteração do produto. Toda substituição grava
+      // linhas novas (ids novos), então sempre audita, mesmo com o mesmo conteúdo.
       await tx.product.update({ where: this.scope.where({ id }), data: { updatedAt: new Date() } });
+      await new BusinessAuditWriter(tx, this.scope).record(actor, { action: "product.option_groups_replaced", productId: id, before, after: countOf(groups) });
       return toProductDto(await this.load(tx, id));
     });
   }
 
-  /** Idempotente. Não altera grupos de outros produtos que vinculem este (o cardápio filtra). */
+  /** Idempotente (sem gravação nem auditoria). Não altera grupos de outros produtos que vinculem este (o cardápio filtra). */
   async setStatus(id: string, status: DbStatus): Promise<ProductDto> {
-    const product = await this.load(this.prisma, id);
-    if (product.status === status) return toProductDto(product);
-    try {
-      await this.prisma.product.update({ where: this.scope.where({ id }), data: { status } });
-    } catch (error) {
-      if (isRecordNotFound(error)) throw new NotFoundError("Product");
-      throw error;
-    }
-    return this.get(id);
+    const actor = auditActorOf(this.auth);
+    return this.prisma.$transaction(async (tx) => {
+      if (!(await lockRowForAudit(tx, "products", this.scope.tenantId(), id))) throw new NotFoundError("Product");
+      const product = await this.load(tx, id);
+      if (product.status === status) return toProductDto(product);
+      await tx.product.update({ where: this.scope.where({ id }), data: { status } });
+      await new BusinessAuditWriter(tx, this.scope).record(actor, {
+        action: status === DbStatus.ACTIVE ? "product.activated" : "product.deactivated",
+        productId: id,
+      });
+      return toProductDto(await this.load(tx, id));
+    });
   }
 
   private async load(db: Tx | PrismaClient, id: string) {
@@ -245,6 +281,11 @@ export class ProductService {
     const taken = await this.prisma.product.count({ where: this.scope.where({ code, ...(exceptId ? { NOT: { id: exceptId } } : {}) }) });
     return taken > 0 ? new ConflictError("product_code_already_exists") : error;
   }
+}
+
+/** Contagem de grupos e opções para `product.created`/`product.option_groups_replaced` (sem nomes nem preços). */
+function countOf(groups: readonly OptionGroupValue[]): OptionGroupCount {
+  return { groups: groups.length, options: groups.reduce((total, g) => total + g.options.length, 0) };
 }
 
 /**

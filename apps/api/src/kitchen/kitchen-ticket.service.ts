@@ -1,5 +1,7 @@
 import { Inject, Injectable } from "@nestjs/common";
 import type { KitchenTicketDto, KitchenTicketPrintDto, KitchenTicketStatus, Page } from "@erp/contracts";
+import { BusinessAuditWriter, auditActorOf } from "../audit/business-audit.js";
+import { AuthContextService } from "../auth/context/auth-context.js";
 import { CLOCK, type Clock } from "../clock/clock.js";
 import { PRISMA_CLIENT } from "../database/database.module.js";
 import type { Prisma, PrismaClient } from "../generated/prisma/client.js";
@@ -27,7 +29,8 @@ export interface TicketFilter {
  * comanda de outra filial ou de outro tenant é 404. O acesso à filial já foi exigido pelo PermissionGuard.
  * - start/ready: trava o PEDIDO e depois as comandas dele (mesma ordem do cancelamento e dos atalhos do pedido), valida a
  *   transição e recalcula o status do pedido na mesma transação (KitchenOrderFlow).
- * - print: conta a via atomicamente (UPDATE ... RETURNING) e devolve o texto pronto (print-layout.ts).
+ * - print: conta a via atomicamente (UPDATE ... RETURNING) e devolve o texto pronto (print-layout.ts). KAN-41: a via >= 2
+ *   (reimpressão) grava `kitchen_ticket.reprinted` na mesma transação; a primeira impressão não audita.
  */
 @Injectable()
 export class KitchenTicketService {
@@ -36,6 +39,7 @@ export class KitchenTicketService {
     @Inject(TenantScope) private readonly scope: TenantScope,
     @Inject(KitchenOrderFlow) private readonly flow: KitchenOrderFlow,
     @Inject(CLOCK) private readonly clock: Clock,
+    @Inject(AuthContextService) private readonly auth: AuthContextService,
   ) {}
 
   /** Ordem de chegada: `createdAt`, depois `id`. */
@@ -83,6 +87,16 @@ export class KitchenTicketService {
       const copyNumber = await countPrint(tx, this.scope.tenantId(), branchId, ticketId, this.clock.now());
       if (copyNumber === null) throw new NotFoundError("Kitchen ticket");
       const ticket = await this.loadRow(tx, branchId, ticketId);
+      if (copyNumber >= 2) {
+        await new BusinessAuditWriter(tx, this.scope).record(auditActorOf(this.auth), {
+          action: "kitchen_ticket.reprinted",
+          branchId,
+          ticketId,
+          orderId: ticket.orderId,
+          sectorId: ticket.sectorId,
+          copyNumber,
+        });
+      }
       const branch = await tx.branch.findUniqueOrThrow({ where: this.scope.where({ id: branchId }), select: { timezone: true } });
       const dto = toKitchenTicketDto(ticket);
       const lines = ticketLines({

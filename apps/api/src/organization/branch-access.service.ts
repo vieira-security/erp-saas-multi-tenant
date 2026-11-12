@@ -1,5 +1,6 @@
 import { Inject, Injectable } from "@nestjs/common";
 import type { BranchAccessDto } from "@erp/contracts";
+import { BusinessAuditWriter, auditActorOf } from "../audit/business-audit.js";
 import { AuthContextService } from "../auth/context/auth-context.js";
 import { AuthorityService } from "../authorization/authority.js";
 import { branchScope } from "../authorization/authorization.service.js";
@@ -17,6 +18,9 @@ import { isForeignKeyViolation } from "./prisma-errors.js";
  * Além disso (regra "ninguém administra autoridade acima da própria", docs/security.md): o ator só concede/revoga acesso
  * de um usuário cujas roles (todas, de qualquer escopo) não tenham permissão que o próprio ator não tenha naquela filial.
  * Ex.: MANAGER não estende nem remove o acesso de um OWNER. Violação = 403 `forbidden`.
+ *
+ * KAN-41: `branch_access.granted`/`.revoked` com `branch_id` = a filial e o alvo em `resource_id`, na mesma transação da
+ * escrita; concessão que já existia (idempotente) não audita.
  */
 @Injectable()
 export class BranchAccessService {
@@ -46,8 +50,15 @@ export class BranchAccessService {
     const existing = await this.find(userId, branchId);
     if (existing) return { created: false, access: existing };
     if (branch.status !== BranchStatus.ACTIVE) throw new ConflictError("branch_inactive");
-    // ON CONFLICT DO NOTHING: duas concessões simultâneas não falham; só uma insere.
-    const inserted = await this.prisma.userBranchAccess.createMany({ data: [this.scope.data({ userId, branchId })], skipDuplicates: true });
+    const actor = auditActorOf(this.auth);
+    // ON CONFLICT DO NOTHING: duas concessões simultâneas não falham; só uma insere (e só ela audita).
+    const inserted = await this.prisma.$transaction(async (tx) => {
+      const result = await tx.userBranchAccess.createMany({ data: [this.scope.data({ userId, branchId })], skipDuplicates: true });
+      if (result.count === 1) {
+        await new BusinessAuditWriter(tx, this.scope).record(actor, { action: "branch_access.granted", branchId, targetUserId: userId });
+      }
+      return result;
+    });
     const access = await this.find(userId, branchId);
     if (!access) throw new NotFoundError("Branch access");
     return { created: inserted.count === 1, access };
@@ -59,9 +70,13 @@ export class BranchAccessService {
     await this.requireNoGreaterAuthority(userId, branchId);
     const scopedRoles = await this.prisma.userRole.count({ where: this.scope.where({ userId, branchId }) });
     if (scopedRoles > 0) throw new ConflictError("branch_access_in_use");
+    const actor = auditActorOf(this.auth);
     try {
-      const deleted = await this.prisma.userBranchAccess.deleteMany({ where: this.scope.where({ userId, branchId }) });
-      if (deleted.count === 0) throw new NotFoundError("Branch access");
+      await this.prisma.$transaction(async (tx) => {
+        const deleted = await tx.userBranchAccess.deleteMany({ where: this.scope.where({ userId, branchId }) });
+        if (deleted.count === 0) throw new NotFoundError("Branch access");
+        await new BusinessAuditWriter(tx, this.scope).record(actor, { action: "branch_access.revoked", branchId, targetUserId: userId });
+      });
     } catch (error) {
       // Corrida: role escopada criada entre a contagem e o DELETE.
       if (isForeignKeyViolation(error)) throw new ConflictError("branch_access_in_use");
