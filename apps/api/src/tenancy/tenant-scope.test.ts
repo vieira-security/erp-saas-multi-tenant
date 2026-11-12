@@ -46,9 +46,10 @@ describe("TenantScope", () => {
     expect(byScope("global")).toEqual(["Permission"]);
     expect(byScope("tenant")).toEqual(
       [
-        "AuditLog", "Branch", "BranchOrderCounter", "BranchProductSetting", "CashMovement", "CashSession", "Company", "Device",
-        "Order", "OrderItem", "OrderItemOption", "Payment", "Product", "ProductCategory", "ProductOption", "ProductOptionGroup",
-        "Refund", "Role", "RolePermission", "Session", "User", "UserBranchAccess", "UserRole",
+        "AuditLog", "Branch", "BranchKitchenSector", "BranchOrderCounter", "BranchProductSetting", "CashMovement", "CashSession",
+        "Company", "Device", "KitchenSector", "KitchenTicket", "KitchenTicketItem", "Order", "OrderItem", "OrderItemOption", "Payment",
+        "Product", "ProductCategory", "ProductOption", "ProductOptionGroup", "Refund", "Role", "RolePermission", "Session", "User",
+        "UserBranchAccess", "UserPreference", "UserRole",
       ],
     );
   });

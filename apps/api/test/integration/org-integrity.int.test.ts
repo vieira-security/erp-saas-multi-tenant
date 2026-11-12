@@ -49,6 +49,7 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
       expect(kinds).toEqual({
         _prisma_migrations: "tooling",
         audit_logs: "tenant",
+        branch_kitchen_sectors: "tenant",
         branch_order_counters: "tenant",
         branch_product_settings: "tenant",
         branches: "tenant",
@@ -56,6 +57,9 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
         cash_sessions: "tenant",
         companies: "tenant",
         devices: "tenant",
+        kitchen_sectors: "tenant",
+        kitchen_ticket_items: "tenant",
+        kitchen_tickets: "tenant",
         order_item_options: "tenant",
         order_items: "tenant",
         orders: "tenant",
@@ -71,6 +75,7 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
         sessions: "tenant",
         tenants: "root",
         user_branch_access: "tenant",
+        user_preferences: "tenant",
         user_roles: "tenant",
         users: "tenant",
       });
@@ -113,6 +118,7 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
     it("covers every tenant-scoped table", async () => {
       expect(await tenantScopedTables(prisma)).toEqual([
         "audit_logs",
+        "branch_kitchen_sectors",
         "branch_order_counters",
         "branch_product_settings",
         "branches",
@@ -120,6 +126,9 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
         "cash_sessions",
         "companies",
         "devices",
+        "kitchen_sectors",
+        "kitchen_ticket_items",
+        "kitchen_tickets",
         "order_item_options",
         "order_items",
         "orders",
@@ -133,6 +142,7 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
         "roles",
         "sessions",
         "user_branch_access",
+        "user_preferences",
         "user_roles",
         "users",
       ]);
@@ -208,6 +218,18 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
           definition: "FOREIGN KEY (tenant_id, user_id) REFERENCES users(tenant_id, id) ON UPDATE RESTRICT ON DELETE RESTRICT",
         },
         {
+          name: "branch_kitchen_sectors_tenant_id_branch_id_fkey",
+          definition: "FOREIGN KEY (tenant_id, branch_id) REFERENCES branches(tenant_id, id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+        },
+        {
+          name: "branch_kitchen_sectors_tenant_id_fkey",
+          definition: "FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+        },
+        {
+          name: "branch_kitchen_sectors_tenant_id_sector_id_fkey",
+          definition: "FOREIGN KEY (tenant_id, sector_id) REFERENCES kitchen_sectors(tenant_id, id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+        },
+        {
           name: "branch_order_counters_tenant_id_branch_id_fkey",
           definition: "FOREIGN KEY (tenant_id, branch_id) REFERENCES branches(tenant_id, id) ON UPDATE RESTRICT ON DELETE RESTRICT",
         },
@@ -276,6 +298,34 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
         {
           name: "devices_tenant_id_fkey",
           definition: "FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+        },
+        {
+          name: "kitchen_sectors_tenant_id_fkey",
+          definition: "FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+        },
+        {
+          name: "kitchen_ticket_items_tenant_id_fkey",
+          definition: "FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+        },
+        {
+          name: "kitchen_ticket_items_tenant_id_order_id_order_item_id_fkey",
+          definition: "FOREIGN KEY (tenant_id, order_id, order_item_id) REFERENCES order_items(tenant_id, order_id, id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+        },
+        {
+          name: "kitchen_ticket_items_tenant_id_order_id_ticket_id_fkey",
+          definition: "FOREIGN KEY (tenant_id, order_id, ticket_id) REFERENCES kitchen_tickets(tenant_id, order_id, id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+        },
+        {
+          name: "kitchen_tickets_tenant_id_branch_id_order_id_fkey",
+          definition: "FOREIGN KEY (tenant_id, branch_id, order_id) REFERENCES orders(tenant_id, branch_id, id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+        },
+        {
+          name: "kitchen_tickets_tenant_id_fkey",
+          definition: "FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+        },
+        {
+          name: "kitchen_tickets_tenant_id_sector_id_fkey",
+          definition: "FOREIGN KEY (tenant_id, sector_id) REFERENCES kitchen_sectors(tenant_id, id) ON UPDATE RESTRICT ON DELETE RESTRICT",
         },
         {
           name: "order_item_options_tenant_id_fkey",
@@ -358,6 +408,10 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
           definition: "FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON UPDATE RESTRICT ON DELETE RESTRICT",
         },
         {
+          name: "products_tenant_id_kitchen_sector_id_fkey",
+          definition: "FOREIGN KEY (tenant_id, kitchen_sector_id) REFERENCES kitchen_sectors(tenant_id, id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+        },
+        {
           name: "refunds_tenant_id_branch_id_cash_session_id_fkey",
           definition: "FOREIGN KEY (tenant_id, branch_id, cash_session_id) REFERENCES cash_sessions(tenant_id, branch_id, id) ON UPDATE RESTRICT ON DELETE RESTRICT",
         },
@@ -417,6 +471,14 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
           name: "user_branch_access_tenant_id_user_id_fkey",
           definition:
             "FOREIGN KEY (tenant_id, user_id) REFERENCES users(tenant_id, id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+        },
+        {
+          name: "user_preferences_tenant_id_fkey",
+          definition: "FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON UPDATE RESTRICT ON DELETE RESTRICT",
+        },
+        {
+          name: "user_preferences_tenant_id_user_id_fkey",
+          definition: "FOREIGN KEY (tenant_id, user_id) REFERENCES users(tenant_id, id) ON UPDATE RESTRICT ON DELETE RESTRICT",
         },
         {
           name: "user_roles_tenant_id_fkey",
@@ -504,6 +566,8 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
         ["audit_logs_tenant_id_branch_id_fkey", "tenant -> tenant"],
         ["audit_logs_tenant_id_device_id_fkey", "tenant -> tenant"],
         ["audit_logs_tenant_id_user_id_fkey", "tenant -> tenant"],
+        ["branch_kitchen_sectors_tenant_id_branch_id_fkey", "tenant -> tenant"],
+        ["branch_kitchen_sectors_tenant_id_sector_id_fkey", "tenant -> tenant"],
         ["branch_order_counters_tenant_id_branch_id_fkey", "tenant -> tenant"],
         ["branch_product_settings_tenant_id_branch_id_fkey", "tenant -> tenant"],
         ["branch_product_settings_tenant_id_product_id_fkey", "tenant -> tenant"],
@@ -514,6 +578,10 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
         ["cash_sessions_tenant_id_closed_by_fkey", "tenant -> tenant"],
         ["cash_sessions_tenant_id_opened_by_fkey", "tenant -> tenant"],
         ["devices_tenant_id_branch_id_fkey", "tenant -> tenant"],
+        ["kitchen_ticket_items_tenant_id_order_id_order_item_id_fkey", "tenant -> tenant"],
+        ["kitchen_ticket_items_tenant_id_order_id_ticket_id_fkey", "tenant -> tenant"],
+        ["kitchen_tickets_tenant_id_branch_id_order_id_fkey", "tenant -> tenant"],
+        ["kitchen_tickets_tenant_id_sector_id_fkey", "tenant -> tenant"],
         ["order_item_options_tenant_id_order_item_id_fkey", "tenant -> tenant"],
         ["order_items_tenant_id_order_id_fkey", "tenant -> tenant"],
         ["order_items_tenant_id_product_id_fkey", "tenant -> tenant"],
@@ -526,6 +594,7 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
         ["product_options_tenant_id_linked_product_id_fkey", "tenant -> tenant"],
         ["product_options_tenant_id_product_id_group_id_fkey", "tenant -> tenant"],
         ["products_tenant_id_category_id_fkey", "tenant -> tenant"],
+        ["products_tenant_id_kitchen_sector_id_fkey", "tenant -> tenant"],
         ["refunds_tenant_id_branch_id_cash_session_id_fkey", "tenant -> tenant"],
         ["refunds_tenant_id_branch_id_payment_id_order_id_method_amo_fkey", "tenant -> tenant"],
         ["refunds_tenant_id_created_by_fkey", "tenant -> tenant"],
@@ -535,6 +604,7 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
         ["sessions_tenant_id_user_id_fkey", "tenant -> tenant"],
         ["user_branch_access_tenant_id_branch_id_fkey", "tenant -> tenant"],
         ["user_branch_access_tenant_id_user_id_fkey", "tenant -> tenant"],
+        ["user_preferences_tenant_id_user_id_fkey", "tenant -> tenant"],
         ["user_roles_tenant_id_role_id_fkey", "tenant -> tenant"],
         ["user_roles_tenant_id_user_id_branch_id_fkey", "tenant -> tenant"],
         ["user_roles_tenant_id_user_id_fkey", "tenant -> tenant"],
@@ -554,7 +624,8 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
 
       for (const row of rows) expect(row.nullableColumns, row.name).not.toContain("tenant_id");
       // Composite FKs with a nullable column: only the optional user/branch/device links and the optional M4 category
-      // and combo links, the M5 canceller, the M6 closer and the cash session of a non-cash refund (MATCH SIMPLE, NULL = none).
+      // and combo links, the M5 canceller, the M6 closer, the cash session of a non-cash refund and the M7 kitchen sector of
+      // a product (MATCH SIMPLE, NULL = none / default sector).
       expect(rows.filter((r) => r.nullableColumns.length > 0)).toEqual([
         { name: "audit_logs_tenant_id_branch_id_fkey", match: "s", nullableColumns: ["branch_id"] },
         { name: "audit_logs_tenant_id_device_id_fkey", match: "s", nullableColumns: ["device_id"] },
@@ -564,6 +635,7 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
         { name: "orders_tenant_id_cancelled_by_fkey", match: "s", nullableColumns: ["cancelled_by"] },
         { name: "product_options_tenant_id_linked_product_id_fkey", match: "s", nullableColumns: ["linked_product_id"] },
         { name: "products_tenant_id_category_id_fkey", match: "s", nullableColumns: ["category_id"] },
+        { name: "products_tenant_id_kitchen_sector_id_fkey", match: "s", nullableColumns: ["kitchen_sector_id"] },
         { name: "refunds_tenant_id_branch_id_cash_session_id_fkey", match: "s", nullableColumns: ["cash_session_id"] },
         { name: "sessions_tenant_id_device_id_fkey", match: "s", nullableColumns: ["device_id"] },
         { name: "user_roles_tenant_id_user_id_branch_id_fkey", match: "s", nullableColumns: ["branch_id"] },
@@ -657,6 +729,7 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
         ORDER BY c.relname`;
 
       expect(editable).toEqual([
+        "branch_kitchen_sectors",
         "branch_order_counters",
         "branch_product_settings",
         "branches",
@@ -664,6 +737,9 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
         "cash_sessions",
         "companies",
         "devices",
+        "kitchen_sectors",
+        "kitchen_ticket_items",
+        "kitchen_tickets",
         "order_item_options",
         "order_items",
         "orders",
@@ -677,6 +753,7 @@ describe("Tenant -> Company -> Branch integrity (PostgreSQL)", () => {
         "roles",
         "sessions",
         "user_branch_access",
+        "user_preferences",
         "user_roles",
         "users",
       ]);

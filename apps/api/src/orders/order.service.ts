@@ -1,5 +1,6 @@
 import { Inject, Injectable } from "@nestjs/common";
 import type { OrderDto, OrderStatus, OrderSummaryDto, Page } from "@erp/contracts";
+import { BusinessAuditWriter } from "../audit/business-audit.js";
 import { AuthContextService } from "../auth/context/auth-context.js";
 import { PermissionDeniedError } from "../auth/errors.js";
 import { AuthorizationService, branchScope } from "../authorization/authorization.service.js";
@@ -14,6 +15,8 @@ import { OrderStatus as DbStatus, type Prisma, type PrismaClient } from "../gene
 import { ConflictError, ConflictWithDetailsError, NotFoundError, ValidationFailedError } from "../http/api-error.js";
 import { moneyToCents, toMoney } from "../http/money.js";
 import { toPage, type PageRequest } from "../http/paging.js";
+import { KitchenOrderFlow } from "../kitchen/kitchen-order-flow.js";
+import { shortcutTargets } from "../kitchen/kitchen-rules.js";
 import { BranchProductService } from "../products/branch-product.service.js";
 import { TenantScope } from "../tenancy/tenant-scope.js";
 import { businessDate, dateColumn } from "./business-date.js";
@@ -45,6 +48,9 @@ const STATE_TIMESTAMP: Readonly<Record<"start" | "ready" | "deliver", "preparing
  * - Cancelamento de pedido pago (M6): um estorno total por pagamento; dinheiro sai do caixa aberto de quem cancela.
  * - Cancelamento depende do estado e de quem criou: a rota exige só `order.read` na filial e ESTE service decide com as
  *   permissões efetivas do ator naquela filial (exceção documentada ao padrão declarativo, ver docs/security.md).
+ * - M7: a confirmação cria uma comanda por setor (depois do status CONFIRMED, na mesma transação); com comandas, start/ready
+ *   do pedido são ATALHO sobre as comandas abertas e o status CONFIRMED/PREPARING/READY é derivado delas; pedido sem
+ *   comandas (confirmado antes do M7) segue o M5; cancelar o pedido cancela as comandas. Travas: pedido -> comandas.
  */
 @Injectable()
 export class OrderService {
@@ -54,6 +60,7 @@ export class OrderService {
     @Inject(AuthContextService) private readonly auth: AuthContextService,
     @Inject(AuthorizationService) private readonly authorization: AuthorizationService,
     @Inject(BranchProductService) private readonly menus: BranchProductService,
+    @Inject(KitchenOrderFlow) private readonly kitchen: KitchenOrderFlow,
     @Inject(CLOCK) private readonly clock: Clock,
   ) {}
 
@@ -169,16 +176,32 @@ export class OrderService {
         where: this.scope.where({ id: orderId }),
         data: { status: DbStatus.CONFIRMED, total: priced.total, number, businessDate: dateColumn(day), confirmedAt: now },
       });
+      // M7: comandas por setor, com o pedido já CONFIRMED (o trigger da comanda exige) e os itens definitivos.
+      await this.kitchen.createTickets(tx, branchId, orderId, now);
       return this.load(tx, branchId, orderId);
     });
     if (result === "payment_total_mismatch") throw new ConflictError("payment_total_mismatch");
     return result;
   }
 
-  /** start/ready/deliver: trava, valida a transição (repetir = 409) e grava o timestamp do novo estado. */
+  /**
+   * start/ready/deliver: trava, valida a transição (repetir = 409) e grava o timestamp do novo estado.
+   * M7: pedido COM comandas -> start/ready agem nas comandas abertas (start: WAITING -> PREPARING; ready: WAITING/PREPARING
+   * -> READY) e o status do pedido é recalculado; sem nenhuma comanda a mover = 409 `order_invalid_transition`. Pedido sem
+   * comandas (legado) e `deliver` seguem o M5.
+   */
   async advance(branchId: string, orderId: string, action: "start" | "ready" | "deliver"): Promise<OrderDto> {
     return this.prisma.$transaction(async (tx) => {
       const order = await this.lock(tx, branchId, orderId);
+      if (action !== "deliver") {
+        const tickets = await this.kitchen.lockTickets(tx, orderId);
+        if (tickets.length > 0) {
+          const moved = shortcutTargets(tickets, action);
+          if (moved.length === 0) throw new ConflictError("order_invalid_transition");
+          await this.kitchen.moveTickets(tx, { id: orderId, status: order.status }, tickets, moved, action, this.clock.now());
+          return this.load(tx, branchId, orderId);
+        }
+      }
       const status = nextStatus(order.status, action);
       if (status === null) throw new ConflictError("order_invalid_transition");
       await tx.order.update({ where: this.scope.where({ id: orderId }), data: { status, [STATE_TIMESTAMP[action]]: this.clock.now() } });
@@ -193,7 +216,8 @@ export class OrderService {
    * caixa aberto -> 409 `cash_session_required`, nada muda); PIX/cartão = devolução manual (`cashSessionId` null).
    */
   async cancel(branchId: string, orderId: string, reason: string | undefined): Promise<OrderDto> {
-    const { userId } = this.auth.require();
+    const actor = this.auth.require();
+    const { userId } = actor;
     return this.prisma.$transaction(async (tx) => {
       const order = await this.lock(tx, branchId, orderId);
       if (nextStatus(order.status, "cancel" satisfies OrderAction) === null) throw new ConflictError("order_invalid_transition");
@@ -229,9 +253,23 @@ export class OrderService {
           ),
         });
       }
+      const now = this.clock.now();
       await tx.order.update({
         where: this.scope.where({ id: orderId }),
-        data: { status: DbStatus.CANCELLED, cancelledAt: this.clock.now(), cancelledBy: userId, cancelReason: reason ?? null },
+        data: { status: DbStatus.CANCELLED, cancelledAt: now, cancelledBy: userId, cancelReason: reason ?? null },
+      });
+      // M7: todas as comandas do pedido viram CANCELLED (nada é apagado), na mesma transação do estorno.
+      await this.kitchen.cancelTickets(tx, orderId, now);
+      // KAN-41: todo cancelamento audita (rascunho também, com `number` null), com os estornos, na mesma transação.
+      const { number } = await tx.order.findFirstOrThrow({ where: this.scope.where({ id: orderId, branchId }), select: { number: true } });
+      await new BusinessAuditWriter(tx, this.scope).record(actor, {
+        action: "order.cancelled",
+        branchId,
+        orderId,
+        number,
+        previousStatus: order.status,
+        reason: reason ?? null,
+        refunds: paid.map((p) => ({ method: p.method, amount: toMoney(p.amount) })),
       });
       return this.load(tx, branchId, orderId);
     });

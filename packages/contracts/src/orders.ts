@@ -1,5 +1,6 @@
 import type { PageQuery } from "./common.js";
 import type { PaymentDto, PaymentInput, RefundDto } from "./cash.js";
+import type { OrderKitchenTicketDto } from "./kitchen.js";
 import type { Money } from "./products.js";
 
 /**
@@ -43,8 +44,10 @@ import type { Money } from "./products.js";
  *                                                          409 order_empty | order_item_unavailable | branch_inactive |
  *                                                              company_inactive | order_invalid_transition |
  *                                                              cash_session_required (M6) | payment_total_mismatch (M6)
- * POST /branches/:branchId/orders/:orderId/start           `order.create` -> 200 OrderDto (PREPARING)
- * POST /branches/:branchId/orders/:orderId/ready           `order.create` -> 200 OrderDto (READY)
+ * POST /branches/:branchId/orders/:orderId/start           `order.prepare` (M7) -> 200 OrderDto (PREPARING)
+ * POST /branches/:branchId/orders/:orderId/ready           `order.prepare` (M7) -> 200 OrderDto (READY)
+ *        M7: atalho que age em todas as comandas abertas do pedido (ver kitchen.ts); pedido sem comandas (confirmado
+ *        antes do M7) mantém o comportamento do M5.
  * POST /branches/:branchId/orders/:orderId/deliver         `order.create` -> 200 OrderDto (DELIVERED)
  * POST /branches/:branchId/orders/:orderId/cancel          CancelOrderRequest -> 200 OrderDto (CANCELLED)
  *        EDITING: quem criou (com `order.create`) OU quem tem `order.cancel`; motivo opcional.
@@ -53,8 +56,8 @@ import type { Money } from "./products.js";
  *        cancela (409 `cash_session_required`) com dinheiro esperado suficiente (409 `insufficient_cash`; ex.: fazer
  *        suprimento antes). Sem permissão para o caso -> 403. CANCELLED -> 409 order_invalid_transition.
  *
- * As transições start/ready/deliver usam `order.create` no M5 (a role KITCHEN só tem `order.read`). Permissão própria
- * da cozinha é decisão do M7 (Kitchen Display).
+ * M7 (10/11/2026): start/ready usam `order.prepare` (Proprietário, Gerente, Atendente e Cozinha); deliver continua com
+ * `order.create`. Com comandas, o status CONFIRMED/PREPARING/READY do pedido é derivado delas (kitchen.ts).
  */
 
 export const ORDER_STATUSES = ["EDITING", "CONFIRMED", "PREPARING", "READY", "DELIVERED", "CANCELLED"] as const;
@@ -123,6 +126,8 @@ export interface OrderDto extends OrderSummaryDto {
   readonly refunds: readonly RefundDto[];
   /** M6: soma do troco dado em dinheiro. */
   readonly changeGiven: Money;
+  /** M7: comandas por setor (vazio em EDITING e em pedidos confirmados antes do M7). Ordem: `createdAt`, `id`. */
+  readonly kitchenTickets: readonly OrderKitchenTicketDto[];
 }
 
 /**

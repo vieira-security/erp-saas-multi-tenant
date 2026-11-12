@@ -98,7 +98,11 @@ describe("M5 orders APIs over HTTP (PostgreSQL, as erp_app)", () => {
    */
   async function shop(name: string) {
     const org = await seedOrg(owner, name);
-    await h.tenants.run({ tenantId: org.tenantId }, () => new TenantProvisioningService(prisma, h.scope).provisionDefaultRoles());
+    await h.tenants.run({ tenantId: org.tenantId }, async () => {
+      const provisioning = new TenantProvisioningService(prisma, h.scope);
+      await provisioning.provisionDefaultRoles();
+      await provisioning.provisionDefaultKitchenSector(); // M7: confirmation routes items to the default sector
+    });
     const actors = {
       owner: await login(org, "OWNER", [org.branchId, org.otherBranchId]),
       manager: await login(org, "MANAGER", [org.branchId, org.otherBranchId]),
@@ -158,7 +162,7 @@ describe("M5 orders APIs over HTTP (PostgreSQL, as erp_app)", () => {
       }
     });
 
-    it("OWNER, MANAGER and ATTENDANT create, edit, confirm and move orders; KITCHEN only reads; no role = 403", async () => {
+    it("OWNER, MANAGER and ATTENDANT create, edit, confirm and move orders; KITCHEN reads and prepares only (M7); no role = 403", async () => {
       const s = await shop("Matriz roles");
       for (const role of ["owner", "manager", "attendant"] as const) {
         const as = client(s.actors[role]);
@@ -174,7 +178,9 @@ describe("M5 orders APIs over HTTP (PostgreSQL, as erp_app)", () => {
       expect((await kitchen.get(`${s.main}/${order.id}`)).status).toBe(200);
       expect(await kitchen.post(s.main, {})).toEqual(FORBIDDEN);
       expect(await kitchen.put(`${s.main}/${order.id}/items`, { items: [] })).toEqual(FORBIDDEN);
-      for (const action of ["confirm", "start", "ready", "deliver", "cancel"]) expect(await kitchen.post(`${s.main}/${order.id}/${action}`, {}), action).toEqual(FORBIDDEN);
+      for (const action of ["confirm", "deliver", "cancel"]) expect(await kitchen.post(`${s.main}/${order.id}/${action}`, {}), action).toEqual(FORBIDDEN);
+      // M7: start/ready need `order.prepare`, which KITCHEN has; the draft cannot start yet (409, not 403).
+      for (const action of ["start", "ready"]) expect(await kitchen.post(`${s.main}/${order.id}/${action}`, {}), action).toEqual(INVALID_TRANSITION);
       for (const [method, path] of [["GET", s.main], ["GET", `${s.main}/${order.id}`], ["POST", s.main], ["POST", `${s.main}/${order.id}/cancel`]] as const) {
         expect(await http.request(path, { method, token: s.actors.nobody.token, ...(method === "POST" ? { body: {} } : {}) }), `${method} ${path}`).toEqual(FORBIDDEN);
       }
@@ -214,7 +220,7 @@ describe("M5 orders APIs over HTTP (PostgreSQL, as erp_app)", () => {
         createdBy: { userId: s.actors.attendant.userId, name: s.actors.attendant.name },
       });
       expect(Object.keys(order).sort()).toEqual(
-        ["branchId", "businessDate", "cancelReason", "cancelledAt", "cancelledBy", "changeGiven", "confirmedAt", "createdAt", "createdBy", "deliveredAt", "id", "itemCount", "items", "number", "payments", "preparingAt", "readyAt", "refunds", "status", "total"],
+        ["branchId", "businessDate", "cancelReason", "cancelledAt", "cancelledBy", "changeGiven", "confirmedAt", "createdAt", "createdBy", "deliveredAt", "id", "itemCount", "items", "kitchenTickets", "number", "payments", "preparingAt", "readyAt", "refunds", "status", "total"],
       );
       expect(order).toMatchObject({ payments: [], refunds: [], changeGiven: "0.00" });
       expect((await client(s.actors.attendant).post(s.main, {})).status).toBe(201);
@@ -459,7 +465,8 @@ describe("M5 orders APIs over HTTP (PostgreSQL, as erp_app)", () => {
       const editing = await draft(s);
       for (const action of ["start", "ready", "deliver"]) expect(await as.post(`${s.main}/${editing.id}/${action}`), action).toEqual(INVALID_TRANSITION);
       const order = await confirmed(s);
-      expect(await as.post(`${s.main}/${order.id}/ready`)).toEqual(INVALID_TRANSITION);
+      // M7: a confirmed order has kitchen tickets, so `ready` straight from CONFIRMED is the shortcut (all open tickets
+      // READY) and is valid; the M5 rule "ready only after start" stays for orders without tickets (kitchen-http tests).
       expect(await as.post(`${s.main}/${order.id}/deliver`)).toEqual(INVALID_TRANSITION);
       expect((await as.post(`${s.main}/${order.id}/start`)).status).toBe(200);
       expect(await as.post(`${s.main}/${order.id}/start`)).toEqual(INVALID_TRANSITION);

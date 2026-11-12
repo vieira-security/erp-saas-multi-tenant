@@ -61,6 +61,11 @@ model Tenant {
   cashMovements         CashMovement[]
   payments              Payment[]
   refunds               Refund[]
+  kitchenSectors        KitchenSector[]
+  branchKitchenSectors  BranchKitchenSector[]
+  kitchenTickets        KitchenTicket[]
+  kitchenTicketItems    KitchenTicketItem[]
+  userPreferences       UserPreference[]
 
   @@map("tenants")
 }
@@ -123,6 +128,7 @@ model Branch {
   orders          Order[]
   orderCounters   BranchOrderCounter[]
   cashSessions    CashSession[]
+  kitchenSectors  BranchKitchenSector[]
 
   @@unique([tenantId, code])
   // NULLS DISTINCT (padrão do PostgreSQL): várias branches sem CNPJ são permitidas.
@@ -171,6 +177,7 @@ model User {
   cashMovements       CashMovement[]     @relation("CashMovementCreatedBy")
   refunds             Refund[]           @relation("RefundCreatedBy")
   auditLogs           AuditLog[]
+  preferences         UserPreference?
 
   @@unique([tenantId, employeeNumber])
   // Alvo da FK composta de UserBranchAccess.
@@ -440,24 +447,28 @@ enum ProductStatus {
 // CHECKs (fora do PSL, migration 20261108000000): name não vazio; description nula ou não vazia; code nulo ou
 // ^[A-Z0-9][A-Z0-9_-]{0,31}$ (mesmo formato de Branch.code); base_price >= 0; sort_order 0..9999.
 model Product {
-  id             String                 @id @default(uuid(7)) @db.Uuid
-  tenantId       String                 @map("tenant_id") @db.Uuid
-  categoryId     String?                @map("category_id") @db.Uuid
-  name           String
-  description    String?
-  code           String?
-  basePrice      Decimal                @map("base_price") @db.Decimal(12, 2)
-  sortOrder      Int                    @default(0) @map("sort_order")
-  status         ProductStatus
-  createdAt      DateTime               @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt      DateTime               @updatedAt @map("updated_at") @db.Timestamptz(3)
-  tenant         Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  id              String                 @id @default(uuid(7)) @db.Uuid
+  tenantId        String                 @map("tenant_id") @db.Uuid
+  categoryId      String?                @map("category_id") @db.Uuid
+  // M7: setor de preparo do tenant; NULL = setor padrão.
+  kitchenSectorId String?                @map("kitchen_sector_id") @db.Uuid
+  name            String
+  description     String?
+  code            String?
+  basePrice       Decimal                @map("base_price") @db.Decimal(12, 2)
+  sortOrder       Int                    @default(0) @map("sort_order")
+  status          ProductStatus
+  createdAt       DateTime               @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt       DateTime               @updatedAt @map("updated_at") @db.Timestamptz(3)
+  tenant          Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
   // FK composta MATCH SIMPLE: verificada só quando category_id não é NULL; categoria sempre do mesmo tenant.
-  category       ProductCategory?       @relation(fields: [tenantId, categoryId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
-  optionGroups   ProductOptionGroup[]
-  linkedBy       ProductOption[]        @relation("ProductOptionLinkedProduct")
-  branchSettings BranchProductSetting[]
-  orderItems     OrderItem[]
+  category        ProductCategory?       @relation(fields: [tenantId, categoryId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  // M7: FK composta MATCH SIMPLE: verificada só quando kitchen_sector_id não é NULL; setor sempre do mesmo tenant.
+  kitchenSector   KitchenSector?         @relation(fields: [tenantId, kitchenSectorId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  optionGroups    ProductOptionGroup[]
+  linkedBy        ProductOption[]        @relation("ProductOptionLinkedProduct")
+  branchSettings  BranchProductSetting[]
+  orderItems      OrderItem[]
 
   // NULLS DISTINCT (padrão do PostgreSQL): vários produtos sem código são permitidos.
   @@unique([tenantId, code])
@@ -465,6 +476,7 @@ model Product {
   @@unique([tenantId, id])
   @@index([tenantId, status])
   @@index([tenantId, categoryId])
+  @@index([tenantId, kitchenSectorId])
   @@map("products")
 }
 
@@ -563,32 +575,34 @@ enum OrderStatus {
 // juntos; timestamps coerentes com o status; dados de cancelamento só quando CANCELLED, motivo obrigatório se o pedido
 // já tinha sido confirmado; cancel_reason não vazio e <= 200.
 model Order {
-  id           String      @id @default(uuid(7)) @db.Uuid
-  tenantId     String      @map("tenant_id") @db.Uuid
-  branchId     String      @map("branch_id") @db.Uuid
-  status       OrderStatus
+  id             String          @id @default(uuid(7)) @db.Uuid
+  tenantId       String          @map("tenant_id") @db.Uuid
+  branchId       String          @map("branch_id") @db.Uuid
+  status         OrderStatus
   // Número do dia na filial; atribuído na confirmação (contador branch_order_counters).
-  number       Int?
+  number         Int?
   // Dia de operação no fuso da filial (branches.timezone) em que o número foi atribuído.
-  businessDate DateTime?   @map("business_date") @db.Date
-  total        Decimal     @db.Decimal(12, 2)
-  createdBy    String      @map("created_by") @db.Uuid
-  confirmedAt  DateTime?   @map("confirmed_at") @db.Timestamptz(3)
-  preparingAt  DateTime?   @map("preparing_at") @db.Timestamptz(3)
-  readyAt      DateTime?   @map("ready_at") @db.Timestamptz(3)
-  deliveredAt  DateTime?   @map("delivered_at") @db.Timestamptz(3)
-  cancelledAt  DateTime?   @map("cancelled_at") @db.Timestamptz(3)
-  cancelledBy  String?     @map("cancelled_by") @db.Uuid
-  cancelReason String?     @map("cancel_reason")
-  createdAt    DateTime    @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt    DateTime    @updatedAt @map("updated_at") @db.Timestamptz(3)
-  tenant       Tenant      @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
-  branch       Branch      @relation(fields: [tenantId, branchId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
-  creator      User        @relation("OrderCreatedBy", fields: [tenantId, createdBy], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  businessDate   DateTime?       @map("business_date") @db.Date
+  total          Decimal         @db.Decimal(12, 2)
+  createdBy      String          @map("created_by") @db.Uuid
+  confirmedAt    DateTime?       @map("confirmed_at") @db.Timestamptz(3)
+  preparingAt    DateTime?       @map("preparing_at") @db.Timestamptz(3)
+  readyAt        DateTime?       @map("ready_at") @db.Timestamptz(3)
+  deliveredAt    DateTime?       @map("delivered_at") @db.Timestamptz(3)
+  cancelledAt    DateTime?       @map("cancelled_at") @db.Timestamptz(3)
+  cancelledBy    String?         @map("cancelled_by") @db.Uuid
+  cancelReason   String?         @map("cancel_reason")
+  createdAt      DateTime        @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime        @updatedAt @map("updated_at") @db.Timestamptz(3)
+  tenant         Tenant          @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  branch         Branch          @relation(fields: [tenantId, branchId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  creator        User            @relation("OrderCreatedBy", fields: [tenantId, createdBy], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
   // FK composta MATCH SIMPLE: verificada só quando cancelled_by não é NULL.
-  canceller    User?       @relation("OrderCancelledBy", fields: [tenantId, cancelledBy], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
-  items        OrderItem[]
-  payments     Payment[]
+  canceller      User?           @relation("OrderCancelledBy", fields: [tenantId, cancelledBy], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  items          OrderItem[]
+  payments       Payment[]
+  // M7: comandas por setor, criadas na confirmação.
+  kitchenTickets KitchenTicket[]
 
   // Alvo da FK composta de OrderItem.
   @@unique([tenantId, id])
@@ -609,28 +623,31 @@ model Order {
 // product_name não vazio; product_code nulo ou no formato de products.code; note nula ou não vazia e <= 140;
 // sort_order 0..99.
 model OrderItem {
-  id          String            @id @default(uuid(7)) @db.Uuid
-  tenantId    String            @map("tenant_id") @db.Uuid
-  orderId     String            @map("order_id") @db.Uuid
-  productId   String            @map("product_id") @db.Uuid
-  productName String            @map("product_name")
-  productCode String?           @map("product_code")
-  quantity    Int
-  unitPrice   Decimal           @map("unit_price") @db.Decimal(12, 2)
-  lineTotal   Decimal           @map("line_total") @db.Decimal(12, 2)
-  note        String?
-  sortOrder   Int               @map("sort_order")
-  createdAt   DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt   DateTime          @updatedAt @map("updated_at") @db.Timestamptz(3)
-  tenant      Tenant            @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
-  order       Order             @relation(fields: [tenantId, orderId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
-  product     Product           @relation(fields: [tenantId, productId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
-  options     OrderItemOption[]
+  id                 String              @id @default(uuid(7)) @db.Uuid
+  tenantId           String              @map("tenant_id") @db.Uuid
+  orderId            String              @map("order_id") @db.Uuid
+  productId          String              @map("product_id") @db.Uuid
+  productName        String              @map("product_name")
+  productCode        String?             @map("product_code")
+  quantity           Int
+  unitPrice          Decimal             @map("unit_price") @db.Decimal(12, 2)
+  lineTotal          Decimal             @map("line_total") @db.Decimal(12, 2)
+  note               String?
+  sortOrder          Int                 @map("sort_order")
+  createdAt          DateTime            @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt          DateTime            @updatedAt @map("updated_at") @db.Timestamptz(3)
+  tenant             Tenant              @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  order              Order               @relation(fields: [tenantId, orderId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  product            Product             @relation(fields: [tenantId, productId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  options            OrderItemOption[]
+  kitchenTicketItems KitchenTicketItem[]
 
   // Ordem única no pedido; também atende a FK composta do pedido.
   @@unique([tenantId, orderId, sortOrder])
   // Alvo da FK composta de OrderItemOption.
   @@unique([tenantId, id])
+  // M7: alvo da FK composta de KitchenTicketItem (leva order_id: item da comanda e da venda do MESMO pedido).
+  @@unique([tenantId, orderId, id])
   @@index([tenantId, productId])
   @@map("order_items")
 }
@@ -819,4 +836,146 @@ model Refund {
   @@index([tenantId, branchId, cashSessionId])
   @@index([tenantId, createdBy])
   @@map("refunds")
+}
+
+// ── M7: cozinha (setores, comandas por setor) ──────────────────────────────────────────────────────────────────────
+// Setores são do TENANT; a filial só liga/desliga (BranchKitchenSector; sem linha = ligado). Exatamente um setor padrão
+// por tenant (índice único PARCIAL, fora do PSL). Comandas nascem na confirmação do pedido (uma por setor efetivo) e nunca
+// são apagadas; os itens da comanda nunca mudam (triggers da migration 20261110020000). Sem preços: a cozinha não vê valores.
+
+enum KitchenSectorStatus {
+  ACTIVE
+  INACTIVE
+
+  @@map("kitchen_sector_status")
+}
+
+// Índice único PARCIAL (fora do PSL, migration 20261110020000): um is_default por tenant. CHECKs: name não vazio e <= 60;
+// code no formato de products.code; sort_order 0..9999; o padrão é sempre ACTIVE.
+model KitchenSector {
+  id             String                @id @default(uuid(7)) @db.Uuid
+  tenantId       String                @map("tenant_id") @db.Uuid
+  name           String
+  code           String
+  isDefault      Boolean               @map("is_default")
+  status         KitchenSectorStatus
+  sortOrder      Int                   @default(0) @map("sort_order")
+  createdAt      DateTime              @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime              @updatedAt @map("updated_at") @db.Timestamptz(3)
+  tenant         Tenant                @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  products       Product[]
+  branchSettings BranchKitchenSector[]
+  tickets        KitchenTicket[]
+
+  // Código único no tenant.
+  @@unique([tenantId, code])
+  // Alvo das FKs compostas de Product, BranchKitchenSector e KitchenTicket.
+  @@unique([tenantId, id])
+  @@map("kitchen_sectors")
+}
+
+// Setor ligado/desligado numa filial. Ausência = ligado. O padrão nunca é desligado (regra da aplicação, com a linha do
+// setor travada).
+model BranchKitchenSector {
+  id        String        @id @default(uuid(7)) @db.Uuid
+  tenantId  String        @map("tenant_id") @db.Uuid
+  branchId  String        @map("branch_id") @db.Uuid
+  sectorId  String        @map("sector_id") @db.Uuid
+  enabled   Boolean
+  createdAt DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime      @updatedAt @map("updated_at") @db.Timestamptz(3)
+  tenant    Tenant        @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  branch    Branch        @relation(fields: [tenantId, branchId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  sector    KitchenSector @relation(fields: [tenantId, sectorId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+
+  // Um ajuste por setor por filial; também atende a FK composta da filial.
+  @@unique([tenantId, branchId, sectorId])
+  @@index([tenantId, sectorId])
+  @@map("branch_kitchen_sectors")
+}
+
+enum KitchenTicketStatus {
+  WAITING
+  PREPARING
+  READY
+  CANCELLED
+
+  @@map("kitchen_ticket_status")
+}
+
+// Comanda de um setor num pedido. Nome e código do setor são CÓPIAS do momento da confirmação. FK composta com branch_id:
+// comanda da MESMA filial do pedido. CHECKs: timestamps coerentes com o status; print_count >= 0 e last_printed_at
+// preenchido <=> print_count > 0; sector_name não vazio; sector_code no formato do código do setor.
+// Trigger kitchen_tickets_guard: nasce WAITING com o pedido CONFIRMED; nunca é apagada; só transições válidas;
+// identidade, cópias e timestamps já gravados nunca mudam; impressão só incrementa a contagem.
+model KitchenTicket {
+  id            String              @id @default(uuid(7)) @db.Uuid
+  tenantId      String              @map("tenant_id") @db.Uuid
+  branchId      String              @map("branch_id") @db.Uuid
+  orderId       String              @map("order_id") @db.Uuid
+  sectorId      String              @map("sector_id") @db.Uuid
+  sectorName    String              @map("sector_name")
+  sectorCode    String              @map("sector_code")
+  status        KitchenTicketStatus
+  startedAt     DateTime?           @map("started_at") @db.Timestamptz(3)
+  readyAt       DateTime?           @map("ready_at") @db.Timestamptz(3)
+  cancelledAt   DateTime?           @map("cancelled_at") @db.Timestamptz(3)
+  printCount    Int                 @default(0) @map("print_count")
+  lastPrintedAt DateTime?           @map("last_printed_at") @db.Timestamptz(3)
+  createdAt     DateTime            @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt     DateTime            @updatedAt @map("updated_at") @db.Timestamptz(3)
+  tenant        Tenant              @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  order         Order               @relation(fields: [tenantId, branchId, orderId], references: [tenantId, branchId, id], onDelete: Restrict, onUpdate: Restrict)
+  sector        KitchenSector       @relation(fields: [tenantId, sectorId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+  items         KitchenTicketItem[]
+
+  // Uma comanda por setor por pedido.
+  @@unique([tenantId, orderId, sectorId])
+  // Alvo da FK composta de KitchenTicketItem (leva order_id: item da comanda do mesmo pedido).
+  @@unique([tenantId, orderId, id])
+  // FK composta do pedido; comandas de um pedido.
+  @@index([tenantId, branchId, orderId])
+  // Fila da filial em ordem de chegada.
+  @@index([tenantId, branchId, createdAt])
+  @@index([tenantId, sectorId])
+  @@map("kitchen_tickets")
+}
+
+// Item da comanda: só o vínculo com o item do pedido (os dados saem do snapshot da venda). Append-only (trigger
+// kitchen_ticket_items_guard): só entra com a comanda WAITING e nunca impressa; nunca muda nem é apagado. As duas FKs
+// compostas carregam order_id: comanda e item da venda do MESMO pedido e tenant.
+model KitchenTicketItem {
+  id          String        @id @default(uuid(7)) @db.Uuid
+  tenantId    String        @map("tenant_id") @db.Uuid
+  orderId     String        @map("order_id") @db.Uuid
+  ticketId    String        @map("ticket_id") @db.Uuid
+  orderItemId String        @map("order_item_id") @db.Uuid
+  createdAt   DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
+  tenant      Tenant        @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  ticket      KitchenTicket @relation(fields: [tenantId, orderId, ticketId], references: [tenantId, orderId, id], onDelete: Restrict, onUpdate: Restrict)
+  orderItem   OrderItem     @relation(fields: [tenantId, orderId, orderItemId], references: [tenantId, orderId, id], onDelete: Restrict, onUpdate: Restrict)
+
+  // Cada item do pedido em exatamente uma comanda; também atende a FK composta do item.
+  @@unique([tenantId, orderId, orderItemId])
+  @@index([tenantId, orderId, ticketId])
+  @@map("kitchen_ticket_items")
+}
+
+// ── KAN-42: preferências do próprio usuário ─────────────────────────────────────────────────────────────────────────
+// Uma linha por usuário (único (tenant_id, user_id), que também é o alvo do upsert). Sem linha = defaults do contrato
+// (`catalogView` GRID). Só o próprio usuário lê/grava (tenant e usuário do AuthContext, nunca do corpo).
+// CHECK (fora do PSL, na migration): catalog_view IN ('GRID', 'LIST'). tenant_id imutável (trigger). Sem DELETE.
+model UserPreference {
+  id          String   @id @default(uuid(7)) @db.Uuid
+  tenantId    String   @map("tenant_id") @db.Uuid
+  userId      String   @map("user_id") @db.Uuid
+  catalogView String   @map("catalog_view")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  user        User     @relation(fields: [tenantId, userId], references: [tenantId, id], onDelete: Restrict, onUpdate: Restrict)
+
+  // Um registro por usuário; também atende a FK composta para users.
+  @@unique([tenantId, userId])
+  @@map("user_preferences")
 }

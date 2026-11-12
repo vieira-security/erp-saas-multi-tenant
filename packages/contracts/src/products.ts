@@ -93,6 +93,8 @@ export interface UpdateProductCategoryRequest {
 export interface ProductSummaryDto {
   readonly id: string;
   readonly categoryId: string | null;
+  /** M7: setor de preparo do tenant; `null` = setor padrão. */
+  readonly kitchenSectorId: string | null;
   readonly name: string;
   /** Código curto para busca rápida no PDV; `null` = sem código. Mesmo formato de `Branch.code`. */
   readonly code: string | null;
@@ -146,6 +148,8 @@ export interface CreateProductRequest {
   readonly code?: string | null;
   /** Categoria do tenant (qualquer status); `null`/ausente = sem categoria. */
   readonly categoryId?: string | null;
+  /** M7: setor do tenant (qualquer status; inexistente/de outro tenant -> `invalid_value`). `null`/ausente = padrão. */
+  readonly kitchenSectorId?: string | null;
   readonly basePrice: Money;
   /** 0–9999; default 0. */
   readonly sortOrder?: number;
@@ -159,6 +163,7 @@ export interface UpdateProductRequest {
   readonly description?: string | null;
   readonly code?: string | null;
   readonly categoryId?: string | null;
+  readonly kitchenSectorId?: string | null;
   readonly basePrice?: Money;
   readonly sortOrder?: number;
 }

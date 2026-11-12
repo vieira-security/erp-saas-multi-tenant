@@ -50,6 +50,11 @@ export const API_ERROR_CODES = [
   "user_has_open_cash_session",
   "role_inactive",
   "branch_access_required",
+  // M7
+  "kitchen_sector_code_already_exists",
+  "kitchen_sector_default_required",
+  "kitchen_sector_inactive",
+  "kitchen_ticket_invalid_transition",
 ] as const;
 
 export type ApiErrorCode = (typeof API_ERROR_CODES)[number];
