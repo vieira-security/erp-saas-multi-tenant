@@ -304,3 +304,8 @@ Decisões já no contrato (`packages/contracts/src/audit.ts` e o fim de `me.ts`)
 6. Sem índice novo em `audit_logs` (os existentes cobrem a consulta); revisar com plano de execução quando houver volume real.
 7. Algumas operações (PATCH/ativar/desativar de categoria, produto, setor, empresa, filial) agora travam a linha `FOR UPDATE` para ler o "antes" exato; efeito de concorrência: edições simultâneas do mesmo registro passam a ser serializadas.
 
+
+**Auditoria do PR #30 (11/11/2026):** DECISION REQUIRED 1 (eventos de filial e o dono sem acesso) resolvido pela decisão
+de produto "Dono tudo, gerente nas filiais dele": quem tem `audit.read_tenant` vê TODO o histórico do tenant, inclusive
+filiais a que não tem acesso; o gerente continua só nas filiais com `audit.read`. Os eventos continuam gravando a
+própria filial.

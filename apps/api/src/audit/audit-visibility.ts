@@ -6,6 +6,8 @@ import { resolveEffectivePermissions, type RoleAssignment } from "../authorizati
  * - eventos COM filial: só das filiais onde ele tem `audit.read` efetivo (role tenant-wide ou daquela filial, E acesso à
  *   filial — mesma regra do AuthorizationService);
  * - eventos SEM filial (tenant): só com `audit.read` E `audit.read_tenant` no escopo do tenant (roles sem filial).
+ * - quem vê o tenant (Dono: `audit.read_tenant`) vê TODO o histórico, inclusive filiais a que não tem acesso — decisão
+ *   "Dono tudo, gerente nas filiais dele" (resolve o DECISION REQUIRED 1 do PR #30, auditoria de 11/11/2026).
  * Nada visível = 403. A regra vira condição do SQL (nunca filtro depois da página), então `total` segue a mesma regra.
  */
 export interface AuditVisibility {

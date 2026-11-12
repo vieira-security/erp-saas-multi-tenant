@@ -49,7 +49,10 @@ export class AuditLogService {
     const { userId } = this.auth.require();
     const visibility = await this.visibility(userId);
     if (seesNothing(visibility)) throw new PermissionDeniedError();
-    if (filter.branchId !== undefined && !visibility.branchIds.includes(filter.branchId)) throw new PermissionDeniedError();
+    // Quem vê o tenant (Dono) vê TODAS as filiais, inclusive sem acesso a elas (decisão "Dono tudo", auditoria de 11/11).
+    if (filter.branchId !== undefined && !visibility.tenantEvents && !visibility.branchIds.includes(filter.branchId)) {
+      throw new PermissionDeniedError();
+    }
 
     const where = this.whereClause(filter, visibility);
     const [rows, counted] = await this.prisma.$transaction(
@@ -80,11 +83,10 @@ export class AuditLogService {
       Prisma.sql`a.action = ANY(${[...AUDIT_ACTION_CATALOG]}::text[])`,
     ];
     if (filter.branchId !== undefined) {
-      // Já conferido acima: a filial está entre as visíveis.
+      // Já conferido acima: a filial está entre as visíveis (ou o ator vê o tenant inteiro).
       conditions.push(Prisma.sql`a.branch_id = ${filter.branchId}::uuid`);
-    } else {
-      const branches = Prisma.sql`a.branch_id = ANY(${[...visibility.branchIds]}::uuid[])`;
-      conditions.push(visibility.tenantEvents ? Prisma.sql`(${branches} OR a.branch_id IS NULL)` : branches);
+    } else if (!visibility.tenantEvents) {
+      conditions.push(Prisma.sql`a.branch_id = ANY(${[...visibility.branchIds]}::uuid[])`);
     }
     if (filter.from) conditions.push(Prisma.sql`a.created_at >= ${filter.from}`);
     if (filter.to) conditions.push(Prisma.sql`a.created_at < ${filter.to}`);

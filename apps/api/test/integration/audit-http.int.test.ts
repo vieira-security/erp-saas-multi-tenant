@@ -161,8 +161,8 @@ describe("KAN-41 audit history over HTTP (PostgreSQL, as erp_app)", () => {
       ]);
       expect(branchEvents[0]!.metadata).toEqual({ companyId: org.companyId, name: "Nova", code: "NOVA", cnpj: null, timezone: "America/Sao_Paulo" });
       expect(branchEvents[1]!.metadata).toEqual({ changes: { name: { from: "Nova", to: "Nova Loja" } } });
-      // The owner has no access to the new branch yet: its events are not visible to him through the API.
-      expect((await ok<Page<AuditLogDto>>(list(actors.owner, { resourceId: branch.id }))).total).toBe(0);
+      // The owner has no access to the new branch yet, but sees its events anyway (decision: the owner sees everything).
+      expect((await ok<Page<AuditLogDto>>(list(actors.owner, { resourceId: branch.id }))).total).toBe(4);
 
       // Branch access: granted/revoked in the branch, target in resource_id; repeating a grant does not audit.
       const target = await seedUser(owner, org.tenantId);
@@ -388,6 +388,16 @@ describe("KAN-41 audit history over HTTP (PostgreSQL, as erp_app)", () => {
       const foreign = new Set((await owner.auditLog.findMany({ where: { tenantId: other.org.tenantId }, select: { id: true } })).map((r) => r.id));
       expect(all.items.filter((i) => foreign.has(i.id))).toEqual([]);
       expect((await ok<Page<AuditLogDto>>(list(actors.owner, { userId: other.actors.owner.userId }))).total).toBe(0);
+    });
+
+    it("owner without access to a branch still sees its events (decision: the owner sees everything)", async () => {
+      const { org } = await mixed();
+      const ownerMainOnly = await login(org, "OWNER", [org.branchId]);
+      const expected = await count(org, { branchId: org.otherBranchId });
+      expect(expected).toBeGreaterThan(0);
+      expect((await ok<Page<AuditLogDto>>(list(ownerMainOnly, { branchId: org.otherBranchId }))).total).toBe(expected);
+      const all = await count(org, {});
+      expect((await ok<Page<AuditLogDto>>(list(ownerMainOnly, { pageSize: "1" }))).total).toBe(all);
     });
 
     it("manager sees only the branches where he has audit.read, never tenant events; total is computed in SQL", async () => {
