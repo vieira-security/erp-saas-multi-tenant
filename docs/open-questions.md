@@ -11,7 +11,7 @@ Registro único dos pontos em aberto. Resolver antes de implementar o módulo af
 | 5 | ~~Autenticação, sessões, transporte, TTLs~~ **resolvido no M2** ([security.md](security.md)); resta a expiração/autenticação offline do PDV | security | PDV offline |
 | 6 | ~~Modelo de roles/permissions e matriz padrão~~ **resolvido no M2**; restam fronteiras entre módulos | architecture/security | módulos futuros |
 | 7 | Transmissão de tenant à sessão do banco para RLS (pool, Prisma) | security | ativação da RLS |
-| 8 | Escopo da auditoria (estrutura `audit_logs` criada no M1.13; catálogo de ações, eventos obrigatórios e retenção em aberto) | security | audit |
+| 8 | Escopo da auditoria (estrutura `audit_logs` criada no M1.13). **Catálogo de ações e eventos obrigatórios decididos em 10/11/2026 (KAN-41)**; retenção/arquivamento continuam em aberto (#9) | security | audit |
 | 9 | LGPD x imutabilidade física | security | tenants/users |
 | 10 | Hipóteses de dispensa/emissão seletiva de documento fiscal | fiscal | fiscal |
 | 11 | Provedor fiscal, certificado, contingência, numeração, retenção de XML | fiscal | fiscal |
@@ -277,7 +277,7 @@ Decisões já no contrato (`packages/contracts/src/kitchen.ts`): permissão `ord
 7. Liga/desliga por filial grava a linha também para o padrão ligado (`enabled: true`); sem DELETE (o ajuste fica, `enabled` alterna).
 
 **Pendente / fora do M7:**
-- Auditoria (`audit_logs`) de setores, comandas e impressões: catálogo de ações em aberto (KAN-41); nada é gravado.
+- ~~Auditoria (`audit_logs`) de setores, comandas e impressões~~ **implementada no KAN-41** (setores, liga/desliga por filial, troca do padrão e reimpressão; start/ready não são auditados por decisão de produto).
 - Agente local de impressão ESC/POS (reaproveita `lines`); M8 (fiscal) não iniciado.
 - Tela da cozinha (KDS) e tempo real (polling/SSE) ficam com o frontend.
 
@@ -285,3 +285,22 @@ Decisões já no contrato (`packages/contracts/src/kitchen.ts`): permissão `ord
 1. Reimpressão numera a via de verdade: "2ª VIA", "3ª VIA"... (antes toda reimpressão saía "2ª VIA").
 2. Setor desativado no tenant ou desligado na filial com comandas abertas: **permitido**; as comandas abertas continuam no setor original (a cozinha termina o que já começou) e só os pedidos confirmados depois vão para o setor padrão.
 3. `PATCH /kitchen-sectors/:id` com corpo vazio responde 200 sem mudança (padrão das PATCH do repo); contrato ajustado.
+
+## Histórico de auditoria (KAN-41) e preferências (KAN-42) — decisões de produto de 10/11/2026
+Decisões já no contrato (`packages/contracts/src/audit.ts` e o fim de `me.ts`): catálogo `AUDIT_ACTIONS`; `audit.read` (dono e gerente, por filial) e `audit.read_tenant` (só dono, eventos sem filial); `changes` com antes/depois só do que mudou; nunca segredos; `GET/PUT /me/preferences` com `catalogView`.
+
+**Implementado (backend):** migration `20261111000000_audit_read_and_user_preferences` (tabela `user_preferences`, permissões e backfill); `BusinessAuditWriter` + instrumentação dos services; `GET /audit-logs`; `GET/PUT /me/preferences`. Detalhes em [security.md](security.md) ("Histórico de auditoria") e [database.md](database.md).
+
+**DECISION REQUIRED:**
+1. **Eventos de filial e o dono sem acesso à filial nova.** `branch.*` grava `branch_id` = a própria filial (para o gerente daquela filial ver). Consequência: o dono que cria uma filial só vê o `branch.created` dela depois de ganhar acesso à filial (a regra "evento com filial exige acesso" vale também para ele). Alternativa: gravar `branch.created/updated/activated/deactivated` como evento do tenant (`branch_id` null, só o dono vê).
+2. **Retenção e LGPD dos logs (#9).** Nenhuma política de retenção/arquivamento; `metadata` guarda textos livres digitados (`reason`, `justification`) e nomes cadastrais (produto, filial, empresa); `actor` mostra o nome ATUAL do usuário. Pedido de eliminação de dado pessoal continua sem caminho (append-only físico). Sem expurgo até decisão jurídica.
+
+**Defaults técnicos (revisar):**
+1. Ações feitas sem requisição autenticada (seed de desenvolvimento) são gravadas com ator `null` (= sistema, como o contrato prevê).
+2. `product.option_groups_replaced` audita toda substituição, mesmo com conteúdo idêntico (as linhas são recriadas com ids novos).
+3. `branch_product_setting.updated` usa o **produto** como recurso (o ajuste é apagado ao voltar ao padrão; o produto é estável e o histórico do produto o inclui); "voltar ao padrão" audita a mudança para `available: true, price: null`.
+4. `from`/`to` exigem fuso explícito (`Z` ou `±hh:mm`); data sem hora é rejeitada.
+5. `GET /audit-logs` devolve só ações do catálogo; hoje nenhuma ação gravada fica de fora.
+6. Sem índice novo em `audit_logs` (os existentes cobrem a consulta); revisar com plano de execução quando houver volume real.
+7. Algumas operações (PATCH/ativar/desativar de categoria, produto, setor, empresa, filial) agora travam a linha `FOR UPDATE` para ler o "antes" exato; efeito de concorrência: edições simultâneas do mesmo registro passam a ser serializadas.
+
