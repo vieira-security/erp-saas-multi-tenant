@@ -38,6 +38,8 @@ export const PERMISSION_CODES = [
   "fiscal.read",
   "fiscal.issue",
   "fiscal.cancel",
+  "audit.read",
+  "audit.read_tenant",
 ] as const;
 
 export type PermissionCode = (typeof PERMISSION_CODES)[number];

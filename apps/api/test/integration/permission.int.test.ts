@@ -172,7 +172,7 @@ describe("Permission (PostgreSQL)", () => {
       await seedPermissions(prisma);
 
       const rows = await catalogRows();
-      expect(rows).toHaveLength(20);
+      expect(rows).toHaveLength(22);
       expect(Object.fromEntries(rows.map((r) => [r.code, r.module]))).toEqual({
         "organization.read": "organization",
         "organization.manage": "organization",
@@ -194,9 +194,11 @@ describe("Permission (PostgreSQL)", () => {
         "fiscal.read": "fiscal",
         "fiscal.issue": "fiscal",
         "fiscal.cancel": "fiscal",
+        "audit.read": "audit",
+        "audit.read_tenant": "audit",
       });
       expect(new Set(rows.map((r) => r.module))).toEqual(
-        new Set(["organization", "users", "products", "orders", "cash", "fiscal"]),
+        new Set(["organization", "users", "products", "orders", "cash", "fiscal", "audit"]),
       );
       for (const row of rows) expect(row.description.trim(), row.code).not.toBe("");
     });
@@ -205,11 +207,11 @@ describe("Permission (PostgreSQL)", () => {
       await seedPermissions(prisma);
       const first = new Map((await catalogRows()).map((r) => [r.code, r]));
 
-      await expect(seedPermissions(prisma)).resolves.toBe(20);
-      await expect(seedPermissions(prisma)).resolves.toBe(20);
+      await expect(seedPermissions(prisma)).resolves.toBe(22);
+      await expect(seedPermissions(prisma)).resolves.toBe(22);
 
       const again = await catalogRows();
-      expect(again).toHaveLength(20);
+      expect(again).toHaveLength(22);
       for (const row of again) expect(row, row.code).toEqual(first.get(row.code));
     });
 

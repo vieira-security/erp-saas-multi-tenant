@@ -38,7 +38,7 @@ describe("default role provisioning (PostgreSQL, as erp_app)", () => {
 
   it("creates the four active system roles with exactly the approved matrix; reruns change nothing", async () => {
     const org = await seedOrg(owner, "Prov default");
-    expect(await provision(org)).toEqual({ created: ["OWNER", "MANAGER", "ATTENDANT", "KITCHEN"], existing: [], conflicts: [], grantsAdded: 49 });
+    expect(await provision(org)).toEqual({ created: ["OWNER", "MANAGER", "ATTENDANT", "KITCHEN"], existing: [], conflicts: [], grantsAdded: 52 });
     const first = await rolesOf(org);
     expect(first.map((r) => [r.code, r.name, r.isSystem, r.status])).toEqual([
       ["ATTENDANT", "Atendente", true, RoleStatus.ACTIVE],
@@ -54,11 +54,11 @@ describe("default role provisioning (PostgreSQL, as erp_app)", () => {
     };
     const expected = Object.fromEntries(Object.entries(DEFAULT_ROLE_PERMISSIONS).map(([role, codes]) => [role, [...codes].sort()]));
     expect(byRole(await grantsOf(org))).toEqual(expected);
-    expect(expected["OWNER"]).toHaveLength(20);
+    expect(expected["OWNER"]).toHaveLength(22);
     expect(expected["KITCHEN"]).toEqual(["order.prepare", "order.read", "product.read"]);
 
     expect(await provision(org)).toEqual({ created: [], existing: ["OWNER", "MANAGER", "ATTENDANT", "KITCHEN"], conflicts: [], grantsAdded: 0 });
-    expect(await grantsOf(org)).toHaveLength(49);
+    expect(await grantsOf(org)).toHaveLength(52);
     expect((await rolesOf(org)).map((r) => r.id)).toEqual(first.map((r) => r.id)); // stable ids
   });
 
