@@ -1,4 +1,5 @@
 import { Module } from "@nestjs/common";
+import { AuditModule } from "./audit/audit.module.js";
 import { AuthModule } from "./auth/auth.module.js";
 import { AuthorizationModule } from "./authorization/authorization.module.js";
 import { CashModule } from "./cash/cash.module.js";
@@ -14,5 +15,5 @@ import { RolesModule } from "./roles/roles.module.js";
 import { TenancyModule } from "./tenancy/tenancy.module.js";
 import { UsersModule } from "./users/users.module.js";
 
-@Module({ imports: [TenancyModule, DatabaseModule, ClockModule, AuthorizationModule, AuthModule, TenantsModule, OrganizationModule, UsersModule, RolesModule, ProductsModule, KitchenModule, OrdersModule, CashModule], controllers: [HealthController] })
+@Module({ imports: [TenancyModule, DatabaseModule, ClockModule, AuthorizationModule, AuthModule, TenantsModule, OrganizationModule, UsersModule, RolesModule, ProductsModule, KitchenModule, OrdersModule, CashModule, AuditModule], controllers: [HealthController] })
 export class AppModule {}
