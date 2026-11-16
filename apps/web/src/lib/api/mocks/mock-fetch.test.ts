@@ -78,13 +78,14 @@ describe("mock API (typed by @erp/contracts)", () => {
   it("mock data never carries a tenant id and permissions are in the catalog, sorted", () => {
     for (const profile of ["mixed", "owner"] as const) {
       const me: MeDto = mockMe(profile);
-      expect(JSON.stringify(me)).not.toMatch(/tenant/i);
+      // Nenhuma chave de tenant (o código de permissão `audit.read_tenant` é valor, não chave).
+      expect(JSON.stringify(me)).not.toMatch(/"[^"]*tenant[^"]*"\s*:/i);
       for (const list of [me.permissions, ...me.branches.map((b) => b.permissions)]) {
         expect(list.every((p) => PERMISSION_CODES.includes(p))).toBe(true);
         expect([...list].sort()).toEqual(list);
       }
     }
-    expect(JSON.stringify(MOCK_BRANCHES)).not.toMatch(/tenant/i);
+    expect(JSON.stringify(MOCK_BRANCHES)).not.toMatch(/"[^"]*tenant[^"]*"\s*:/i);
   });
 
   it("paginate computes totals", () => {

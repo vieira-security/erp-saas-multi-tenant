@@ -76,10 +76,12 @@ const ATTENDANT: readonly PermissionCode[] = [
   "fiscal.issue",
   "fiscal.read",
   "order.create",
+  "order.prepare",
   "order.read",
   "product.read",
 ];
 const MANAGER: readonly PermissionCode[] = [
+  "audit.read",
   "branch.read",
   "cash.close",
   "cash.open",
@@ -89,6 +91,7 @@ const MANAGER: readonly PermissionCode[] = [
   "fiscal.read",
   "order.cancel",
   "order.create",
+  "order.prepare",
   "order.read",
   "organization.read",
   "product.manage",
@@ -99,6 +102,7 @@ const MANAGER: readonly PermissionCode[] = [
 ];
 const OWNER: readonly PermissionCode[] = [
   ...MANAGER,
+  "audit.read_tenant",
   "branch.manage",
   "organization.manage",
   "role.manage",
