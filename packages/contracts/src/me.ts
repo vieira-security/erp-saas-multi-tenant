@@ -1,5 +1,5 @@
-import type { BranchStatus } from "./branches.js";
-import type { TenantStatus } from "./organization.js";
+import type { BranchStatus } from "./branches.ts";
+import type { TenantStatus } from "./organization.ts";
 
 /**
  * Quem sou eu (KAN-52) — usado pelo frontend para montar a interface (menu, botões, seletor de filial). A API continua

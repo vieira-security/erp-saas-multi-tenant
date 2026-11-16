@@ -1,5 +1,5 @@
-import type { BranchSummaryDto } from "./branches.js";
-import type { PageQuery } from "./common.js";
+import type { BranchSummaryDto } from "./branches.ts";
+import type { PageQuery } from "./common.ts";
 
 /**
  * Funcionários (usuários) do tenant.

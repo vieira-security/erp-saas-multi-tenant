@@ -1,5 +1,5 @@
-import type { PageQuery } from "./common.js";
-import type { Money } from "./products.js";
+import type { PageQuery } from "./common.ts";
+import type { Money } from "./products.ts";
 
 /**
  * M6 — Caixa e pagamentos.

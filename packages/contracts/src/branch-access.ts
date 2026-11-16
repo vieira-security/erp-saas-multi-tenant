@@ -1,4 +1,4 @@
-import type { BranchSummaryDto } from "./branches.js";
+import type { BranchSummaryDto } from "./branches.ts";
 
 /**
  * Acesso de um usuário a filiais (UserBranchAccess). Diz ONDE o usuário pode operar; O QUE ele pode fazer vem das roles.
