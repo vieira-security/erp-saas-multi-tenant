@@ -24,12 +24,20 @@ export const PERMISSION_CATALOG: readonly PermissionDefinition[] = [
   { code: "order.read", module: "orders", description: "Visualizar pedidos" },
   { code: "order.create", module: "orders", description: "Criar pedidos" },
   { code: "order.cancel", module: "orders", description: "Cancelar pedidos" },
+  // M7 (decisão de 10/11/2026): iniciar/terminar o preparo (comandas e atalho do pedido). Também inserida pela migration
+  // 20261110020000_create_kitchen (backfill das roles padrão); a descrição precisa ser a mesma.
+  { code: "order.prepare", module: "orders", description: "Preparar pedidos (cozinha)" },
   { code: "cash.read", module: "cash", description: "Visualizar caixa" },
   { code: "cash.open", module: "cash", description: "Abrir caixa" },
   { code: "cash.close", module: "cash", description: "Fechar caixa" },
   { code: "fiscal.read", module: "fiscal", description: "Visualizar documentos fiscais" },
   { code: "fiscal.issue", module: "fiscal", description: "Emitir documentos fiscais" },
   { code: "fiscal.cancel", module: "fiscal", description: "Cancelar documentos fiscais" },
+  // KAN-41 (decisão de 10/11/2026): histórico de auditoria. `audit.read` = eventos COM filial nas filiais onde vale;
+  // `audit.read_tenant` = também os eventos SEM filial (tenant). Inseridas também pela migration
+  // 20261111000000_audit_read_and_user_preferences (backfill das roles padrão); a descrição precisa ser a mesma.
+  { code: "audit.read", module: "audit", description: "Visualizar histórico de auditoria" },
+  { code: "audit.read_tenant", module: "audit", description: "Visualizar auditoria do tenant (eventos sem filial)" },
 ];
 
 /**

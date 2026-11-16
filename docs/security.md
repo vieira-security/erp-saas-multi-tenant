@@ -140,6 +140,7 @@ Bloqueado = 403 `tenant_unavailable`. Sem modo somente leitura.
 - `GET /me` exige só autenticação (sem permissão específica); com `must_change_password` responde 403 `password_change_required` como as demais rotas de negócio (sem exceção). Usuário e organização vêm do AuthContext/TenantContext, nunca de parâmetro; `tenantId` não aparece na resposta (`MeDto`, `packages/contracts/src/me.ts`).
 - `permissions` = permissões efetivas no escopo do **tenant** (só roles tenant-wide). `branches` = **todas** as filiais com `UserBranchAccess` (qualquer status, ordem de criação), cada uma com `operable` (filial e empresa ACTIVE) e as permissões efetivas **naquela filial** (roles tenant-wide + roles da filial). Filial sem acesso não aparece; role escopada a uma filial só aparece nela; role INACTIVE/ARCHIVED e usuário não-ACTIVE não contam. Listas ordenadas por código (comparação em código, não collation).
 - Implementação: `MeService` faz 4 leituras e resolve em memória com `resolveEffectivePermissions` (`apps/api/src/authorization/effective-permissions.ts`), a mesma regra do `AuthorizationService` (sem query por filial). Um teste de integração compara as duas para vários usuários e filiais.
+- Leitura de funcionários (`GET /users`, `GET /users/:userId`): `select` explícito de colunas; **nunca** saem `password_hash`, `failed_login_attempts`, `locked_until`, `last_login_at`, `disabled_at`, sessões nem `tenant_id`. Teste de integração compara o conjunto de chaves da resposta com o contrato.
 - É só para a interface montar menus: cada rota continua conferindo a permissão no backend (403). Permissões nunca vão no JWT.
 
 ### Frontend (`apps/web`, KAN-23/KAN-53)
@@ -175,34 +176,101 @@ Bloqueado = 403 `tenant_unavailable`. Sem modo somente leitura.
 | order.read | ✓ | ✓ | ✓ | ✓ |
 | order.create | ✓ | ✓ | ✓ | |
 | order.cancel | ✓ | ✓ | | |
+| order.prepare | ✓ | ✓ | ✓ | ✓ |
 | cash.read | ✓ | ✓ | ✓ | |
 | cash.open | ✓ | ✓ | ✓ | |
 | cash.close | ✓ | ✓ | | |
 | fiscal.read | ✓ | ✓ | ✓ | |
 | fiscal.issue | ✓ | ✓ | ✓ | |
 | fiscal.cancel | ✓ | ✓ | | |
+| audit.read | ✓ | ✓ | | |
+| audit.read_tenant | ✓ | | | |
 
-- OWNER recebe as 19 permissões **atuais**, listadas explicitamente; **não** recebe permissões futuras automaticamente. Toda permissão nova do catálogo deve ser adicionada explicitamente à matriz (um teste falha enquanto ela não estiver em nenhuma role).
-- **Regra futura de administração:** um usuário não pode conceder role/permissão com autoridade superior à sua própria (ex.: MANAGER tem `user.manage`, mas não pode atribuir OWNER nem role com permissão que ele não tem). Será imposta quando houver endpoints administrativos. **Primeira aplicação (M3):** conceder/revogar acesso a filial (`PUT/DELETE /users/:userId/branch-access/:branchId`) exige `user.manage` **na filial alvo** (`@RequireBranchPermissions`), ou seja, o ator precisa ter acesso àquela filial: ninguém distribui acesso a uma filial onde não pode operar, nem o OWNER sem acesso. E o ator só concede/revoga acesso de quem não tem, em nenhuma role ACTIVE (de qualquer escopo), permissão que ele próprio não tenha naquela filial: MANAGER não estende nem remove o acesso de um OWNER (403). Atribuição de roles ainda não tem endpoint.
+- **M7 (decisão de produto de 10/11/2026):** `order.prepare` (iniciar/terminar o preparo: `start`/`ready` da comanda e os atalhos do pedido) para Proprietário, Gerente, Atendente e Cozinha. `deliver` continua com `order.create` (a Cozinha não entrega, não cria nem confirma pedido); `print` exige só `order.read` na filial. Tenants existentes receberam o vínculo pela migration `20261110020000_create_kitchen` (só roles `is_system`; role customizada não ganha nada).
+- **KAN-41 (decisão de produto de 10/11/2026):** `audit.read` (histórico de auditoria, eventos COM filial nas filiais onde vale) para Proprietário e Gerente; `audit.read_tenant` (também os eventos SEM filial) só para o Proprietário. Tenants existentes receberam os vínculos pela migration `20261111000000_audit_read_and_user_preferences` (só roles `is_system`; role customizada não ganha nada).
+- OWNER recebe as 22 permissões **atuais**, listadas explicitamente; **não** recebe permissões futuras automaticamente. Toda permissão nova do catálogo deve ser adicionada explicitamente à matriz (um teste falha enquanto ela não estiver em nenhuma role).
+- **Regra de administração:** um usuário não pode conceder role/permissão com autoridade superior à sua própria (ex.: MANAGER tem `user.manage`, mas não pode atribuir OWNER nem role com permissão que ele não tem). Será imposta quando houver endpoints administrativos. **Primeira aplicação (M3):** conceder/revogar acesso a filial (`PUT/DELETE /users/:userId/branch-access/:branchId`) exige `user.manage` **na filial alvo** (`@RequireBranchPermissions`), ou seja, o ator precisa ter acesso àquela filial: ninguém distribui acesso a uma filial onde não pode operar, nem o OWNER sem acesso. E o ator só concede/revoga acesso de quem não tem, em nenhuma role ACTIVE (de qualquer escopo), permissão que ele próprio não tenha naquela filial: MANAGER não estende nem remove o acesso de um OWNER (403). A regra (código) fica em `AuthorityService` (`apps/api/src/authorization/authority.ts`), usada pelo acesso a filiais e pela gestão de funcionários.
+- **Gestão de funcionários** (`POST/PATCH /users`, `PUT /users/:userId/roles`, desativar/ativar/reset/desbloquear): exige `user.manage` no tenant e:
+  - **alvo:** se o funcionário alvo tiver, em qualquer role ACTIVE de qualquer escopo, permissão que o ator não tem no escopo do **tenant** → 403. Com a matriz padrão, o gerente não mexe no dono;
+  - **roles que entram ou saem** (`PUT /roles`): cada role precisa ter só permissões que o ator tem no escopo da atribuição (tenant para `branchId: null`, a filial para atribuição escopada; sem acesso à filial = nenhuma permissão lá) → senão 403;
+  - a comparação é por **permissões**, nunca por nome de role. Além disso, **administradores só são geridos por quem tem `role.manage`** (decisão de 10/11): mexer num alvo que tenha `user.manage` em qualquer escopo, ou atribuir/remover role com `user.manage`, exige `role.manage` no tenant (403 senão). Pela matriz padrão, só o dono cria, promove ou gerencia gerentes; o gerente gerencia atendentes e cozinha. Não vale para o acesso a filiais (M3);
+  - **ninguém** desativa a si mesmo nem reseta a própria senha (409 `cannot_target_self`; a própria senha muda em `POST /auth/password`).
+- **Último Proprietário:** o tenant não fica sem usuário ACTIVE com a role `OWNER` no tenant inteiro. Desativar esse usuário ou tirar dele a role OWNER tenant-wide via `PUT /roles` → 409 `last_owner_required` (LOCKED, DISABLED e OWNER escopada a filial não contam como Proprietário ativo). Concorrência: desativar e `PUT /roles` travam a linha da role `OWNER` do tenant (`FOR UPDATE`, mutex por tenant) antes de travar o usuário alvo, e só então contam os titulares (comando novo em READ COMMITTED, enxerga o que acabou de ser commitado). Coberto por testes de concorrência.
+- **Sessões na gestão:** desativar e resetar a senha revogam **todas** as sessões do alvo (`revoked_at`, sem DELETE), na mesma transação da mudança, com `auth.sessions.revoked` (`reason` `user_disabled` / `password_reset`). O refresh antigo falha e o access token antigo deixa de passar já no request seguinte: o AuthGuard consulta a sessão e o status do usuário a cada request, então **não há janela** até o access token expirar. Desbloquear não derruba sessões (o bloqueio temporário também não derruba).
+- **Caixa aberto:** desativar quem tem caixa OPEN em qualquer filial → 409 `user_has_open_cash_session`. O caixa é fechado pelo próprio operador ou por quem tem `cash.close` na filial (regra do M6), e então a desativação passa.
 
 ### Troca e reset de senha
 - `POST /auth/password`: exige a senha atual, grava o novo hash, limpa `must_change_password` e revoga as demais sessões.
-- `PasswordService.resetPassword` (sem endpoint): senha temporária só como hash, `must_change_password = true`, lockout zerado, todas as sessões do alvo revogadas; não muda `DISABLED`/`LOCKED`. Geração/entrega da senha temporária é externa. Sem recuperação por e-mail.
+- `POST /users/:userId/reset-password` (`user.manage` + regra de autoridade): senha temporária digitada pelo gestor, só como hash Argon2id, `must_change_password = true`, lockout zerado, `LOCKED` → `ACTIVE` (`DISABLED` continua `DISABLED`), todas as sessões do alvo revogadas. Nunca a própria senha. Sem recuperação por e-mail.
+- `PasswordService.resetPassword` (M2, sem endpoint, mantido): mesma ideia, mas não muda `LOCKED`; a rota HTTP usa o `UserManagementService`.
 
 **Acesso a filiais (`UserBranchAccess`) é separado de papel/permissão** e só existe dentro do mesmo tenant (FKs compostas); role por filial exige o vínculo. **Permission é um catálogo global** controlado pelo seed; o que varia por tenant é a atribuição via `RolePermission`.
 
 ## Auditoria
-Módulo `audit`; registros não apagáveis fisicamente. Escopo geral dos eventos auditados: **TBD**; os eventos de segurança do Auth já são gravados (abaixo).
+Módulo `audit`; registros não apagáveis fisicamente. Dois writers, ambos com allowlist tipada: `SecurityAuditWriter` (Auth e funcionários, abaixo, formato inalterado) e `BusinessAuditWriter` (ações de negócio, KAN-41, seção "Histórico de auditoria"). O catálogo completo de ações é `AUDIT_ACTIONS` (`packages/contracts/src/audit.ts`), espelhado na API em `apps/api/src/audit/audit-catalog.ts`; o typecheck falha se uma ação gravada não estiver no catálogo ou se uma ação do catálogo não tiver writer.
 
-**Eventos de segurança do Auth (M2)** via `SecurityAuditWriter` (`apps/api/src/audit/security-audit.ts`), na mesma transação da operação quando há uma: `auth.login.succeeded`, `auth.login.failed` (`reason`), `auth.password.change_failed` (senha atual errada na troca; conta para o lockout), `auth.lockout.triggered` (`locked_until`), `auth.session.revoked` (`reason`), `auth.sessions.revoked` (`reason`, `count`), `auth.refresh.replay_detected`, `auth.password.changed`, `auth.password.reset` (ator em `user_id`, alvo em `resource_id`). Cada evento é um tipo fechado; `metadata` só aceita a allowlist `reason`, `count`, `locked_until` com valores enumerados/inteiros (metadata não-objeto também falha) (qualquer outra chave falha). **Nunca** gravados: senha, matrícula digitada (pode ser uma senha no campo errado), access/refresh token, `password_hash`, `refresh_token_hash`, objeto de request/DTO. Falha de login com matrícula inexistente grava `user_id NULL`. Risco: cada tentativa falha gera uma linha (amplificação de escrita sob ataque). Mitigação possível sem perder auditabilidade, ainda não implementada: agregar falhas de matrícula inexistente por janela. **Rate limiting distribuído (por IP/dispositivo, no gateway/WAF) é obrigatório antes de expor o login à internet**; não bloqueia desenvolvimento/MVP sem endpoint público.
+**Eventos de segurança do Auth (M2)** via `SecurityAuditWriter` (`apps/api/src/audit/security-audit.ts`), na mesma transação da operação quando há uma: `auth.login.succeeded`, `auth.login.failed` (`reason`), `auth.password.change_failed` (senha atual errada na troca; conta para o lockout), `auth.lockout.triggered` (`locked_until`), `auth.session.revoked` (`reason`), `auth.sessions.revoked` (`reason`, `count`), `auth.refresh.replay_detected`, `auth.password.changed`, `auth.password.reset` (ator em `user_id`, alvo em `resource_id`; também usado por `POST /users/:userId/reset-password`). **Gestão de funcionários:** `user.created`, `user.updated`, `user.roles_replaced` (`roles_added`/`roles_removed`: listas de até 50 referências `roleId` ou `roleId:branchId`, só UUIDs), `user.deactivated`, `user.activated`, `user.unlocked`, sempre com o ator em `user_id` e o alvo em `resource_id`; operação idempotente sem mudança não grava evento. Cada evento é um tipo fechado; `metadata` só aceita a allowlist `reason`, `count`, `locked_until` com valores enumerados/inteiros, e `roles_added`/`roles_removed` com listas de UUIDs (metadata não-objeto também falha) (qualquer outra chave falha). **Nunca** gravados: senha, matrícula digitada (pode ser uma senha no campo errado), access/refresh token, `password_hash`, `refresh_token_hash`, objeto de request/DTO. Falha de login com matrícula inexistente grava `user_id NULL`. Risco: cada tentativa falha gera uma linha (amplificação de escrita sob ataque). Mitigação possível sem perder auditabilidade, ainda não implementada: agregar falhas de matrícula inexistente por janela. **Rate limiting distribuído (por IP/dispositivo, no gateway/WAF) é obrigatório antes de expor o login à internet**; não bloqueia desenvolvimento/MVP sem endpoint público.
 
-**AuditLog** ([database.md](database.md)) é a estrutura persistente da trilha: por tenant, com usuário, filial e dispositivo opcionais (do mesmo tenant quando presentes, garantido por FKs compostas). Eventos sem usuário (workers, rotinas, sistema, só dispositivo) usam `user_id NULL`; não existe usuário fictício `SYSTEM`. `action` e `resource_type` são identificadores técnicos validados por CHECK de formato, sem enum; `resource_id` é referência lógica sem FK, para que o log sobreviva ao recurso. Só o Auth grava eventos (M2); instrumentação dos demais módulos e um `AuditService` geral são etapas futuras.
+**AuditLog** ([database.md](database.md)) é a estrutura persistente da trilha: por tenant, com usuário, filial e dispositivo opcionais (do mesmo tenant quando presentes, garantido por FKs compostas). Eventos sem usuário (workers, rotinas, sistema, só dispositivo) usam `user_id NULL`; não existe usuário fictício `SYSTEM`. `action` e `resource_type` são identificadores técnicos validados por CHECK de formato, sem enum; `resource_id` é referência lógica sem FK, para que o log sobreviva ao recurso. Gravam eventos o Auth e a gestão de funcionários (`SecurityAuditWriter`) e, desde o KAN-41, as ações de negócio do catálogo (`BusinessAuditWriter`); ver "Histórico de auditoria".
 
 - **Append-only imposto pelo PostgreSQL:** os triggers `audit_logs_append_only` (UPDATE/DELETE, por linha) e `audit_logs_no_truncate` (TRUNCATE, por statement), ambos com a função `forbid_audit_log_mutation()` específica desta tabela, rejeitam fisicamente todo `UPDATE`, `DELETE` e `TRUNCATE` (inclusive TRUNCATE em cascata a partir de tabela pai), vindos do Prisma, de SQL direto ou de qualquer ferramenta. Só `INSERT` é permitido; correção de um evento = novo evento. É distinto do trigger genérico de `tenant_id` (M1.14.1), que `audit_logs` não usa.
 - **Duas camadas independentes (M1.14.2b):** `erp_app` só tem `SELECT, INSERT` em `audit_logs` (UPDATE/DELETE/TRUNCATE negados por privilégio, `42501`) e, além disso, os triggers append-only rejeitam essas operações para qualquer identidade com privilégio de escrita. `erp_app` não executa as funções de proteção diretamente, não as altera, não desabilita/remove/cria triggers, não executa DDL e não consegue `SET session_replication_role = replica`.
 - **Fronteira:** o dono dos objetos (`erp_migrator`) e a identidade admin ainda podem desabilitar triggers, alterar funções e executar DDL destrutivo; a mitigação é operacional (credenciais restritas ao pipeline de deploy e ao provisionamento, nunca à aplicação). Auditoria de ações do próprio pipeline/admin e mecanismo de autenticação em produção: TBD.
-- **`metadata` (jsonb) nunca guarda credenciais nem segredos:** senha, `password_hash`, refresh/access token, `refresh_token_hash`, API key, segredo, chave privada, PIN, dados completos de cartão. Não há sanitizador automático nem verificação de conteúdo no banco; a auditoria de credenciais do catálogo checa só nomes de colunas. O `SecurityAuditWriter` do Auth já usa allowlist; o futuro `AuditService` geral deve seguir o mesmo padrão.
+- **`metadata` (jsonb) nunca guarda credenciais nem segredos:** senha, `password_hash`, refresh/access token, `refresh_token_hash`, API key, segredo, chave privada, PIN, dados completos de cartão. Não há sanitizador automático nem verificação de conteúdo no banco; a auditoria de credenciais do catálogo checa só nomes de colunas. O `SecurityAuditWriter` do Auth usa allowlist; o `BusinessAuditWriter` (KAN-41) segue o mesmo padrão, com allowlist por ação e recusa de chaves com cara de credencial em qualquer nível.
 - `ip_address` e `metadata` podem conter dado pessoal: retenção e LGPD pendentes (#9).
+
+### Histórico de auditoria (KAN-41)
+Decisões de produto de 10/11/2026, no contrato `packages/contracts/src/audit.ts`.
+
+**Escrita (`BusinessAuditWriter`, `apps/api/src/audit/business-audit.ts`):**
+- Cada ação é um tipo fechado com o seu formato de metadados, montado no writer (nunca um DTO/objeto de request nem `Record<string, any>`). Antes de gravar, o metadata é conferido de novo: só as chaves da ação (`BUSINESS_METADATA_KEYS`), valores JSON simples (texto ≤ 1000, profundidade ≤ 4) e **nenhuma chave com cara de credencial ou cartão, em qualquer nível** (`password`, `senha`, `hash`, `token`, `secret`, `credential`, `api_key`, `private_key`, `pin`, `card`, `cartao`, `cvv`, `pan`). Violação = erro (fail-closed) e a ação falha.
+- Grava **na mesma transação** da ação (o service passa o client da transação): rollback da ação apaga o evento, e falha da auditoria derruba a ação. Provado em `audit-atomicity.int.test.ts` com falhas injetadas no próprio PostgreSQL.
+- `user_id` = ator (o usuário autenticado; `device_id` = dispositivo da sessão). Sem requisição autenticada (seed de desenvolvimento, rotinas) o ator é `null` = sistema. `branch_id` = filial do evento ou `null` (evento do tenant). `resource_type`/`resource_id` = o recurso alterado.
+- `*.updated` guardam `metadata.changes = { campo: { from, to } }` **só com os campos que mudaram** (`diffChanges`, `apps/api/src/audit/changes.ts`): dinheiro como string com 2 casas (`"25.00"`), datas ISO, ausência como `null`. O "antes" é lido com a linha travada (`FOR UPDATE`) dentro da transação. Operação idempotente sem mudança (ativar o que já está ativo, PATCH vazio ou com os mesmos valores, mesmo PUT de ajuste) **não** audita.
+- Não auditados (decisão de produto): rascunho de pedido, confirmação e pagamento normal, start/ready de pedido e de comanda (ficam no próprio pedido/comanda), a 1ª impressão de comanda e preferências de interface.
+
+**Catálogo (ações de negócio) e metadados:**
+
+| Ação | `resource_type` / `resource_id` | `branch_id` | `metadata` |
+|---|---|---|---|
+| `organization.updated` | `organization` / tenant | `null` | `changes` (`name`) |
+| `company.created` | `company` / empresa | `null` | `legalName`, `tradeName`, `cnpj`, `timezone` |
+| `company.updated` | `company` | `null` | `changes` (`legalName`, `tradeName`, `timezone`) |
+| `company.activated` / `.deactivated` | `company` | `null` | nenhum |
+| `branch.created` | `branch` / filial | a própria filial | `companyId`, `name`, `code`, `cnpj`, `timezone` |
+| `branch.updated` | `branch` | a própria filial | `changes` (`name`, `code`, `cnpj`, `timezone`) |
+| `branch.activated` / `.deactivated` | `branch` | a própria filial | nenhum |
+| `branch_access.granted` / `.revoked` | `user` / funcionário alvo | a filial | `targetUserId` |
+| `product_category.created` | `product_category` | `null` | `name`, `sortOrder` |
+| `product_category.updated` | `product_category` | `null` | `changes` (`name`, `sortOrder`) |
+| `product_category.activated` / `.deactivated` | `product_category` | `null` | nenhum |
+| `product.created` | `product` | `null` | `name`, `code`, `categoryId`, `kitchenSectorId`, `basePrice`, `sortOrder`, `optionGroups: { groups, options }` |
+| `product.updated` | `product` | `null` | `changes` (`name`, `description`, `code`, `categoryId`, `kitchenSectorId`, `basePrice`, `sortOrder`) |
+| `product.option_groups_replaced` | `product` | `null` | `before`/`after`: `{ groups, options }` (contagens; toda substituição audita, pois recria as linhas) |
+| `product.activated` / `.deactivated` | `product` | `null` | nenhum |
+| `branch_product_setting.updated` | `product` / produto | a filial | `changes` (`available`, `price`); sem ajuste = `available: true, price: null`; "voltar ao padrão" também audita |
+| `cash_session.opened` | `cash_session` | a filial | `openingAmount` |
+| `cash_session.closed` | `cash_session` | a filial | `expectedCash`, `countedCash`, `difference` (negativo = falta), `justification` |
+| `cash_movement.withdrawal` / `.supply` | `cash_movement` | a filial | `amount`, `reason`, `cashSessionId` |
+| `order.cancelled` | `order` | a filial | `number` (`null` em rascunho), `previousStatus`, `reason`, `refunds: [{ method, amount }]` |
+| `kitchen_sector.created` | `kitchen_sector` | `null` | `name`, `code`, `sortOrder` |
+| `kitchen_sector.updated` | `kitchen_sector` | `null` | `changes` (`name`, `code`, `sortOrder`) |
+| `kitchen_sector.activated` / `.deactivated` | `kitchen_sector` | `null` | nenhum |
+| `kitchen_sector.default_changed` | `kitchen_sector` / novo padrão | `null` | `fromSectorId`, `toSectorId` |
+| `branch_kitchen_sector.updated` | `kitchen_sector` / setor | a filial | `changes` (`enabled`) |
+| `kitchen_ticket.reprinted` | `kitchen_ticket` | a filial | `copyNumber` (≥ 2), `orderId`, `sectorId` |
+
+**Nunca entra no histórico:** senha (atual, nova, temporária, digitada errada ou no campo da matrícula), `password_hash`, access/refresh token, `refresh_token_hash`, segredo, chave, PIN, dados de cartão, objeto de request/DTO. Testado em `audit-http.int.test.ts` (busca dos valores usados no teste no JSON de todos os eventos).
+
+**Leitura (`GET /audit-logs`, `AuditLogService`):**
+- A rota exige só autenticação; o service decide (exceção documentada ao padrão declarativo, como o cancelamento de pedido). Permissões efetivas com a mesma regra do `AuthorizationService` (`audit-visibility.ts`):
+  - eventos **com filial**: só das filiais onde o ator tem `audit.read` efetivo (role tenant-wide ou daquela filial **e** acesso à filial);
+  - eventos **sem filial** (tenant: organização, empresa, cardápio, setores, funcionários, segurança): só com `audit.read` **e** `audit.read_tenant` no escopo do tenant (roles sem filial);
+  - nada visível → 403; filtro `branchId` sem `audit.read` naquela filial → 403.
+- A visibilidade é **condição do SQL** (`tenant_id` do contexto + `branch_id = ANY(filiais visíveis)` [+ `OR branch_id IS NULL`]); página e `total` usam o mesmo `WHERE`, numa transação `REPEATABLE READ`. Nunca há filtro depois da página.
+- Só ações do catálogo são devolvidas (`action = ANY(catálogo)`): uma ação fora do catálogo não quebra o tipo `AuditAction` do cliente. Hoje toda ação gravada está no catálogo (os dois writers são amarrados a ele pelo typecheck); ação nova entra primeiro no contrato.
+- `actor` (nome atual) e `branch` (nome e código atuais) vêm de `LEFT JOIN` na mesma leitura; `metadata` como gravado.
+- Sem rota de alteração/exclusão (append-only também por trigger e por privilégio).
 
 ## Automação externa
 n8n e integrações só alteram dados críticos via API autenticada; nunca por acesso direto ao banco.

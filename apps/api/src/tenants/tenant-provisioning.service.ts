@@ -1,8 +1,9 @@
 import { Inject, Injectable } from "@nestjs/common";
 import { PRISMA_CLIENT } from "../database/database.module.js";
+import { uuidV7 } from "../database/uuid-v7.js";
 import { RoleStatus, type PrismaClient } from "../generated/prisma/client.js";
 import { TenantScope } from "../tenancy/tenant-scope.js";
-import { DEFAULT_ROLES, DEFAULT_ROLE_PERMISSIONS, type DefaultRoleCode, type RolePermissionMatrix } from "./default-roles.js";
+import { DEFAULT_KITCHEN_SECTOR, DEFAULT_ROLES, DEFAULT_ROLE_PERMISSIONS, type DefaultRoleCode, type RolePermissionMatrix } from "./default-roles.js";
 
 export interface DefaultRolesProvisioning {
   /** Roles padrão criadas nesta execução. */
@@ -79,6 +80,28 @@ export class TenantProvisioningService {
         ? await tx.rolePermission.createMany({ data: grants.map((g) => this.scope.data(g)), skipDuplicates: true })
         : { count: 0 };
       return { created, existing, conflicts, grantsAdded: count };
+    });
+  }
+
+  /**
+   * M7: setor de preparo padrão do tenant do contexto ("Cozinha", `COZINHA`), idempotente e seguro sob concorrência
+   * (`INSERT ... ON CONFLICT DO NOTHING`; o índice único parcial garante um padrão por tenant). Tenant que já tem padrão
+   * (qualquer nome) não é alterado. Tenants existentes antes do M7 ganharam o setor pela migration 20261110020000.
+   */
+  async provisionDefaultKitchenSector(): Promise<{ created: boolean }> {
+    const tenantId = this.scope.tenantId();
+    return this.prisma.$transaction(async (tx) => {
+      const existing = await tx.kitchenSector.findFirst({ where: this.scope.where({ isDefault: true }), select: { id: true } });
+      if (existing) return { created: false };
+      const inserted = await tx.$queryRaw<{ id: string }[]>`
+        INSERT INTO kitchen_sectors (id, tenant_id, name, code, is_default, status, sort_order, created_at, updated_at)
+        VALUES (${uuidV7()}::uuid, ${tenantId}::uuid, ${DEFAULT_KITCHEN_SECTOR.name}, ${DEFAULT_KITCHEN_SECTOR.code}, true, 'ACTIVE', 0, now(), now())
+        ON CONFLICT DO NOTHING
+        RETURNING id::text AS id`;
+      if (inserted.length > 0) return { created: true };
+      // Outro provisionamento concorrente criou o padrão primeiro; senão o código está ocupado por um setor que não é o padrão.
+      if (await tx.kitchenSector.findFirst({ where: this.scope.where({ isDefault: true }), select: { id: true } })) return { created: false };
+      throw new Error(`Kitchen sector code ${DEFAULT_KITCHEN_SECTOR.code} is taken by a non-default sector; the default sector was not provisioned`);
     });
   }
 }

@@ -101,6 +101,7 @@ export class ProductsController {
       description: optional(description),
       code: optional(nullable(productCode)),
       categoryId: optional(nullable(uuid)),
+      kitchenSectorId: optional(nullable(uuid)),
       basePrice: required(money),
       sortOrder: optional(sortOrder),
       optionGroups: optional(optionGroups),
@@ -117,6 +118,7 @@ export class ProductsController {
       description: optional(description),
       code: optional(nullable(productCode)),
       categoryId: optional(nullable(uuid)),
+      kitchenSectorId: optional(nullable(uuid)),
       basePrice: optional(money),
       sortOrder: optional(sortOrder),
     });

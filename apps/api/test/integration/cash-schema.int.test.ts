@@ -270,7 +270,7 @@ describe("Cash and payments schema (PostgreSQL)", () => {
       }
       await expect(owner.$executeRawUnsafe(`TRUNCATE "order_item_options"`)).rejects.toThrow(/sales are never deleted/);
       const guarded = Object.entries(SALE_IMMUTABILITY_TRIGGERS).filter(([, t]) => t.events.includes("TRUNCATE")).map(([, t]) => t.table).sort();
-      expect(guarded).toEqual(["cash_movements", "cash_sessions", "order_item_options", "order_items", "orders", "payments", "refunds"]);
+      expect(guarded).toEqual(["cash_movements", "cash_sessions", "kitchen_ticket_items", "kitchen_tickets", "order_item_options", "order_items", "orders", "payments", "refunds"]);
       await expect(app.$executeRawUnsafe(`TRUNCATE "payments"`)).rejects.toThrow(/permission denied/);
     });
 

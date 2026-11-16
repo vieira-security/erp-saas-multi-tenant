@@ -1,5 +1,8 @@
 import { Inject, Injectable } from "@nestjs/common";
 import type { BranchDto, BranchStatus, BranchSummaryDto, Page } from "@erp/contracts";
+import { lockRowForAudit } from "../audit/audit-lock.js";
+import { BusinessAuditWriter, auditActorOf } from "../audit/business-audit.js";
+import { diffChanges } from "../audit/changes.js";
 import { AuthContextService } from "../auth/context/auth-context.js";
 import { PRISMA_CLIENT } from "../database/database.module.js";
 import { BranchStatus as DbBranchStatus, CompanyStatus, Prisma, type PrismaClient } from "../generated/prisma/client.js";
@@ -32,6 +35,8 @@ export interface BranchChanges {
  * - CNPJ da filial, quando houver, tem a mesma raiz da Company (`cnpj_root_mismatch`);
  * - filial ACTIVE só sob Company ACTIVE (criar/ativar travam a Company com `FOR SHARE`, ver company-lock.ts);
  * - `code` e `cnpj` únicos por tenant (409).
+ * KAN-41: `branch.*` com `branch_id` = a própria filial (o gerente com `audit.read` nela vê), na mesma transação;
+ * idempotente sem mudança não audita.
  */
 @Injectable()
 export class BranchService {
@@ -89,6 +94,15 @@ export class BranchService {
             timezone: input.timezone ?? company.timezone,
           }),
         });
+        await new BusinessAuditWriter(tx, this.scope).record(auditActorOf(this.auth), {
+          action: "branch.created",
+          branchId: branch.id,
+          companyId: branch.companyId,
+          name: branch.name,
+          code: branch.code,
+          cnpj: branch.cnpj,
+          timezone: branch.timezone,
+        });
         return toBranchDto(branch);
       });
     } catch (error) {
@@ -109,7 +123,8 @@ export class BranchService {
     if (Object.keys(data).length === 0) return this.get(id);
     try {
       return await this.prisma.$transaction(async (tx) => {
-        const current = await tx.branch.findUnique({ where: this.scope.where({ id }), select: { companyId: true } });
+        if (!(await lockRowForAudit(tx, "branches", this.scope.tenantId(), id))) throw new NotFoundError("Branch");
+        const current = await tx.branch.findUnique({ where: this.scope.where({ id }) });
         if (!current) throw new NotFoundError("Branch");
         if (cnpj) {
           // CNPJ da Company é imutável pela API: não precisa de trava para comparar a raiz.
@@ -117,7 +132,13 @@ export class BranchService {
           if (!company) throw new NotFoundError("Company");
           if (cnpjRoot(cnpj) !== cnpjRoot(company.cnpj)) throw new ValidationFailedError([{ field: "cnpj", issue: "cnpj_root_mismatch" }]);
         }
-        return toBranchDto(await tx.branch.update({ where: this.scope.where({ id }), data }));
+        const updated = await tx.branch.update({ where: this.scope.where({ id }), data });
+        await new BusinessAuditWriter(tx, this.scope).record(auditActorOf(this.auth), {
+          action: "branch.updated",
+          branchId: id,
+          changes: diffChanges(current, changes, ["name", "code", "cnpj", "timezone"]),
+        });
+        return toBranchDto(updated);
       });
     } catch (error) {
       if (isUniqueViolation(error)) throw await this.conflictFor({ code: code ?? null, cnpj: cnpj ?? null }, id);
@@ -128,31 +149,30 @@ export class BranchService {
 
   /** Idempotente; não depende da Company. */
   async deactivate(id: string): Promise<BranchDto> {
-    const branch = await this.prisma.branch.findUnique({ where: this.scope.where({ id }) });
-    if (!branch) throw new NotFoundError("Branch");
-    if (branch.status === DbBranchStatus.INACTIVE) return toBranchDto(branch);
-    return this.setStatus(id, DbBranchStatus.INACTIVE);
+    const actor = auditActorOf(this.auth);
+    return this.prisma.$transaction(async (tx) => {
+      if (!(await lockRowForAudit(tx, "branches", this.scope.tenantId(), id))) throw new NotFoundError("Branch");
+      const branch = await tx.branch.findUniqueOrThrow({ where: this.scope.where({ id }) });
+      if (branch.status === DbBranchStatus.INACTIVE) return toBranchDto(branch);
+      const updated = await tx.branch.update({ where: this.scope.where({ id }), data: { status: DbBranchStatus.INACTIVE } });
+      await new BusinessAuditWriter(tx, this.scope).record(actor, { action: "branch.deactivated", branchId: id });
+      return toBranchDto(updated);
+    });
   }
 
   /** Idempotente; exige Company ACTIVE (travada até o commit). */
   async activate(id: string): Promise<BranchDto> {
     return this.prisma.$transaction(async (tx) => {
-      const branch = await tx.branch.findUnique({ where: this.scope.where({ id }) });
-      if (!branch) throw new NotFoundError("Branch");
+      // Filial travada antes da empresa (mesma ordem de lockBranchAndCompany): duas ativações simultâneas auditam uma vez.
+      if (!(await lockRowForAudit(tx, "branches", this.scope.tenantId(), id))) throw new NotFoundError("Branch");
+      const branch = await tx.branch.findUniqueOrThrow({ where: this.scope.where({ id }) });
       if (branch.status === DbBranchStatus.ACTIVE) return toBranchDto(branch);
       const company = await lockCompany(tx, this.scope.tenantId(), branch.companyId, "share");
       if (company?.status !== CompanyStatus.ACTIVE) throw new ConflictError("company_inactive");
-      return toBranchDto(await tx.branch.update({ where: this.scope.where({ id }), data: { status: DbBranchStatus.ACTIVE } }));
+      const updated = await tx.branch.update({ where: this.scope.where({ id }), data: { status: DbBranchStatus.ACTIVE } });
+      await new BusinessAuditWriter(tx, this.scope).record(auditActorOf(this.auth), { action: "branch.activated", branchId: id });
+      return toBranchDto(updated);
     });
-  }
-
-  private async setStatus(id: string, status: DbBranchStatus): Promise<BranchDto> {
-    try {
-      return toBranchDto(await this.prisma.branch.update({ where: this.scope.where({ id }), data: { status } }));
-    } catch (error) {
-      if (isRecordNotFound(error)) throw new NotFoundError("Branch");
-      throw error;
-    }
   }
 
   /**

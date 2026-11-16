@@ -61,3 +61,60 @@ campos e códigos de erro de cada módulo estão nos comentários dos próprios 
 - `POST /auth/login` e `POST /auth/password`: corpo inválido agora responde no formato padrão
   `400 { error: "validation_failed", details }` (antes, `{ statusCode, message: "invalid_request", error }` do Nest).
   Campo desconhecido passa a ser `unknown_field`, como nas demais rotas. Nenhuma outra resposta do Auth mudou.
+
+## Funcionários: leitura (`GET /users`, desbloqueia KAN-29)
+
+- `GET /users` (`user.read`, tenant) → `Page<UserSummaryDto>`; filtros `status` e `search` (nome contém, sem diferenciar maiúsculas, ou matrícula exata). Ordem por `name` e depois `id` — exceção à ordem por criação, porque a lista serve para achar a pessoa.
+  - Query estrita (mesmo parser das outras listagens): `page`/`pageSize` (padrão 20, máx. 100); `status` fora de `ACTIVE | DISABLED | LOCKED` → `invalid_value`; `search` aparado, vazio → `too_short`, acima de 100 → `too_long`; qualquer outro campo (inclusive `tenantId`) → `unknown_field`.
+  - `search`: `name ILIKE '%termo%'` com `%`, `_` e `\` do termo escapados (texto literal, sempre parâmetro) **ou** `employee_number` igual ao termo normalizado pela mesma regra do login (`e001` encontra `E001`; termo que não é matrícula válida só busca por nome). Matrícula parcial não casa.
+  - Ordem: `name COLLATE "C"` e, em empate, `id` — ordem de code point, igual em qualquer banco (não depende da collation padrão). Consequência: maiúsculas vêm antes de minúsculas (`"Zulu"` antes de `"beta"`). Página e contagem são 2 queries SQL parametrizadas numa transação (o Prisma não aceita `COLLATE` no `orderBy`), com `tenant_id` do TenantContext.
+- `GET /users/:userId` (`user.read`) → `UserDto` com as roles (tenant inteiro ou por filial, inclusive INACTIVE para exibição) | 404 `not_found` (inexistente, de outro tenant ou id que não é UUID).
+  - Roles numa única leitura com relações aninhadas (sem query por role), ordenadas em memória por código: tenant inteiro primeiro, depois `branch.code`, depois `code`. Role `ARCHIVED` (existe no banco, não no contrato) sai como `INACTIVE`.
+- Nunca expõe hash de senha, tentativas de login, bloqueio temporário nem sessões.
+- Implementação: `apps/api/src/users/` (`UsersModule`, `UsersController` em `@Controller("users")`). `users/:userId/branch-access` continua no `OrganizationModule` (M3). Sem auditoria (leitura, como as demais listagens).
+- Cadastro, edição, desativação, atribuição de roles e reset de senha: ver "Funcionários: gestão" abaixo.
+
+## Funcionários: gestão (contratos)
+
+- `POST /users`, `PATCH /users/:userId` (só nome), `PUT /users/:userId/roles` (substitui o conjunto), `POST /users/:userId/deactivate|activate|reset-password|unlock`, todos com `user.manage` no tenant; `GET /roles` com `role.read`. Detalhes e erros em `packages/contracts/src/users.ts` e `roles.ts`.
+- Decisões de produto: matrícula digitada pelo gestor e imutável; senha temporária digitada pelo gestor, com troca obrigatória; dono e gerente gerenciam, mas nunca acima da própria autoridade; desativar derruba as sessões na hora, sem exclusão física, nunca a si mesmo nem o último Proprietário; o reset de senha destrava e derruba as sessões; desbloquear destrava sem trocar senha.
+- Novos códigos 409: `employee_number_already_exists`, `cannot_target_self`, `last_owner_required`, `user_has_open_cash_session`, `role_inactive`, `branch_access_required`.
+
+### Implementação da gestão
+
+- Rotas de funcionário em `UsersController` (`apps/api/src/users/`), regras em `UserManagementService`. `GET /roles` ficou em módulo próprio (`apps/api/src/roles/roles.module.ts`, `RolesModule`), só leitura.
+- **Ordem das checagens:** corpo (400, no controller, antes de qualquer consulta) → alvo no tenant (404) → autoridade sobre o alvo (403) → roles do corpo existem no tenant (400 `roles[i].roleId`, só `PUT /roles`) → autoridade sobre cada role que entra/sai (403) → regras de negócio (409). Entre os 409: `cannot_target_self` (antes de abrir a transação), depois `role_inactive`, `branch_access_required`, `last_owner_required`, `user_has_open_cash_session`.
+- `POST /users` responde 201; as demais respondem 200 com o `UserDto` atualizado (inclusive na chamada idempotente, sem gravar nada).
+- `PUT /roles`: atribuição já existente (mesma role e escopo) não é tocada, nem se a role estiver inativa; só as que entram precisam de role ACTIVE. Violação da FK composta (`user_roles` → `user_branch_access`, corrida com a revogação do acesso) vira 409 `branch_access_required`; violação da unique de matrícula (corrida no cadastro) vira 409 `employee_number_already_exists`.
+- `GET /roles`: todas as roles do tenant, `isSystem` primeiro e depois `code` (comparação por código), permissões por código, `ARCHIVED` como `INACTIVE`.
+
+## M7 — Cozinha (contratos)
+
+- Setores de preparo do tenant (`/kitchen-sectors`), ligados/desligados por filial; produto ganha `kitchenSectorId` (`null` = padrão).
+- Comandas por setor geradas na confirmação (`/branches/:branchId/kitchen-tickets`), com status WAITING → PREPARING → READY; o status do pedido é derivado delas; `start`/`ready` do pedido viram atalho.
+- Permissão nova `order.prepare` (dono, gerente, atendente, cozinha). Impressão pelo navegador com `lines` de 48 colunas e contagem de vias.
+- Detalhes em `packages/contracts/src/kitchen.ts`.
+
+### Implementação do M7
+- Módulo `apps/api/src/kitchen/`: `KitchenSectorsController` (`/kitchen-sectors`, escopo de tenant) e `BranchKitchenController` (`/branches/:branchId/kitchen-sectors` e `/kitchen-tickets`, escopo de filial com `@RequireBranchPermissions`). Regras puras em `kitchen-rules.ts` (setor efetivo, fluxo da comanda, status derivado) e `print-layout.ts` (texto de 48 colunas); travas em `kitchen-lock.ts`; integração com o pedido em `KitchenOrderFlow` (exportado para o `OrdersModule`).
+- **Setor efetivo do item:** setor do produto principal (`products.kitchen_sector_id`) se ele recebe comandas na filial (ACTIVE no tenant e ligado na filial); senão o padrão. Combo vai inteiro no setor do produto principal (opções e produtos vinculados não mudam o setor).
+- **Confirmação:** dentro da transação do M5/M6, depois de gravar o status CONFIRMED, trava os setores do tenant e os ajustes da filial `FOR SHARE` e cria uma comanda por setor efetivo com seus itens (`kitchen_ticket_items` aponta para `order_items`; os dados que a cozinha vê saem do snapshot da venda). Nome e código do setor são copiados na comanda.
+- **start/ready da comanda:** trava o pedido (`FOR UPDATE`) e depois as comandas dele (por `id`), valida a transição (409 `kitchen_ticket_invalid_transition`, inclusive repetir ou comanda CANCELLED) e recalcula o status do pedido na mesma transação: todas WAITING = CONFIRMED; todas READY = READY; qualquer outra mistura = PREPARING. O pedido anda pelas setas do M5 (CONFIRMED → PREPARING → READY), gravando `preparingAt`/`readyAt` do relógio injetável.
+- **Atalhos do pedido** (`POST /orders/:id/start|ready`, agora `order.prepare`): com comandas, `start` move as WAITING para PREPARING e `ready` move todas as abertas (WAITING ou PREPARING) para READY; nenhuma a mover = 409 `order_invalid_transition`. `ready` a partir de WAITING grava início e pronto juntos na comanda, e o pedido passa por PREPARING e READY no mesmo instante. Pedido sem comandas (confirmado antes do M7) segue o M5. `deliver` continua com `order.create` e exige READY.
+- **Cancelamento do pedido:** na mesma transação do estorno do M6, toda comanda não cancelada vira CANCELLED (`cancelledAt`); nada é apagado.
+- **`print`:** `UPDATE ... SET print_count = print_count + 1 ... RETURNING` (via atômica: impressões simultâneas recebem vias distintas), depois monta `lines`. Não muda status nem pedido.
+- **Listagens:** `GET /kitchen-sectors` e `GET /branches/:branchId/kitchen-sectors` (padrão primeiro, `sortOrder`, `name` por código, `id`); `GET /kitchen-tickets` em ordem de chegada (`createdAt`, `id`), filtros `sectorId` (UUID), `status` (CSV de `KITCHEN_TICKET_STATUSES`; inválido = 400 `invalid_value`) e `businessDate` (dia do pedido), paginação padrão; itens, número e dia do pedido na mesma leitura (sem N+1). `OrderDto.kitchenTickets` vem no `include` do detalhe do pedido.
+- **Produto:** `kitchenSectorId` no create/update e nos DTOs; setor inexistente ou de outro tenant = 400 `invalid_value` em `kitchenSectorId` (qualquer status é aceito; setor INACTIVE manda o item para o padrão na confirmação).
+- `PATCH /kitchen-sectors/:id` com corpo vazio devolve o setor sem gravar (mesma convenção das outras PATCH do repo; ver open-questions).
+
+## Histórico de auditoria e preferências (contratos, KAN-41 e KAN-42)
+
+- `GET /audit-logs` (`audit.read`): eventos com filial nas filiais do usuário; eventos do tenant exigem também `audit.read_tenant` (só o dono). Ordem: mais recente primeiro. Catálogo de ações em `AUDIT_ACTIONS` (`packages/contracts/src/audit.ts`); alterações guardam antes e depois dos campos que mudaram.
+- `GET/PUT /me/preferences`: `catalogView` `GRID` (default) ou `LIST`, por usuário.
+
+### Implementação (KAN-41 e KAN-42)
+- **`GET /audit-logs`** (`apps/api/src/audit/`): só autenticação na rota; visibilidade decidida no service com `audit.read` por filial e `audit.read_tenant` para eventos sem filial (regra completa em [security.md](security.md), "Histórico de auditoria"). 403 sem nada visível ou com `branchId` sem acesso. Ordem `createdAt` desc, `id` desc; paginação padrão (máx. 100).
+  - Query estrita: `from` (inclusivo) e `to` (exclusivo) em ISO 8601 **com fuso** (`Z` ou `±hh:mm`; sem fuso = `invalid_format`, data impossível = `invalid_value`), `from` > `to` = `invalid_value` em `from`; `action` = CSV de ações do catálogo (sem espaços, sem item vazio; fora do catálogo = `invalid_value`); `userId`, `branchId`, `resourceId` UUID (`invalid_format`); `resourceType` no formato do CHECK (`^[a-z][a-z0-9_]*$`, até 64); qualquer outro campo = `unknown_field`.
+  - Histórico de um produto: `resourceType=product&resourceId=<id>` traz também os ajustes por filial (`branch_product_setting.updated` usa o produto como recurso), filtrados pelas filiais visíveis.
+- **Escrita dos eventos:** instrumentação dos services de organização, empresa, filial, acesso a filial, categoria, produto, ajuste por filial, caixa, cancelamento de pedido, setores de cozinha e impressão de comanda, sempre na transação da ação. Rotas e respostas não mudaram. Algumas operações que antes eram comandos soltos passaram a rodar numa transação com a linha travada (`FOR UPDATE`) para que o "antes" seja exato (ex.: PATCH de categoria/produto/setor, ativar/desativar).
+- **`GET/PUT /me/preferences`** (`MePreferencesService`, `MeController`): só autenticação (troca de senha obrigatória = 403 `password_change_required`); tenant e usuário só do token. Sem linha = `{ catalogView: "GRID" }` (o GET não cria linha). PUT = upsert atômico (`INSERT ... ON CONFLICT DO UPDATE`, sem regravar o mesmo valor); corpo estrito: `catalogView` obrigatório (`required`), fora da lista = `invalid_value`, outro campo (inclusive `userId`/`tenantId`) = `unknown_field`.

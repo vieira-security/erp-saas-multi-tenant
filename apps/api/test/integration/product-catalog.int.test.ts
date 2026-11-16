@@ -99,6 +99,7 @@ describe("Product catalog (PostgreSQL)", () => {
         "product_categories.created_at": "timestamp(3) with time zone",
         "product_categories.updated_at": "timestamp(3) with time zone",
         "products.id": "uuid",
+        "products.kitchen_sector_id": "uuid NULL",
         "products.tenant_id": "uuid",
         "products.category_id": "uuid NULL",
         "products.name": "text",

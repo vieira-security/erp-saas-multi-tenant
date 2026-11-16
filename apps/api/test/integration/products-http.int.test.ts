@@ -12,7 +12,7 @@ type Role = "OWNER" | "MANAGER" | "ATTENDANT" | "KITCHEN";
 const NOT_FOUND = { status: 404, body: { error: "not_found" } };
 const FORBIDDEN = { status: 403, body: { error: "forbidden" } };
 const LINK_INVALID = { status: 409, body: { error: "linked_product_invalid" } };
-const PRODUCT_KEYS = ["basePrice", "categoryId", "code", "createdAt", "description", "id", "name", "optionGroups", "sortOrder", "status", "updatedAt"];
+const PRODUCT_KEYS = ["basePrice", "categoryId", "code", "createdAt", "description", "id", "kitchenSectorId", "name", "optionGroups", "sortOrder", "status", "updatedAt"];
 
 // M4 over real HTTP: AppModule (AuthGuard, PermissionGuard, filters), runtime identity erp_app, default roles provisioned.
 describe("M4 products APIs over HTTP (PostgreSQL, as erp_app)", () => {
@@ -371,7 +371,7 @@ describe("M4 products APIs over HTTP (PostgreSQL, as erp_app)", () => {
       expect(page1.items.map((p) => p.id)).toEqual([coke.id, juice.id]);
       expect(page1.items[0]).toMatchObject({ optionGroupCount: 1, basePrice: "10.00", categoryId: category.id });
       expect(Object.keys(page1.items[0]!).sort()).toEqual(
-        ["basePrice", "categoryId", "code", "createdAt", "id", "name", "optionGroupCount", "sortOrder", "status", "updatedAt"],
+        ["basePrice", "categoryId", "code", "createdAt", "id", "kitchenSectorId", "name", "optionGroupCount", "sortOrder", "status", "updatedAt"],
       );
       expect(((await api.get("/products?pageSize=2&page=2")).body as Page<ProductSummaryDto>).items.map((p) => p.id)).toEqual([burger.id]);
 

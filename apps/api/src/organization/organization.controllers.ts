@@ -1,5 +1,5 @@
 import { Body, Controller, Delete, Get, HttpCode, Inject, Param, Patch, Post, Put, Query, Res } from "@nestjs/common";
-import type { BranchAccessDto, BranchDto, BranchSummaryDto, CompanyDto, MeDto, OrganizationDto, Page } from "@erp/contracts";
+import type { BranchAccessDto, BranchDto, BranchSummaryDto, CompanyDto, MeDto, MePreferencesDto, OrganizationDto, Page } from "@erp/contracts";
 import { RequireBranchPermissions, RequirePermissions } from "../authorization/permission.guard.js";
 import { NotFoundError } from "../http/api-error.js";
 import { UUID, checked, nullable, oneOf, optional, parseInput, required, text, uuid, type Parsed } from "../http/input.js";
@@ -7,6 +7,7 @@ import { pageQuerySpec, pageRequest } from "../http/paging.js";
 import { BranchAccessService } from "./branch-access.service.js";
 import { BranchService } from "./branch.service.js";
 import { CompanyService } from "./company.service.js";
+import { MePreferencesService, parseUpdatePreferences } from "./me-preferences.service.js";
 import { MeService } from "./me.service.js";
 import { OrganizationService } from "./organization.service.js";
 import { checkBranchCode } from "./validation/branch-code.js";
@@ -188,6 +189,7 @@ export class MeController {
   constructor(
     @Inject(BranchService) private readonly branches: BranchService,
     @Inject(MeService) private readonly me: MeService,
+    @Inject(MePreferencesService) private readonly preferences: MePreferencesService,
   ) {}
 
   /** KAN-52: usuário, organização e permissões efetivas no tenant e em cada filial com acesso (MeDto). */
@@ -199,6 +201,17 @@ export class MeController {
   @Get("branches")
   myBranches(): Promise<BranchSummaryDto[]> {
     return this.branches.listMine();
+  }
+
+  /** KAN-42: preferências do próprio usuário (defaults quando nunca gravou). */
+  @Get("preferences")
+  getPreferences(): Promise<MePreferencesDto> {
+    return this.preferences.get();
+  }
+
+  @Put("preferences")
+  updatePreferences(@Body() body: unknown): Promise<MePreferencesDto> {
+    return this.preferences.update(parseUpdatePreferences(body));
   }
 }
 
