@@ -315,11 +315,24 @@ Implementado em `apps/web`: proxy de dev (`/auth/*` e `/api/*`), cliente HTTP co
 single-flight, rotas tipadas por `@erp/contracts`, mocks por `NEXT_PUBLIC_API_MOCKS=1`, shell com filial na rota e menu
 por permissão do `GET /me`. O `GET /me` já tinha contrato (`MeDto`, KAN-52): o mock usa esse formato, sem formato provisório.
 
+**Alinhamento com a develop (16/11/2026):** a fundação já consumia o `MeDto` real (menu e seletor de filial por
+`me.permissions` e `me.branches[].permissions`, sempre por código de permissão); não havia mock TEMPORÁRIO a remover. A
+matriz dos mocks ganhou `order.prepare` (M7) e `audit.read`/`audit.read_tenant` (KAN-41), como em `default-roles.ts`.
+Verificado ponta a ponta sem mocks (API como `erp_app`, seed de dev, proxy em `localhost:3000`): login do `DONO` 200 com
+cookie `erp_rt` `HttpOnly; Path=/auth; SameSite=Strict`; `GET /api/me` 200 (3 filiais com permissões); refresh só com o
+cookie 200 com rotação; logout 204 e refresh seguinte 401; `CAIXA1` e `COZINHA` recebem 403 em `/api/users`,
+`/api/roles` e `/api/audit-logs`.
+
 **Pendências / decisões necessárias:**
 1. **DECISION REQUIRED — bundler x `@erp/contracts`:** o contracts usa imports relativos `./x.js` apontando para `.ts`
    (exigido pelo `NodeNext` da API). O Turbopack (padrão do Next 16) não resolve isso; o web roda `next dev/build
    --webpack` com `resolve.extensionAlias`. Para voltar ao Turbopack: build de runtime do contracts (emitir `.js`) ou outra
-   forma de publicar o pacote — mudança no backend/contracts, fora desta entrega.
+   forma de publicar o pacote — mudança no backend/contracts, fora desta entrega. **Reverificado em 16/11/2026** depois do
+   merge da develop: `next build --turbopack` ainda falha com 28 erros `Module not found: Can't resolve './x.js'` a partir
+   de `packages/contracts/src/index.ts`; o contorno continua. O que o contracts precisa mudar (qualquer uma): (a) emitir
+   `.js` + `.d.ts` (`tsc` para `dist/`) e apontar `exports`/`main`/`types` para lá; ou (b) trocar os imports relativos
+   para `./x.ts` com `allowImportingTsExtensions`/`rewriteRelativeImportExtensions` na API; ou (c) imports sem extensão,
+   se a API deixar de usar `NodeNext` para o pacote.
 2. **Roteamento em produção** de `/auth/*` e `/api/*`: hoje são rewrites do Next com `API_URL` lida no build (em produção
    sem `API_URL` o proxy fica desligado). Definir se produção usa o mesmo proxy do Next ou roteamento por caminho no
    load balancer/CDN (mesma origem), junto com o deploy (#18). Requisito: `/auth` precisa continuar no mesmo site e caminho.
