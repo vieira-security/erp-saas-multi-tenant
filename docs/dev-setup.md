@@ -78,8 +78,27 @@ npm run dev -w @erp/api -- --env-file .env   # terminal novo, na raiz; http://lo
 npm run dev -w @erp/web                      # http://localhost:3000
 ```
 
-O login exige que web e API pareçam o mesmo site (cookie `SameSite=Strict` + checagem de `Origin`): o web acessa a API
-pelo proxy do Next (KAN-53, tarefa do frontend). Teste direto na API:
+O login exige que web e API pareçam o mesmo site (cookie `SameSite=Strict` + checagem de `Origin`): o navegador só fala
+com `http://localhost:3000` e o **proxy do Next** (KAN-53, rewrites em `apps/web/next.config.ts`) repassa para a API:
+
+| No navegador | Na API | Observação |
+|---|---|---|
+| `/auth/:path*` | `${API_URL}/auth/:path*` | caminho mantido: o cookie do refresh é `Path=/auth`, `SameSite=Strict` |
+| `/api/:path*` | `${API_URL}/:path*` | rotas de negócio (`/api/me` -> `/me`); query string preservada |
+
+- `API_URL` só no servidor do Next (sem `NEXT_PUBLIC_`), default `http://localhost:3001` fora de produção; ver
+  `apps/web/.env.example`. É lida no `next dev`/`next build` (entra no manifesto de rotas).
+- A API, em dev, precisa de `AUTH_ALLOWED_ORIGINS=http://localhost:3000` (o proxy repassa o `Origin` do navegador) e
+  `AUTH_COOKIE_SECURE=false` (o cookie `__Secure-` exige https).
+- Nenhuma página do web pode ficar sob `/auth/*` ou `/api/*` (a tela de login, KAN-24, não pode ser `/auth/login`).
+- Verificação: `apps/web/src/config/api-proxy.test.ts` aplica os rewrites do `next.config` com
+  `unstable_getResponseFromNextConfig`; manualmente (10/11/2026) com uma API de eco em :3001 e `next dev` em :3000:
+  `POST /auth/refresh` chegou como `/auth/refresh` com `Origin` e `Cookie` repassados e o `Set-Cookie` (`Path=/auth`)
+  voltou ao navegador; `GET /api/me/branches?page=2` chegou como `/me/branches?page=2`.
+
+Sem API, o web roda com mocks tipados: `NEXT_PUBLIC_API_MOCKS=1 npm run dev -w @erp/web` (ver `apps/web/.env.example`).
+
+Teste direto na API:
 
 ```bash
 curl -i -X POST http://localhost:3001/auth/login -H 'Origin: http://localhost:3000' -H 'Content-Type: application/json' \

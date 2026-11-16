@@ -22,7 +22,7 @@ Rust **não** faz parte do planejamento atual; só poderá ser reconsiderado por
 ## Monorepo (npm workspaces)
 | Workspace | Estado | Papel |
 |---|---|---|
-| `apps/web` | Next.js 16, React 19, Tailwind, Vitest, ESLint `core-web-vitals` | PWA-first (PDV e backoffice) |
+| `apps/web` | Next.js 16 (webpack, ver [open-questions](open-questions.md)), React 19, Tailwind, Vitest, ESLint `core-web-vitals`. Fundação: proxy `/auth` e `/api` para a API, cliente HTTP (token em memória, refresh single-flight), mocks tipados, shell com filial na rota (`/branches/[branchId]/...`) e menu por permissão do `GET /me` | PWA-first (PDV e backoffice) |
 | `apps/api` | NestJS 12, Prisma ORM 7.10 (CLI + client + `adapter-pg`), os 12 models do Core M1 ([database.md](database.md)), Auth/autorização runtime do M2 (`argon2`, `jose`), health endpoint, testes de boot isolados, testes de integração com PostgreSQL | Backend modular monolith |
 | `apps/worker` | Node/TS mínimo, sem filas | Tarefas assíncronas |
 | `packages/contracts` | contratos HTTP do M3 (organização, companies, branches, acesso a filiais, erros, paginação) | Contratos compartilhados (DTOs/eventos); a API importa só tipos ([api.md](api.md)) |

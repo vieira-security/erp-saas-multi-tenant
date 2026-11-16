@@ -5,7 +5,9 @@ campos e códigos de erro de cada módulo estão nos comentários dos próprios 
 
 ## Consumo de `packages/*`
 - Os packages exportam TypeScript sem build (`main`/`types` = `src/index.ts`).
-- `apps/web` (Next.js) pode importar tipos e valores (precisa de `transpilePackages` no `next.config.ts` para valores).
+- `apps/web` (Next.js) pode importar tipos e valores: `transpilePackages: ["@erp/contracts"]` e, porque os imports
+  relativos do pacote usam `.js` (NodeNext), `resolve.extensionAlias` do webpack (`next dev/build --webpack`; o Turbopack
+  não resolve, ver open-questions). O web nunca redefine tipos de API: request/response vêm do pacote.
 - `apps/api` compila com `tsc` e roda o `dist` no Node: **só `import type`** de `@erp/*`. Import de valor passa no
   typecheck e quebra em runtime; a regra de lint `@typescript-eslint/no-restricted-imports` bloqueia.
 - Consequência: regras com lógica em runtime (CNPJ, timezone, código de filial) são implementadas na API; o frontend pode

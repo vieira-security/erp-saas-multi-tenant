@@ -1,1 +1,54 @@
 @import "tailwindcss";
+
+/*
+ * Tema claro provisório (sem identidade visual definitiva). Trocar as cores = mudar só estas variáveis; os componentes
+ * usam as classes geradas pelo @theme (bg-surface, text-muted, border-line, bg-primary...).
+ */
+:root {
+  --background: #f5f6f8;
+  --surface: #ffffff;
+  --surface-muted: #eef1f4;
+  --line: #dde2e8;
+  --foreground: #1b2430;
+  --muted: #5b6878;
+  --primary: #1f5fbf;
+  --primary-hover: #194f9f;
+  --primary-foreground: #ffffff;
+  --primary-soft: #e7effb;
+  --danger: #b42318;
+  --danger-soft: #fdeceb;
+  --warning: #9a5b00;
+  --warning-soft: #fff4e2;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-surface-muted: var(--surface-muted);
+  --color-line: var(--line);
+  --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary-soft: var(--primary-soft);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+}
+
+html {
+  color-scheme: light;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}

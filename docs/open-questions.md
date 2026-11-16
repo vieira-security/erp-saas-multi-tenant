@@ -309,3 +309,42 @@ Decisões já no contrato (`packages/contracts/src/audit.ts` e o fim de `me.ts`)
 de produto "Dono tudo, gerente nas filiais dele": quem tem `audit.read_tenant` vê TODO o histórico do tenant, inclusive
 filiais a que não tem acesso; o gerente continua só nas filiais com `audit.read`. Os eventos continuam gravando a
 própria filial.
+
+## Frontend — fundação do web (KAN-53, KAN-23, KAN-22, KAN-25; 10/11/2026)
+Implementado em `apps/web`: proxy de dev (`/auth/*` e `/api/*`), cliente HTTP com access token só em memória e refresh
+single-flight, rotas tipadas por `@erp/contracts`, mocks por `NEXT_PUBLIC_API_MOCKS=1`, shell com filial na rota e menu
+por permissão do `GET /me`. O `GET /me` já tinha contrato (`MeDto`, KAN-52): o mock usa esse formato, sem formato provisório.
+
+**Alinhamento com a develop (16/11/2026):** a fundação já consumia o `MeDto` real (menu e seletor de filial por
+`me.permissions` e `me.branches[].permissions`, sempre por código de permissão); não havia mock TEMPORÁRIO a remover. A
+matriz dos mocks ganhou `order.prepare` (M7) e `audit.read`/`audit.read_tenant` (KAN-41), como em `default-roles.ts`.
+Verificado ponta a ponta sem mocks (API como `erp_app`, seed de dev, proxy em `localhost:3000`): login do `DONO` 200 com
+cookie `erp_rt` `HttpOnly; Path=/auth; SameSite=Strict`; `GET /api/me` 200 (3 filiais com permissões); refresh só com o
+cookie 200 com rotação; logout 204 e refresh seguinte 401; `CAIXA1` e `COZINHA` recebem 403 em `/api/users`,
+`/api/roles` e `/api/audit-logs`.
+
+**Pendências / decisões necessárias:**
+1. **DECISION REQUIRED — bundler x `@erp/contracts`:** o contracts usa imports relativos `./x.js` apontando para `.ts`
+   (exigido pelo `NodeNext` da API). O Turbopack (padrão do Next 16) não resolve isso; o web roda `next dev/build
+   --webpack` com `resolve.extensionAlias`. Para voltar ao Turbopack: build de runtime do contracts (emitir `.js`) ou outra
+   forma de publicar o pacote — mudança no backend/contracts, fora desta entrega. **Reverificado em 16/11/2026** depois do
+   merge da develop: `next build --turbopack` ainda falha com 28 erros `Module not found: Can't resolve './x.js'` a partir
+   de `packages/contracts/src/index.ts`; o contorno continua. O que o contracts precisa mudar (qualquer uma): (a) emitir
+   `.js` + `.d.ts` (`tsc` para `dist/`) e apontar `exports`/`main`/`types` para lá; ou (b) trocar os imports relativos
+   para `./x.ts` com `allowImportingTsExtensions`/`rewriteRelativeImportExtensions` na API; ou (c) imports sem extensão,
+   se a API deixar de usar `NodeNext` para o pacote.
+2. **Roteamento em produção** de `/auth/*` e `/api/*`: hoje são rewrites do Next com `API_URL` lida no build (em produção
+   sem `API_URL` o proxy fica desligado). Definir se produção usa o mesmo proxy do Next ou roteamento por caminho no
+   load balancer/CDN (mesma origem), junto com o deploy (#18). Requisito: `/auth` precisa continuar no mesmo site e caminho.
+3. **Tela de login (KAN-24):** não pode ficar sob `/auth/*` nem `/api/*` (proxy). Até lá, "sem sessão"/"sessão encerrada"
+   só oferecem "tentar de novo" (novo bootstrap). Troca de senha obrigatória mostra só o aviso.
+4. **Defaults técnicos do cliente (revisar):** refresh só reativo (no 401), sem renovação antecipada pelo
+   `accessTokenExpiresAt`; falha do refresh por rede durante o uso também encerra a sessão (no bootstrap vira estado de erro);
+   o evento "sessão encerrada" sai uma vez por sessão.
+5. **Filial da rota = filiais operáveis** (`GET /me/branches`). Filial inativa ou sem acesso na URL mostra "sem permissão".
+   Telas administrativas que precisem de filial inativa (ex.: reativar) não dependem da filial da rota; revisar quando existirem.
+6. Itens do menu e permissões usadas (provisório, até as telas existirem): Pedidos `order.read`, Caixa `cash.read`,
+   Cardápio `product.read` e Ajustes do cardápio `product.manage` (escopo da filial); Organização e Empresas
+   `organization.read`, Filiais `branch.read`, Usuários `user.read`, Produtos `product.read` (escopo do tenant).
+7. Testes de componente rodam sem DOM (`react-dom/server` + funções puras), sem jsdom/Testing Library. Interação real
+   (cliques, gaveta do menu) foi verificada manualmente; E2E com Playwright segue futuro (#17).
