@@ -1,5 +1,5 @@
-import type { PermissionCode } from "./me.js";
-import type { RoleStatus } from "./users.js";
+import type { PermissionCode } from "./me.ts";
+import type { RoleStatus } from "./users.ts";
 
 /**
  * Roles do tenant (somente leitura): a tela de funcionários precisa listar as roles para atribuir.

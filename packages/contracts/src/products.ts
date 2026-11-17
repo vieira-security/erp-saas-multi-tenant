@@ -1,4 +1,4 @@
-import type { PageQuery } from "./common.js";
+import type { PageQuery } from "./common.ts";
 
 /**
  * M4 — Produtos e cardápio.

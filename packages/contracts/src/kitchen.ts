@@ -1,4 +1,4 @@
-import type { PageQuery } from "./common.js";
+import type { PageQuery } from "./common.ts";
 
 /**
  * M7 — Cozinha: setores de preparo, comandas por setor e impressão pelo navegador.

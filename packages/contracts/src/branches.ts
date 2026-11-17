@@ -1,4 +1,4 @@
-import type { PageQuery } from "./common.js";
+import type { PageQuery } from "./common.ts";
 
 /**
  * Branch = filial/unidade de uma Company. Sem exclusão: desativação por status.

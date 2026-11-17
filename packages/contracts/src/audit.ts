@@ -1,4 +1,4 @@
-import type { PageQuery } from "./common.js";
+import type { PageQuery } from "./common.ts";
 
 /**
  * Histórico de auditoria (KAN-41). Decisões de produto (10/11/2026):

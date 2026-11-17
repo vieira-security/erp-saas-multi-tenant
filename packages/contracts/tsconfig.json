@@ -1,1 +1,9 @@
-{ "extends": "../../tsconfig.base.json", "include": ["src"] }
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // Imports relativos com `.ts`: o Turbopack (web), o webpack e o tsc (API em NodeNext) resolvem igual, sem build.
+    "allowImportingTsExtensions": true,
+    "noEmit": true
+  },
+  "include": ["src"]
+}

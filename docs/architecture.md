@@ -148,3 +148,10 @@ AWS ECS/Fargate, RDS PostgreSQL, Redis, SQS, S3, Secrets Manager, CloudWatch. Na
 
 ## Documentos relacionados
 [api](api.md) · [database](database.md) · [security](security.md) · [offline-edge](offline-edge.md) · [printing](printing.md) · [fiscal](fiscal.md) · [testing-strategy](testing-strategy.md) · [deployment](deployment.md) · [open-questions](open-questions.md)
+
+## Imports do `@erp/contracts` (Turbopack)
+
+O `packages/contracts` é TypeScript sem build e usa imports relativos com extensão `.ts` (`./common.ts`), com
+`allowImportingTsExtensions` no contracts e no web. Assim o Turbopack (Next 16), o webpack, o Vitest e o `tsc` da API
+resolvem o mesmo arquivo sem etapa de build. A API (NodeNext, com emit) usa `rewriteRelativeImportExtensions`; ela só
+faz `import type` do contracts, então nada do contracts é emitido nem carregado em runtime.

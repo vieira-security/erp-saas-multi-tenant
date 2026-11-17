@@ -1,4 +1,4 @@
-import type { PageQuery } from "./common.js";
+import type { PageQuery } from "./common.ts";
 
 /**
  * Company = pessoa jurídica (CNPJ) do tenant. Sem exclusão: desativação por status.

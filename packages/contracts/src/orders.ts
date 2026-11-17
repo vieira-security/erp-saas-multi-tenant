@@ -1,7 +1,7 @@
-import type { PageQuery } from "./common.js";
-import type { PaymentDto, PaymentInput, RefundDto } from "./cash.js";
-import type { OrderKitchenTicketDto } from "./kitchen.js";
-import type { Money } from "./products.js";
+import type { PageQuery } from "./common.ts";
+import type { PaymentDto, PaymentInput, RefundDto } from "./cash.ts";
+import type { OrderKitchenTicketDto } from "./kitchen.ts";
+import type { Money } from "./products.ts";
 
 /**
  * M5 — Pedidos do PDV (balcão).
